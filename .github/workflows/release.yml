@@ -1,0 +1,224 @@
+# Cross-platform release builds for FoxCull Codex.
+#
+# Triggers:
+#   - push to a tag matching v* (e.g. `git tag v0.1.0-nightly.1 && git push --tags`)
+#   - manual run from the Actions tab
+#
+# Pipeline (3-job split avoids the tauri-action draft race when run from a matrix):
+#   1. create-release   drafts a GitHub release for the tag (once)
+#   2. build (matrix)   builds Windows / macOS-ARM / Linux, uploads into the draft
+#   3. publish-release  flips draft -> published once all builds succeed
+#
+# Channels (tag-name driven):
+#   - Stable:  v1.2.3            -> published as Latest, prerelease=false
+#   - Nightly: v1.2.3-nightly.1  -> Pre-release, NOT Latest
+#
+# macOS Intel (macos-13) intentionally omitted (unreliable GitHub runners).
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-22.04
+    outputs:
+      release_id: ${{ steps.create.outputs.result }}
+      is_prerelease: ${{ steps.create.outputs.is_prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create draft release
+        id: create
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            const isPrerelease = tag.startsWith('nightly-') || /-(nightly|pre|rc|alpha|beta)\b/.test(tag);
+            core.setOutput('is_prerelease', String(isPrerelease));
+            const channelHeader = isPrerelease
+              ? '> Pre-release / nightly build. Not the latest stable.\n\n'
+              : '';
+            const body = channelHeader + [
+              `Built from commit ${context.sha}.`,
+              '',
+              '**Pick your installer:**',
+              '- **Windows:** installer `.exe` or `foxcull-codex_*_x64_portable.zip` (no-install, run off an SSD)',
+              '- **macOS Apple Silicon (M1/M2/M3/M4):** `.dmg`',
+              '- **Linux:** `*.AppImage` (portable) or `*.deb`',
+              '',
+              '## First-time install',
+              '**Windows:** click through SmartScreen ("More info" -> "Run anyway") — not code-signed yet.',
+              '**macOS:** not notarized — right-click the app -> Open, or run',
+              '`xattr -dr com.apple.quarantine "/Applications/FoxCull Codex.app"`.',
+            ].join('\n');
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `FoxCull Codex ${tag}`,
+              body,
+              draft: true,
+              prerelease: isPrerelease,
+            });
+            return data.id;
+          result-encoding: string
+
+  build:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest'   # Apple Silicon (arm64)
+            args: '--target aarch64-apple-darwin'
+            artifact_name: 'foxcull-codex-macos-arm64'
+          - platform: 'ubuntu-22.04'
+            args: ''
+            artifact_name: 'foxcull-codex-linux-x64'
+          - platform: 'windows-latest'
+            args: ''
+            artifact_name: 'foxcull-codex-windows-x64'
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+      - name: Install Linux deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Install npm deps
+        run: npm ci
+      # Bundle a static ffmpeg as the Tauri sidecar (video posters + trim). Each
+      # runner only stages its own target's binary, named with the target triple.
+      # Sources: BtbN static builds (Win/Linux, on GitHub) + martin-riedl (macOS
+      # arm64). HEVC decode is built into all of them (Osmo Pocket 3 support).
+      - name: Stage ffmpeg sidecar (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force src-tauri\binaries | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ff -Force
+          $bin = Get-ChildItem ff -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          Copy-Item $bin.FullName "src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe"
+          Get-ChildItem src-tauri\binaries
+      - name: Stage ffmpeg sidecar (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          mkdir -p src-tauri/binaries
+          curl -L -o ffmpeg.tar.xz "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
+          tar xf ffmpeg.tar.xz
+          BIN=$(find . -path '*/bin/ffmpeg' -type f | head -1)
+          cp "$BIN" src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
+          chmod +x src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
+          ls -la src-tauri/binaries
+      - name: Stage ffmpeg sidecar (macOS arm64)
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        run: |
+          mkdir -p src-tauri/binaries
+          curl -L -o ffmpeg.zip "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip"
+          unzip -o ffmpeg.zip -d ff
+          BIN=$(find ff -name ffmpeg -type f | head -1)
+          cp "$BIN" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          ls -la src-tauri/binaries
+      # Stamp the build's version from the git tag so every installer/dmg is
+      # named AND embedded as e.g. FoxCull Codex_0.3.0-nightly.10_* instead of the
+      # bare 0.3.0 in the committed config — no more ambiguous downloads. The
+      # committed config keeps the base 0.3.0; this only rewrites it in CI.
+      # Skipped on manual (non-tag) runs so the version never becomes "main".
+      - name: Stamp version from tag
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          node -e "const fs=require('fs');const p='src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.version='${VER}';fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n');console.log('Stamped version =>',c.version);"
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          args: ${{ matrix.args }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: ignore
+
+      # Standalone, no-installer build for running off an SSD / USB stick. The
+      # bare exe + a sibling `foxcull-codex-data` folder = fully portable (the app
+      # roots its catalog/cache/settings in that folder).
+      - name: Package portable (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}" -replace '^v',''
+          $dir = "foxcull-codex-portable"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item src-tauri/target/release/foxcull-codex.exe "$dir/foxcull-codex.exe"
+          New-Item -ItemType Directory -Force "$dir/foxcull-codex-data" | Out-Null
+          "Keep this folder next to foxcull-codex.exe. FoxCull Codex stores its catalog, thumbnail cache and settings here, so the whole app is portable across machines." | Out-File -Encoding utf8 "$dir/foxcull-codex-data/READ-ME.txt"
+          Compress-Archive -Path "$dir/*" -DestinationPath "foxcull-codex_${ver}_x64_portable.zip" -Force
+      - name: Upload portable to release (Windows)
+        if: matrix.platform == 'windows-latest'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const ver = '${{ github.ref_name }}'.replace(/^v/, '');
+            const name = `foxcull-codex_${ver}_x64_portable.zip`;
+            await github.rest.repos.uploadReleaseAsset({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: ${{ needs.create-release.outputs.release_id }},
+              name,
+              data: fs.readFileSync(name),
+            });
+
+  publish-release:
+    needs: [create-release, build]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Publish release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+          IS_PRERELEASE: ${{ needs.create-release.outputs.is_prerelease }}
+        with:
+          script: |
+            const isPrerelease = process.env.IS_PRERELEASE === 'true';
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: process.env.RELEASE_ID,
+              draft: false,
+              prerelease: isPrerelease,
+              make_latest: isPrerelease ? 'false' : 'true',
+            });

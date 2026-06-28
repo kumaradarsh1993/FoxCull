@@ -1,0 +1,136 @@
+/* fox-cull theming. Dark (warm fox brown) is the default; light is a warm,
+   complementary "paper" palette sharing the same fox-orange accent — NOT the old
+   cold Google-Photos gray. Components reference the tokens below, so theming is
+   just a palette swap. */
+:root,
+:root[data-theme="light"] {
+  --bg: #f7f2ea; /* warm paper */
+  --bg-panel: #efe8db; /* side panels / bars */
+  --bg-elev: #fffaf2; /* cards, popovers */
+  --bg-hover: #e7ddcb;
+  --viewport-bg: #e3dccf; /* warm neutral behind photos */
+  --border: #ddd2bf;
+  --text: #2a2018; /* warm near-black */
+  --text-dim: #6e5f4b;
+  --text-faint: #a3927a;
+  --accent: #e0701f; /* fox orange */
+  --accent-dim: #f6dfc8; /* light orange fill for active chips */
+  --accent-on: #ffffff;
+  --reject: #c93a2c;
+  --pick: #2e9447;
+  --star: #d9920c;
+  --shadow: 0 4px 18px rgba(74, 52, 28, 0.18);
+
+  --label-red: #c93a2c;
+  --label-green: #2e9447;
+  --label-yellow: #d9a216;
+  --label-blue: #2f6fd0;
+  --label-purple: #7d50d0;
+
+  --tree-w: 270px;
+  --font: "Inter", "Roboto", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+:root[data-theme="dark"] {
+  --bg: #14110d;
+  --bg-panel: #1d1812;
+  --bg-elev: #272018;
+  --bg-hover: #332a20;
+  --viewport-bg: #0a0805;
+  --border: #3a2f24;
+  --text: #f3ece1;
+  --text-dim: #b6a892;
+  --text-faint: #7d7060;
+  --accent: #ec7c34;
+  --accent-dim: #7a3f16;
+  --accent-on: #ffffff;
+  --reject: #e0533d;
+  --pick: #5bbf6a;
+  --star: #f3c14b;
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+
+  --label-red: #e0533d;
+  --label-green: #5bbf6a;
+  --label-yellow: #f3c14b;
+  --label-blue: #4d97e0;
+  --label-purple: #9b6fe0;
+}
+
+/* Warm — for long culling sessions in a dim, warmly-lit room (the night-light
+   case). Chrome drops blue almost entirely: deep amber-browns, candle-toned
+   text, a softer ember accent — nothing in the UI glows colder than the room.
+   The photo stage itself (--viewport-bg) stays a near-black NEUTRAL: a tinted
+   surround would bias how you judge the photos' colors. */
+:root[data-theme="warm"] {
+  --bg: #191007;
+  --bg-panel: #221709;
+  --bg-elev: #2d1f0e;
+  --bg-hover: #3a2a14;
+  --viewport-bg: #0b0a09; /* neutral near-black — color judgment stays honest */
+  --border: #46331b;
+  --text: #f5e3c8;
+  --text-dim: #c8ab82;
+  --text-faint: #8d7452;
+  --accent: #e8923a;
+  --accent-dim: #6e4312;
+  --accent-on: #1d1206;
+  --reject: #d96a4a;
+  --pick: #9eb35c;
+  --star: #e9b54d;
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
+
+  --label-red: #d96a4a;
+  --label-green: #9eb35c;
+  --label-yellow: #e9b54d;
+  --label-blue: #7e96b8;
+  --label-purple: #a884c0;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13.5px;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+button { font-family: inherit; color: inherit; background: transparent; border: none; cursor: pointer; }
+
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--text-faint) 45%, transparent); border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--text-faint) 70%, transparent); }
+::-webkit-scrollbar-track { background: transparent; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 13px;
+  transition: background 0.12s, border-color 0.12s;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--bg-hover); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn.accent { background: var(--accent); border-color: var(--accent); color: var(--accent-on); }
+.btn.accent:hover { filter: brightness(1.05); }
+.btn.danger { color: var(--reject); border-color: color-mix(in srgb, var(--reject) 50%, var(--border)); }
+.btn.on { border-color: var(--accent); color: var(--accent); }
+
+.banner {
+  padding: 7px 14px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-panel));
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12.5px;
+}

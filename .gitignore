@@ -1,0 +1,20 @@
+# dependencies
+node_modules/
+
+# build output
+/build/
+/.svelte-kit/
+/package/
+
+# tauri
+/src-tauri/target/
+/src-tauri/gen/
+# bundled ffmpeg sidecar (fetched per-platform in CI, never committed)
+/src-tauri/binaries/
+
+# env / editor
+.DS_Store
+*.log
+*.local
+.vscode/*
+!.vscode/extensions.json
