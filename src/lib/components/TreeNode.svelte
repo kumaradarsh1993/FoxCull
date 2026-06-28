@@ -7,6 +7,7 @@
     node,
     currentDir,
     onselect,
+    onmove,
     depth = 0,
     count = null,
     countsGen = 0,
@@ -14,6 +15,7 @@
     node: TreeDir;
     currentDir: string | null;
     onselect: (path: string) => void;
+    onmove?: (path: string) => void;
     depth?: number;
     /** Recursive media count for THIS folder (given by the parent), or null. */
     count?: number | null;
@@ -25,6 +27,7 @@
   let kids = $state<TreeDir[] | null>(null);
   let kidCounts = $state<Record<string, number>>({});
   let loading = $state(false);
+  let dropHot = $state(false);
 
   // Optimistic chevron: every folder claims children (list_tree no longer probes,
   // to stay fast); once an expand turns up no subfolders we hide it.
@@ -106,13 +109,40 @@
   $effect(() => {
     if (currentDir === node.path) rowEl?.scrollIntoView({ block: "nearest" });
   });
+
+  function acceptsMediaDrag(e: DragEvent): boolean {
+    return !!onmove && Array.from(e.dataTransfer?.types ?? []).includes("application/x-foxcull-paths");
+  }
+
+  function onDragOver(e: DragEvent) {
+    if (!acceptsMediaDrag(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    dropHot = true;
+  }
+
+  function onDragLeave() {
+    dropHot = false;
+  }
+
+  function onDrop(e: DragEvent) {
+    if (!acceptsMediaDrag(e) || !onmove) return;
+    e.preventDefault();
+    dropHot = false;
+    onmove(node.path);
+  }
 </script>
 
 <div
   class="trow"
   class:active={currentDir === node.path}
+  class:drophot={dropHot}
   style="padding-left:{4 + depth * 14}px"
   bind:this={rowEl}
+  role="presentation"
+  ondragover={onDragOver}
+  ondragleave={onDragLeave}
+  ondrop={onDrop}
 >
   {#if showChevron}
     <button
@@ -140,6 +170,7 @@
       node={k}
       {currentDir}
       {onselect}
+      {onmove}
       depth={depth + 1}
       count={kidCounts[k.path] ?? null}
       {countsGen}
@@ -158,6 +189,11 @@
   .trow.active {
     background: color-mix(in srgb, var(--accent) 20%, transparent);
     box-shadow: inset 2px 0 0 var(--accent);
+  }
+  .trow.drophot {
+    background: color-mix(in srgb, var(--accent) 28%, transparent);
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
   }
   .trow.active .label {
     color: var(--accent);

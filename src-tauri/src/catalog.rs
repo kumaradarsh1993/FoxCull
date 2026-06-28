@@ -395,6 +395,50 @@ impl Catalog {
         }
     }
 
+    /// Move per-file metadata after the original file is physically moved.
+    /// Existing rows at the destination are replaced because the filesystem move
+    /// has already uniquified the target path, so any destination row is stale.
+    pub fn move_media_entries(&self, pairs: &[(String, String)]) -> rusqlite::Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            let t = now();
+            for (from, to) in pairs {
+                tx.execute("DELETE FROM decisions WHERE rel = ?1", params![to])?;
+                tx.execute(
+                    "UPDATE decisions SET rel = ?2, updated_at = ?3 WHERE rel = ?1",
+                    params![from, to, t],
+                )?;
+
+                tx.execute("DELETE FROM tags WHERE rel = ?1", params![to])?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO tags(rel, tag)
+                     SELECT ?2, tag FROM tags WHERE rel = ?1",
+                    params![from, to],
+                )?;
+                tx.execute("DELETE FROM tags WHERE rel = ?1", params![from])?;
+
+                tx.execute("DELETE FROM trims WHERE rel = ?1", params![to])?;
+                tx.execute(
+                    "INSERT INTO trims(rel, in_s, out_s)
+                     SELECT ?2, in_s, out_s FROM trims WHERE rel = ?1",
+                    params![from, to],
+                )?;
+                tx.execute("DELETE FROM trims WHERE rel = ?1", params![from])?;
+
+                tx.execute("DELETE FROM captures WHERE rel = ?1", params![to])?;
+                tx.execute(
+                    "INSERT INTO captures(rel, captured, mtime, size)
+                     SELECT ?2, captured, mtime, size FROM captures WHERE rel = ?1",
+                    params![from, to],
+                )?;
+                tx.execute("DELETE FROM captures WHERE rel = ?1", params![from])?;
+            }
+            tx.execute("DELETE FROM dir_counts", [])?;
+        }
+        tx.commit()
+    }
+
     // ── tags ────────────────────────────────────────────────────────────────
 
     /// Every tag at or under a rel-prefix, grouped by rel-path, in one query.

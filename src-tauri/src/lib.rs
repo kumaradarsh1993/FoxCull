@@ -133,6 +133,7 @@ pub fn run() {
             commands::list_tags,
             commands::video_proxy,
             commands::video_proxy_cached,
+            commands::move_media_files,
             commands::export_jpegs,
             commands::get_trim,
             commands::set_trim,

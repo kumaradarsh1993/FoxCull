@@ -69,6 +69,19 @@ export interface ExportOutcome {
   dest: string;
 }
 
+export interface MoveRecord {
+  from: string;
+  to: string;
+}
+
+export interface MoveOutcome {
+  moved: number;
+  dest: string;
+  files: MoveRecord[];
+  failed: string[];
+  errors: string[];
+}
+
 export interface EditClip {
   path: string;
   in_s: number;

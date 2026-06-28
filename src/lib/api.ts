@@ -8,6 +8,7 @@ import type {
   LibraryInfo,
   FilmstripInfo,
   ExportOutcome,
+  MoveOutcome,
   EditExportRequest,
   EditExportOutcome,
 } from "./types";
@@ -49,6 +50,8 @@ export const api = {
   /** Export files into `dest`: RAW → camera-rendered JPEG, images copied. */
   exportJpegs: (paths: string[], dest: string) =>
     invoke<ExportOutcome>("export_jpegs", { paths, dest }),
+  moveMediaFiles: (paths: string[], dest: string) =>
+    invoke<MoveOutcome>("move_media_files", { paths, dest }),
   getTrim: (path: string) => invoke<[number, number] | null>("get_trim", { path }),
   setTrim: (path: string, inS: number, outS: number) =>
     invoke<void>("set_trim", { path, in_s: inS, out_s: outS }).catch(() => {}),

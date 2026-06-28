@@ -8,12 +8,16 @@
     selected,
     onrowclick,
     onrowdblclick,
+    onrowdragstart,
+    onrowdragend,
   }: {
     items: MediaItem[];
     activeIndex?: number;
     selected: Set<string>;
     onrowclick: (e: MouseEvent, i: number) => void;
     onrowdblclick: (i: number) => void;
+    onrowdragstart?: (e: DragEvent, item: MediaItem, i: number) => void;
+    onrowdragend?: () => void;
   } = $props();
 
   const ROW = 46;
@@ -104,6 +108,9 @@
         style="transform:translateY({v.y}px)"
         onclick={(e) => onrowclick(e, v.index)}
         ondblclick={() => onrowdblclick(v.index)}
+        draggable={!!onrowdragstart}
+        ondragstart={(e) => onrowdragstart?.(e, v.item, v.index)}
+        ondragend={() => onrowdragend?.()}
       >
         <span class="c-thumb"><Thumb item={v.item} size={320} /></span>
         <span class="c-name" title={v.item.path}>{v.item.name}</span>

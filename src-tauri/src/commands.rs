@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -250,6 +250,136 @@ fn rel_of(root: &Option<PathBuf>, abs: &str) -> String {
         }
     }
     abs.replace('\\', "/")
+}
+
+fn has_unsafe_components(path: &Path) -> bool {
+    path.components().any(|c| {
+        matches!(
+            c,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    })
+}
+
+fn canonical_existing(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("path must be absolute".into());
+    }
+    std::fs::canonicalize(path).map_err(|e| format!("invalid path: {e}"))
+}
+
+fn canonical_dir(path: &Path) -> Result<PathBuf, String> {
+    let p = canonical_existing(path)?;
+    if !p.is_dir() {
+        return Err("not a directory".into());
+    }
+    Ok(p)
+}
+
+fn canonical_file(path: &Path) -> Result<PathBuf, String> {
+    let p = canonical_existing(path)?;
+    if !p.is_file() {
+        return Err("not a file".into());
+    }
+    Ok(p)
+}
+
+fn within(path: &Path, root: &Path) -> bool {
+    path == root || path.starts_with(root)
+}
+
+fn canonical_active_root(root: &Option<PathBuf>) -> Result<PathBuf, String> {
+    let root = root.as_ref().ok_or("open a folder first")?;
+    canonical_dir(root)
+}
+
+fn canonical_lib_dir(lib_dir: &Path) -> Option<PathBuf> {
+    std::fs::canonicalize(lib_dir).ok()
+}
+
+fn validate_active_media_file(
+    active_root: &Path,
+    lib_dir: Option<&PathBuf>,
+    path: &str,
+) -> Result<PathBuf, String> {
+    let src = canonical_file(Path::new(path))?;
+    if !within(&src, active_root) {
+        return Err("file is outside the active library".into());
+    }
+    if let Some(lib) = lib_dir {
+        if within(&src, lib) {
+            return Err("refusing to operate inside the app library folder".into());
+        }
+    }
+    if !media::is_media(&src) {
+        return Err("not a supported media file".into());
+    }
+    Ok(src)
+}
+
+fn validate_active_dir(
+    active_root: &Path,
+    lib_dir: Option<&PathBuf>,
+    path: &str,
+) -> Result<PathBuf, String> {
+    let dir = canonical_dir(Path::new(path))?;
+    if !within(&dir, active_root) {
+        return Err("folder is outside the active library".into());
+    }
+    if let Some(lib) = lib_dir {
+        if within(&dir, lib) {
+            return Err("refusing to use the app library folder as a destination".into());
+        }
+    }
+    Ok(dir)
+}
+
+fn is_audio_file(path: &Path) -> bool {
+    matches!(
+        media::ext_lower(path).as_str(),
+        "mp3" | "m4a" | "aac" | "wav" | "flac" | "ogg"
+    )
+}
+
+fn rel_under(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"))
+}
+
+fn safe_recycle_child(recycle: &Path, stored: &str) -> Result<PathBuf, String> {
+    let rel = Path::new(stored);
+    if rel.is_absolute() || has_unsafe_components(rel) {
+        return Err("invalid trash entry".into());
+    }
+    let root = canonical_dir(recycle)?;
+    let path = root.join(rel);
+    if path.exists() {
+        let canon = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+        if !within(&canon, &root) {
+            return Err("trash entry escapes the recycle folder".into());
+        }
+        Ok(canon)
+    } else {
+        Ok(path)
+    }
+}
+
+fn restore_target(drive: &Path, orig: &str) -> Result<PathBuf, String> {
+    let rel = Path::new(orig);
+    if rel.is_absolute() || has_unsafe_components(rel) {
+        return Err("invalid restore target".into());
+    }
+    let root = canonical_dir(drive)?;
+    let target = root.join(rel);
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        let canon_parent = canonical_dir(parent)?;
+        if !within(&canon_parent, &root) {
+            return Err("restore target escapes the active drive".into());
+        }
+    }
+    Ok(uniquify(target))
 }
 
 #[derive(Serialize)]
@@ -1176,7 +1306,12 @@ pub async fn trim_video(
     out_s: f64,
 ) -> Result<String, String> {
     let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg not available")?;
-    let src = PathBuf::from(&path);
+    let root = canonical_active_root(&state.root.lock().clone())?;
+    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
+    let src = validate_active_media_file(&root, lib.as_ref(), &path)?;
+    if !matches!(media::classify(&src), Kind::Video) {
+        return Err("not a video file".into());
+    }
     let stem = src
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
@@ -1537,16 +1672,30 @@ fn export_reencoded(
 #[tauri::command]
 pub async fn edit_export(
     state: State<'_, AppState>,
-    req: EditExportRequest,
+    mut req: EditExportRequest,
 ) -> Result<EditExportOutcome, String> {
     if req.clips.is_empty() {
         return Err("nothing to export".into());
     }
-    for clip in &req.clips {
-        let p = Path::new(&clip.path);
-        if !p.is_file() || !matches!(media::classify(p), Kind::Video) {
+    let root = canonical_active_root(&state.root.lock().clone())?;
+    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
+    for clip in &mut req.clips {
+        let p = validate_active_media_file(&root, lib.as_ref(), &clip.path)?;
+        if !matches!(media::classify(&p), Kind::Video) {
             return Err(format!("not a video file: {}", clip.path));
         }
+        clip.path = p.to_string_lossy().to_string();
+    }
+    if let Some(path) = &mut req.music_path {
+        let p = canonical_file(Path::new(path))?;
+        if !is_audio_file(&p) {
+            return Err("music track must be an audio file".into());
+        }
+        *path = p.to_string_lossy().to_string();
+    }
+    if let Some(dest) = &mut req.destination {
+        let p = canonical_dir(Path::new(dest))?;
+        *dest = p.to_string_lossy().to_string();
     }
     let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg not available")?;
     let reencode = edit_requires_reencode(&req);
@@ -1658,6 +1807,116 @@ pub struct ExportOutcome {
     pub dest: String,
 }
 
+#[derive(Serialize)]
+pub struct MoveRecord {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Serialize)]
+pub struct MoveOutcome {
+    pub moved: usize,
+    pub dest: String,
+    pub files: Vec<MoveRecord>,
+    pub failed: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+#[tauri::command]
+pub fn move_media_files(
+    state: State<'_, AppState>,
+    catalog: State<'_, Catalog>,
+    paths: Vec<String>,
+    dest: String,
+) -> MoveOutcome {
+    let root_state = state.root.lock().clone();
+    let root = match canonical_active_root(&root_state) {
+        Ok(r) => r,
+        Err(e) => {
+            return MoveOutcome {
+                moved: 0,
+                dest,
+                files: Vec::new(),
+                failed: paths,
+                errors: vec![e],
+            }
+        }
+    };
+    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
+    let dest_dir = match validate_active_dir(&root, lib.as_ref(), &dest) {
+        Ok(d) => d,
+        Err(e) => {
+            return MoveOutcome {
+                moved: 0,
+                dest,
+                files: Vec::new(),
+                failed: paths,
+                errors: vec![e],
+            }
+        }
+    };
+    let cache_dir = state.cache_dir.lock().clone();
+    let mut out = MoveOutcome {
+        moved: 0,
+        dest: dest_dir.to_string_lossy().to_string(),
+        files: Vec::new(),
+        failed: Vec::new(),
+        errors: Vec::new(),
+    };
+    let mut catalog_moves: Vec<(String, String)> = Vec::new();
+    let mut seen = HashSet::new();
+
+    for p in paths {
+        if !seen.insert(p.clone()) {
+            continue;
+        }
+        let src = match validate_active_media_file(&root, lib.as_ref(), &p) {
+            Ok(src) => src,
+            Err(e) => {
+                out.failed.push(p);
+                out.errors.push(e);
+                continue;
+            }
+        };
+        if src.parent() == Some(dest_dir.as_path()) {
+            out.failed.push(src.to_string_lossy().to_string());
+            out.errors.push("file is already in that folder".into());
+            continue;
+        }
+        let Some(name) = src.file_name() else {
+            out.failed.push(src.to_string_lossy().to_string());
+            out.errors.push("file has no filename".into());
+            continue;
+        };
+        let target = uniquify(dest_dir.join(name));
+        let caches = cache_files_for(&cache_dir, &src.to_string_lossy());
+        let moved = std::fs::rename(&src, &target).is_ok()
+            || (std::fs::copy(&src, &target).is_ok() && std::fs::remove_file(&src).is_ok());
+        if moved {
+            for c in caches {
+                let _ = std::fs::remove_file(c);
+            }
+            let from_rel = rel_under(&root, &src);
+            let to_rel = rel_under(&root, &target);
+            catalog_moves.push((from_rel, to_rel));
+            out.moved += 1;
+            out.files.push(MoveRecord {
+                from: src.to_string_lossy().to_string(),
+                to: target.to_string_lossy().to_string(),
+            });
+        } else {
+            out.failed.push(src.to_string_lossy().to_string());
+            out.errors.push("move failed".into());
+        }
+    }
+    if !catalog_moves.is_empty() {
+        if let Err(e) = catalog.move_media_entries(&catalog_moves) {
+            out.errors.push(format!("catalog update failed: {e}"));
+        }
+    }
+    out
+}
+
 /// Export `paths` into `dest` as viewable files. RAW (NEF etc.) becomes a JPEG
 /// built from the **camera's own embedded full-resolution rendering** — the
 /// same white balance / Picture Control the camera baked, NOT a washed-out
@@ -1669,13 +1928,21 @@ pub struct ExportOutcome {
 #[tauri::command]
 pub async fn export_jpegs(
     app: AppHandle,
+    state: State<'_, AppState>,
     paths: Vec<String>,
     dest: String,
 ) -> Result<ExportOutcome, String> {
+    let root = canonical_active_root(&state.root.lock().clone())?;
+    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
+    let mut safe_paths = Vec::with_capacity(paths.len());
+    for p in paths {
+        let src = validate_active_media_file(&root, lib.as_ref(), &p)?;
+        safe_paths.push(src.to_string_lossy().to_string());
+    }
     let dest_dir = PathBuf::from(&dest);
     std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        let total = paths.len() as u64;
+        let total = safe_paths.len() as u64;
         let label = format!("Exporting {total} file{}", if total == 1 { "" } else { "s" });
         emit_activity(&app, "export", &label, 0, total, "running");
         let mut out = ExportOutcome {
@@ -1686,7 +1953,7 @@ pub async fn export_jpegs(
             errors: Vec::new(),
             dest: dest_dir.to_string_lossy().to_string(),
         };
-        for (i, p) in paths.iter().enumerate() {
+        for (i, p) in safe_paths.iter().enumerate() {
             let src = Path::new(p);
             let r = match media::classify(src) {
                 Kind::Raw => export_raw_as_jpeg(src, &dest_dir).map(|_| out.exported += 1),
@@ -1858,23 +2125,16 @@ fn drive_root(path: &str) -> PathBuf {
     PathBuf::from(if cfg!(windows) { "C:\\" } else { "/" })
 }
 
-/// Path of `src` relative to its drive root (with the drive prefix stripped),
-/// so it can be re-rooted under the reject folder without collisions.
-fn rel_from_drive(src: &str) -> PathBuf {
-    let root = drive_root(src);
-    Path::new(src)
-        .strip_prefix(&root)
-        .map(|r| r.to_path_buf())
-        .unwrap_or_else(|_| PathBuf::from(Path::new(src).file_name().unwrap_or_default()))
-}
-
 /// Move one file into the per-drive recycle folder, mirroring its path from the
 /// drive root so shots from different subfolders never collide. Returns
 /// `(stored, orig)` — the path within the recycle dir, and the original
 /// drive-relative path (for Restore). Fast rename first; copy+remove across
 /// volumes. Never clobbers an existing file (uniquifies).
-fn move_into_recycle(recycle: &Path, src: &str) -> Result<(String, String), String> {
-    let rel = rel_from_drive(src);
+fn move_into_recycle(root: &Path, recycle: &Path, src: &Path) -> Result<(String, String), String> {
+    let rel = src
+        .strip_prefix(root)
+        .map(|r| r.to_path_buf())
+        .unwrap_or_else(|_| PathBuf::from(src.file_name().unwrap_or_default()));
     let orig = rel.to_string_lossy().replace('\\', "/");
     let target = uniquify(recycle.join(&rel));
     if let Some(parent) = target.parent() {
@@ -1904,6 +2164,17 @@ pub fn dispose_rejected(
     mode: String,
 ) -> TrashOutcome {
     let root = state.root.lock().clone();
+    let root_canon = match canonical_active_root(&root) {
+        Ok(r) => r,
+        Err(e) => {
+            return TrashOutcome {
+                deleted: 0,
+                failed: paths,
+                errors: vec![e],
+            }
+        }
+    };
+    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
     let cache_dir = state.cache_dir.lock().clone();
     let recycle = state.recycle_dir.lock().clone();
     let folder = mode == "folder";
@@ -1914,23 +2185,32 @@ pub fn dispose_rejected(
     let mut forget = Vec::new();
     let mut trash_rows: Vec<(String, String, String, i64)> = Vec::new();
     for p in &paths {
+        let src = match validate_active_media_file(&root_canon, lib.as_ref(), p) {
+            Ok(src) => src,
+            Err(e) => {
+                failed.push(p.clone());
+                errors.push(e);
+                continue;
+            }
+        };
+        let src_s = src.to_string_lossy().to_string();
         // Compute the cache files NOW, while the original still exists (the keys
         // hash its metadata) — we remove them only after a successful dispose.
-        let caches = cache_files_for(&cache_dir, p);
+        let caches = cache_files_for(&cache_dir, &src_s);
         let result: Result<Option<(String, String)>, String> = if folder {
-            move_into_recycle(&recycle, p).map(Some)
+            move_into_recycle(&root_canon, &recycle, &src).map(Some)
         } else {
-            trash::delete(p).map(|_| None).map_err(|e| e.to_string())
+            trash::delete(&src).map(|_| None).map_err(|e| e.to_string())
         };
         match result {
             Ok(stored) => {
                 deleted += 1;
-                forget.push(rel_of(&root, p));
+                forget.push(rel_under(&root_canon, &src));
                 for c in caches {
                     let _ = std::fs::remove_file(c);
                 }
                 if let Some((stored, orig)) = stored {
-                    let name = Path::new(p)
+                    let name = src
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
@@ -1978,7 +2258,13 @@ pub fn list_trash(state: State<'_, AppState>, catalog: State<'_, Catalog>) -> Ve
         .list_trash()
         .into_iter()
         .filter_map(|r| {
-            let path = recycle.join(&r.stored);
+            let path = match safe_recycle_child(&recycle, &r.stored) {
+                Ok(path) => path,
+                Err(_) => {
+                    stale.push(r.stored);
+                    return None;
+                }
+            };
             if !path.exists() {
                 stale.push(r.stored);
                 return None;
@@ -2033,12 +2319,30 @@ pub fn restore_trash(
     let mut failed = Vec::new();
     let mut done = Vec::new();
     for s in &stored {
-        let from = recycle.join(s);
-        let orig = orig_of.get(s).cloned().unwrap_or_else(|| s.clone());
-        let to = uniquify(drive.join(&orig));
-        if let Some(parent) = to.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
+        let Some(orig) = orig_of.get(s) else {
+            failed.push(s.clone());
+            continue;
+        };
+        let from = match safe_recycle_child(&recycle, s).and_then(|p| {
+            if p.is_file() {
+                Ok(p)
+            } else {
+                Err("trash file is missing".into())
+            }
+        }) {
+            Ok(p) => p,
+            Err(_) => {
+                failed.push(s.clone());
+                continue;
+            }
+        };
+        let to = match restore_target(&drive, orig) {
+            Ok(p) => p,
+            Err(_) => {
+                failed.push(s.clone());
+                continue;
+            }
+        };
         let ok = std::fs::rename(&from, &to).is_ok()
             || (std::fs::copy(&from, &to).is_ok() && std::fs::remove_file(&from).is_ok());
         if ok {
@@ -2062,10 +2366,21 @@ pub fn purge_trash(
 ) -> usize {
     let recycle = state.recycle_dir.lock().clone();
     let cache_dir = state.cache_dir.lock().clone();
+    let known: HashSet<String> = catalog
+        .list_trash()
+        .into_iter()
+        .map(|r| r.stored)
+        .collect();
     let mut n = 0usize;
     let mut done = Vec::new();
     for s in &stored {
-        let p = recycle.join(s);
+        if !known.contains(s) {
+            continue;
+        }
+        let p = match safe_recycle_child(&recycle, s) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
         let caches = cache_files_for(&cache_dir, &p.to_string_lossy());
         if std::fs::remove_file(&p).is_ok() || !p.exists() {
             n += 1;
@@ -2123,8 +2438,17 @@ pub fn open_external(app: AppHandle, path: String) -> Result<(), String> {
 /// Whether `dir` is writable — used to detect a read-only mount (e.g. NTFS on
 /// macOS) so the UI can disable the delete sweep with an explanation.
 #[tauri::command]
-pub fn folder_writable(dir: String) -> bool {
-    let probe = Path::new(&dir).join(".foxcull_write_test.tmp");
+pub fn folder_writable(state: State<'_, AppState>, dir: String) -> bool {
+    let root = match canonical_active_root(&state.root.lock().clone()) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
+    let dir = match validate_active_dir(&root, lib.as_ref(), &dir) {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    let probe = dir.join(".foxcull_write_test.tmp");
     match std::fs::File::create(&probe) {
         Ok(_) => {
             let _ = std::fs::remove_file(&probe);

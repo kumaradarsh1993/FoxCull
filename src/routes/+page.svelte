@@ -57,6 +57,9 @@
 
   let activeIndex = $state(0);
   let selected = $state<Set<string>>(new Set());
+  let draggingPaths = $state<string[]>([]);
+  let cutPaths = $state<string[]>([]);
+  let movingFiles = $state(false);
 
   let minRating = $state(0);
   let labelFilter = $state<string | null>(null);
@@ -112,6 +115,13 @@
   };
   const parentOf = (p: string) => p.replace(/[\\/][^\\/]*$/, "");
   const parentName = (p: string) => parentOf(p).split(/[\\/]/).filter(Boolean).pop() ?? "/";
+  const samePath = (a: string, b: string) =>
+    a.replace(/[\\/]+$/, "").toLowerCase() === b.replace(/[\\/]+$/, "").toLowerCase();
+  const isUnder = (path: string, folder: string) => {
+    const f = folder.replace(/[\\/]+$/, "").toLowerCase();
+    const p = path.toLowerCase();
+    return p.length > f.length && p.startsWith(f) && (p[f.length] === "\\" || p[f.length] === "/");
+  };
 
   // Section helpers for the grouped grid (folder · type · year · month · week).
   // Dates are UTC to match how capture timestamps are stored. Week = calendar
@@ -391,6 +401,72 @@
     return active ? [active] : [];
   }
 
+  function targetPaths(): string[] {
+    return targets().map((i) => i.path);
+  }
+
+  function pathsForDrag(item: MediaItem): string[] {
+    if (selected.size > 1 && selected.has(item.path)) return targetPaths();
+    return [item.path];
+  }
+
+  function beginMediaDrag(e: DragEvent, item: MediaItem, i: number) {
+    if (!(selected.size > 1 && selected.has(item.path))) setActiveTo(i);
+    const paths = pathsForDrag(item);
+    draggingPaths = paths;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("application/x-foxcull-paths", JSON.stringify(paths));
+      e.dataTransfer.setData("text/plain", paths.join("\n"));
+    }
+  }
+
+  function endMediaDrag() {
+    draggingPaths = [];
+  }
+
+  async function movePathsTo(paths: string[], dest: string) {
+    if (!paths.length || movingFiles) return;
+    movingFiles = true;
+    try {
+      const r = await api.moveMediaFiles(paths, dest);
+      if (r.moved) {
+        activity.local("move-files", `Moved ${r.moved} file${r.moved === 1 ? "" : "s"}`, 1, 1);
+      }
+      if (r.failed.length) {
+        activity.error("move-files-error", `Move failed for ${r.failed.length} file${r.failed.length === 1 ? "" : "s"}${r.errors[0] ? `: ${r.errors[0]}` : ""}`);
+      }
+      cutPaths = [];
+      draggingPaths = [];
+      countsGen++;
+      if (currentDir) {
+        const firstMoved = r.files[0]?.to ?? null;
+        const canSeeMoved =
+          !!firstMoved && (samePath(dest, currentDir) || (settings.s.includeSub && isUnder(dest, currentDir)));
+        await openFolder(currentDir, {
+          selectPath: canSeeMoved ? firstMoved : null,
+          selectIndex: activeIndex,
+        });
+      }
+    } catch (e) {
+      activity.error("move-files-error", `Move failed (${e})`);
+    } finally {
+      movingFiles = false;
+    }
+  }
+
+  function cutSelection() {
+    const paths = targetPaths();
+    if (!paths.length) return;
+    cutPaths = paths;
+    activity.local("cut-files", `Ready to move ${paths.length} file${paths.length === 1 ? "" : "s"}`, 1, 1);
+  }
+
+  async function pasteCutSelection() {
+    if (!currentDir || !cutPaths.length) return;
+    await movePathsTo(cutPaths, currentDir);
+  }
+
   function scrollActive() {
     gridComp?.scrollToIndex(activeIndex);
   }
@@ -638,6 +714,14 @@
       },
       { label: revealLabel, icon: "⤴", action: () => api.reveal(ctx.path) },
       { separator: true },
+      { label: "Cut for move" + sfx, icon: "✂", disabled: !ts.length, action: cutSelection },
+      {
+        label: `Paste into ${currentDir ? basename(currentDir) : "folder"}`,
+        icon: "↳",
+        disabled: !currentDir || cutPaths.length === 0 || movingFiles,
+        action: pasteCutSelection,
+      },
+      { separator: true },
       { label: (allPick ? "Clear pick" : "Pick") + sfx, icon: "✓", on: allPick, action: () => flag("pick") },
       {
         label: (allReject ? "Clear reject" : "Reject") + sfx,
@@ -806,6 +890,17 @@
       if (e.key === "Escape") editOpen = false;
       return;
     }
+    const k = e.key.toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && k === "x") {
+      cutSelection();
+      e.preventDefault();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && k === "v") {
+      pasteCutSelection();
+      e.preventDefault();
+      return;
+    }
     // Video playback keys (Focus mode, active clip): Space toggles play/pause,
     // Shift+←/→ scrubs the clip. Plain ←/→ still move between items (below).
     if (viewMode === "loupe" && active?.kind === "video" && loupeComp) {
@@ -823,7 +918,6 @@
       else selected = active ? new Set([active.path]) : new Set();
       return;
     }
-    const k = e.key.toLowerCase();
     if (k === "f") { toggleFullscreen(); return; }
     if (k === "l") { dimLevel = (dimLevel + 1) % 3; return; }
     if (k === "g") { setView("grid"); return; }
@@ -861,6 +955,9 @@
     onclick={(e) => gridCellClick(e, i)}
     ondblclick={() => { setActiveTo(i); setView("loupe"); }}
     oncontextmenu={(e) => openContextMenu(e, item, i)}
+    draggable={true}
+    ondragstart={(e) => beginMediaDrag(e, item, i)}
+    ondragend={endMediaDrag}
   >
     <Thumb {item} size={gridThumbTier} />
     <span class="ov">
@@ -911,7 +1008,7 @@
     <div class="tree-body">
       {#if drives.length}
         {#each drives as d (d.path)}
-          <TreeNode node={d} {currentDir} onselect={openFolder} {countsGen} />
+          <TreeNode node={d} {currentDir} onselect={openFolder} onmove={(dest) => movePathsTo(draggingPaths, dest)} {countsGen} />
         {/each}
       {:else}
         <p class="hint">No drives detected.</p>
@@ -1049,6 +1146,12 @@
         </span>
       </button>
       <button class="btn sm" onclick={selectAllFiltered} disabled={!view.length} title="Select all in view">Select all{view.length ? ` (${view.length})` : ""}</button>
+      <button class="btn sm" onclick={cutSelection} disabled={selected.size === 0 || movingFiles} title="Mark selected files to move with Paste">
+        Cut{selected.size > 1 ? ` ${selected.size}` : ""}
+      </button>
+      <button class="btn sm" onclick={pasteCutSelection} disabled={!currentDir || cutPaths.length === 0 || movingFiles} title="Move cut files into the open folder">
+        Paste{cutPaths.length ? ` ${cutPaths.length}` : ""}
+      </button>
       <button class="btn sm danger" onclick={rejectSelected} disabled={selected.size === 0} title="Flag the selection as reject">
         Reject{selected.size > 1 ? ` ${selected.size}` : ""}
       </button>
@@ -1148,6 +1251,8 @@
             {selected}
             onrowclick={gridCellClick}
             onrowdblclick={(i) => { setActiveTo(i); setView("loupe"); }}
+            onrowdragstart={beginMediaDrag}
+            onrowdragend={endMediaDrag}
           />
         {:else if grouped}
           <SectionedGrid

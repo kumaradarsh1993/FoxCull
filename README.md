@@ -17,6 +17,17 @@ share the stable app's `_FoxCull` catalog/trash while new editing work evolves.
 - Crop, color tweaks, music, and social presets use ffmpeg H.264/AAC re-encode,
   with NVIDIA NVENC attempted first when `Auto` is selected.
 
+## Codex-origin organization
+
+- Drag selected media from Grid or Details onto a folder in the left tree to
+  physically move those files.
+- Use Cut/Paste or `Ctrl/Cmd+X` then `Ctrl/Cmd+V` to move selected files into
+  the currently open folder.
+- Moves preserve catalog metadata: ratings, labels, flags, tags, trims, and
+  cached capture dates follow the new file path.
+- Destructive commands now validate backend paths against the active library
+  root and tracked in-app Trash entries before touching disk.
+
 ---
 
 **A fast, lightweight photo & video culler for Windows, macOS & Linux.**
