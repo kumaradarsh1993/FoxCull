@@ -882,9 +882,9 @@
     }
     if (fullscreen) {
       fsPrevView = viewMode;
-      if (active) setView("loupe");
+      if (!editOpen && active) setView("loupe");
     } else {
-      setView(fsPrevView);
+      if (!editOpen) setView(fsPrevView);
     }
   }
 
@@ -935,11 +935,17 @@
   function onkeydown(e: KeyboardEvent) {
     const t = e.target as HTMLElement;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+    const k = e.key.toLowerCase();
     if (editOpen) {
-      if (e.key === "Escape") editOpen = false;
+      if (k === "f") { toggleFullscreen(); e.preventDefault(); return; }
+      if (k === "l") { dimLevel = (dimLevel + 1) % 3; e.preventDefault(); return; }
+      if (e.key === "Escape") {
+        if (fullscreen) toggleFullscreen();
+        else if (dimLevel > 0) dimLevel = 0;
+        else editOpen = false;
+      }
       return;
     }
-    const k = e.key.toLowerCase();
     if ((e.ctrlKey || e.metaKey) && k === "x") {
       cutSelection();
       e.preventDefault();

@@ -142,6 +142,7 @@
   let inspectorCollapsed = $state(false);
   let timelineCollapsed = $state(false);
   let lookCollapsed = $state(false);
+  let productionPreview = $state(false);
   let dragSourcePath = $state<string | null>(null);
   let seededKey = $state("");
   let seeding = $state(false);
@@ -286,6 +287,22 @@
     lastPreviewClipId = clip.id;
     currentTime = clip.inS;
     video.currentTime = clip.inS;
+  });
+
+  $effect(() => {
+    if (!selectedClip && productionPreview) productionPreview = false;
+  });
+
+  $effect(() => {
+    if (!productionPreview) return;
+    const onPreviewKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      productionPreview = false;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    };
+    window.addEventListener("keydown", onPreviewKey, { capture: true });
+    return () => window.removeEventListener("keydown", onPreviewKey, { capture: true });
   });
 
   $effect(() => {
@@ -490,6 +507,10 @@
     const d = Number.isFinite(previewVideo.duration) ? previewVideo.duration : selectedClip.duration;
     videoW = previewVideo.videoWidth || probes[selectedClip.path]?.width || videoW;
     videoH = previewVideo.videoHeight || probes[selectedClip.path]?.height || videoH;
+    if (previewVideo.currentTime < selectedClip.inS || previewVideo.currentTime > selectedClip.outS) {
+      previewVideo.currentTime = selectedClip.inS;
+      currentTime = selectedClip.inS;
+    }
     if (d > 0 && Math.abs(d - selectedClip.duration) > 0.01) {
       updateClip(selectedClip.id, { duration: d, outS: Math.min(selectedClip.outS || d, d) });
     }
@@ -520,6 +541,15 @@
       previewVideo.play().catch(() => {});
     } else {
       previewVideo.pause();
+    }
+  }
+
+  function toggleProductionPreview() {
+    if (!selectedClip) return;
+    productionPreview = !productionPreview;
+    exportOptionsOpen = false;
+    if (productionPreview && previewVideo) {
+      previewVideo.currentTime = Math.max(selectedClip.inS, Math.min(currentTime, selectedClip.outS));
     }
   }
 
@@ -937,6 +967,63 @@
     };
   });
 
+  let sourceCrop = $derived.by(() => {
+    if (!selectedClip) return null;
+    const vw = Math.max(1, videoW);
+    const vh = Math.max(1, videoH);
+    const aspect = outPreset.fit === "original" ? vw / vh : outAspect;
+    let cropW = vw;
+    let cropH = cropW / aspect;
+    if (cropH > vh) {
+      cropH = vh;
+      cropW = cropH * aspect;
+    }
+    if (outPreset.fit !== "original") {
+      cropW = Math.min(vw, cropW / selectedClip.zoom);
+      cropH = Math.min(vh, cropH / selectedClip.zoom);
+    }
+    const rangeX = Math.max(0, vw - cropW);
+    const rangeY = Math.max(0, vh - cropH);
+    return {
+      left: rangeX * selectedClip.cropX,
+      top: rangeY * selectedClip.cropY,
+      w: cropW,
+      h: cropH,
+      videoW: vw,
+      videoH: vh,
+    };
+  });
+
+  let productionFrame = $derived.by(() => {
+    if (!selectedClip || !sourceCrop) return null;
+    const boxW = Math.max(1, previewW);
+    const boxH = Math.max(1, previewH);
+    const aspect = sourceCrop.w / sourceCrop.h;
+    let w = boxW;
+    let h = w / aspect;
+    if (h > boxH) {
+      h = boxH;
+      w = h * aspect;
+    }
+    return {
+      left: (boxW - w) / 2,
+      top: (boxH - h) / 2,
+      w,
+      h,
+    };
+  });
+
+  let productionVideoRect = $derived.by(() => {
+    if (!sourceCrop || !productionFrame) return null;
+    const scale = productionFrame.w / sourceCrop.w;
+    return {
+      left: -sourceCrop.left * scale,
+      top: -sourceCrop.top * scale,
+      w: sourceCrop.videoW * scale,
+      h: sourceCrop.videoH * scale,
+    };
+  });
+
   function startCropDrag(e: PointerEvent) {
     if (!selectedClip || !cropRect) return;
     e.preventDefault();
@@ -982,6 +1069,7 @@
   class:sourceCollapsed
   class:inspectorCollapsed
   class:timelineCollapsed
+  class:productionPreviewMode={productionPreview}
   style={`--source-w:${sourceCollapsed ? 0 : sourcePanelW}px; --inspector-w:${inspectorCollapsed ? 0 : inspectorPanelW}px; --timeline-h:${timelineCollapsed ? 0 : timelinePanelH}px;`}
 >
   <aside class="sourcePane">
@@ -1069,6 +1157,9 @@
         <button class="miniBtn" class:on={!inspectorCollapsed} onclick={() => (inspectorCollapsed = !inspectorCollapsed)}>Look</button>
       </div>
       <span class="spacer"></span>
+      <button class="miniBtn" class:on={productionPreview} onclick={toggleProductionPreview} disabled={!selectedClip}>
+        Preview
+      </button>
       <button class="miniBtn" onclick={takeSnapshot} disabled={!selectedClip || snapshotting}>
         {snapshotting ? "Saving" : "Frame"}
       </button>
@@ -1113,20 +1204,52 @@
 
     <div class="preview" bind:this={previewBox} onwheel={onCropWheel}>
       {#if selectedClip}
-        <!-- svelte-ignore a11y_media_has_caption -->
-        <video
-          bind:this={previewVideo}
-          src={selectedClip.src}
-          style:filter={previewFilter}
-          onloadedmetadata={onMeta}
-          ontimeupdate={onTime}
-          onerror={onPreviewError}
-          onclick={togglePlay}
-        ></video>
+        {#if productionPreview && productionFrame && productionVideoRect}
+          <div
+            class="productionFrame"
+            style="left:{productionFrame.left}px; top:{productionFrame.top}px; width:{productionFrame.w}px; height:{productionFrame.h}px"
+          >
+            <!-- svelte-ignore a11y_media_has_caption -->
+            <video
+              bind:this={previewVideo}
+              src={selectedClip.src}
+              class="productionVideo"
+              style="left:{productionVideoRect.left}px; top:{productionVideoRect.top}px; width:{productionVideoRect.w}px; height:{productionVideoRect.h}px; filter:{previewFilter}"
+              onloadedmetadata={onMeta}
+              ontimeupdate={onTime}
+              onerror={onPreviewError}
+              onclick={togglePlay}
+            ></video>
+          </div>
+          <div class="productionControls">
+            <button class="play" onclick={togglePlay}>{previewVideo?.paused === false ? "Pause" : "Play"}</button>
+            <span class="time">{fmt(currentTime)} / {fmt(selectedClip.duration)}</span>
+            <input
+              type="range"
+              min={selectedClip.inS}
+              max={selectedClip.outS}
+              step="0.01"
+              value={currentTime}
+              oninput={(e) => seek(Number((e.currentTarget as HTMLInputElement).value))}
+            />
+            <button class="miniBtn" onclick={() => (productionPreview = false)}>Exit</button>
+          </div>
+        {:else}
+          <!-- svelte-ignore a11y_media_has_caption -->
+          <video
+            bind:this={previewVideo}
+            src={selectedClip.src}
+            style:filter={previewFilter}
+            onloadedmetadata={onMeta}
+            ontimeupdate={onTime}
+            onerror={onPreviewError}
+            onclick={togglePlay}
+          ></video>
+        {/if}
         {#if previewPreparing}
           <div class="previewBusy">Preparing preview</div>
         {/if}
-        {#if cropRect}
+        {#if cropRect && !productionPreview}
           <button
             class="cropFrame"
             style="left:{cropRect.left}px; top:{cropRect.top}px; width:{cropRect.w}px; height:{cropRect.h}px"
@@ -1335,6 +1458,13 @@
   .sourceCollapsed.inspectorCollapsed {
     grid-template-columns: 0 6px minmax(420px, 1fr) 6px 0;
   }
+  .productionPreviewMode,
+  .productionPreviewMode.sourceCollapsed,
+  .productionPreviewMode.inspectorCollapsed,
+  .productionPreviewMode.sourceCollapsed.inspectorCollapsed {
+    grid-template-columns: 0 0 minmax(0, 1fr) 0 0;
+    background: #000;
+  }
   .sourcePane,
   .inspector {
     min-width: 0;
@@ -1367,6 +1497,11 @@
   .panelSplitter:hover,
   .panelSplitter:active {
     background: color-mix(in srgb, var(--accent) 58%, var(--border));
+  }
+  .productionPreviewMode .sourcePane,
+  .productionPreviewMode .panelSplitter,
+  .productionPreviewMode .inspector {
+    display: none;
   }
   .sourceHead,
   .editTop,
@@ -1548,6 +1683,16 @@
     display: grid;
     grid-template-rows: auto minmax(180px, 1fr) auto 6px var(--timeline-h, 260px);
   }
+  .productionPreviewMode .workPane {
+    grid-column: 3;
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .productionPreviewMode .editTop,
+  .productionPreviewMode .transport,
+  .productionPreviewMode .timelineResize,
+  .productionPreviewMode .timeline {
+    display: none;
+  }
   .editTop {
     overflow: hidden;
   }
@@ -1644,6 +1789,41 @@
     width: 100%;
     height: 100%;
     object-fit: contain;
+  }
+  .productionPreviewMode .preview {
+    grid-row: 1;
+    background: #000;
+  }
+  .productionFrame {
+    position: absolute;
+    overflow: hidden;
+    background: #000;
+    box-shadow: 0 18px 70px rgba(0, 0, 0, 0.5);
+  }
+  .preview video.productionVideo {
+    position: absolute;
+    max-width: none;
+    max-height: none;
+    object-fit: fill;
+  }
+  .productionControls {
+    position: absolute;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: min(760px, calc(100% - 48px));
+    padding: 9px 10px;
+    border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--bg-panel) 84%, transparent);
+    box-shadow: var(--shadow);
+  }
+  .productionControls input {
+    flex: 1;
+    accent-color: var(--accent);
   }
   .previewBusy {
     position: absolute;
