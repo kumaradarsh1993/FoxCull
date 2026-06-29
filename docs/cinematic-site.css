@@ -673,10 +673,11 @@ h1 {
   .stage-body { min-height: 420px; }
   .download-grid { grid-template-columns: 1fr; }
   .story-demo {
-    position: relative;
-    top: auto;
+    top: 82px;
+    z-index: 8;
     min-height: auto;
   }
+  .demo-shell { min-height: auto; }
 }
 
 @media (max-width: 620px) {
@@ -716,15 +717,21 @@ h1 {
   .surface-grid { grid-template-columns: repeat(2, 1fr); }
   .surface-tile { min-height: 74px; }
   .story-flow { gap: 24px; }
-  .demo-shell { min-height: auto; border-radius: 10px; }
-  .demo-screen { padding: 16px; }
-  .demo-visual {
-    min-height: auto;
-    grid-template-columns: 1fr;
-  }
+  .story-demo { top: 69px; }
+  .demo-shell { min-height: auto; border-radius: 10px; box-shadow: 0 16px 44px rgba(17, 19, 24, 0.12); }
+  .demo-toolbar { min-height: 40px; padding: 0 12px; }
+  .demo-screen { display: block; padding: 14px 16px; }
+  .demo-visual { display: none; }
   .demo-cell { min-height: 58px; }
   .demo-result strong { font-size: 22px; }
+  .demo-copy {
+    border-left-width: 3px;
+    padding-left: 12px;
+  }
   .demo-copy h3 { font-size: 23px; }
+  .demo-copy p { display: none; }
+  .demo-footer { min-height: 28px; padding: 0 12px; }
+  .demo-dots { display: none; }
   .story-head h2,
   .download-section h2,
   .setup-section h2 { font-size: 34px; }
