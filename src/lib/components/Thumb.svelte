@@ -12,6 +12,11 @@
 
   let { item, size = 320 }: { item: MediaItem; size?: number } = $props();
 
+  const SCRUB_BUILD_DELAY_MS = 140;
+
+  let thumbEl = $state<HTMLDivElement | null>(null);
+  let thumbW = $state(1);
+  let thumbH = $state(1);
   let src = $state<string | null>(null);
   let failed = $state(false);
   let loaded = $state(false); // drives the fade-in once the bitmap is painted
@@ -20,6 +25,26 @@
   let scrubTimer: ReturnType<typeof setTimeout> | null = null;
 
   let isVideo = $derived(item.kind === "video");
+  let scrubBox = $derived.by(() => {
+    const aspect = strip?.tile_w && strip.tile_h ? strip.tile_w / strip.tile_h : 16 / 9;
+    const boxAspect = thumbW / thumbH;
+    if (aspect >= boxAspect) return { w: thumbW, h: thumbW / aspect };
+    return { w: thumbH * aspect, h: thumbH };
+  });
+
+  $effect(() => {
+    const el = thumbEl;
+    if (!el) return;
+    const measure = () => {
+      const rect = el.getBoundingClientRect();
+      thumbW = Math.max(1, rect.width);
+      thumbH = Math.max(1, rect.height);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
 
   // Images/RAW -> cached orientation-baked thumbnail. Videos -> a real poster
   // frame extracted by the bundled ffmpeg. Optional Live Scrub is separate and
@@ -83,7 +108,7 @@
       loadVideoScrubstrip(path).then((s) => {
         if (item.path === path && settings.s.liveScrub && s) strip = s;
       });
-    }, 60);
+    }, SCRUB_BUILD_DELAY_MS);
   }
 
   function leaveThumb() {
@@ -97,7 +122,7 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="thumb" onpointerenter={enterThumb} onpointermove={updateScrub} onpointerleave={leaveThumb}>
+<div class="thumb" bind:this={thumbEl} onpointerenter={enterThumb} onpointermove={updateScrub} onpointerleave={leaveThumb}>
   {#if src}
     <img
       class="media"
@@ -112,7 +137,7 @@
       {@const cell = framePos(scrub)}
       <div
         class="scrubLayer"
-        style="background-image:url('{strip.src}'); background-size:{strip.cols * 100}% {strip.rows * 100}%; background-position:{strip.cols <= 1 ? 0 : (cell.x / (strip.cols - 1)) * 100}% {strip.rows <= 1 ? 0 : (cell.y / (strip.rows - 1)) * 100}%"
+        style="width:{scrubBox.w}px; height:{scrubBox.h}px; background-image:url('{strip.src}'); background-size:{strip.cols * 100}% {strip.rows * 100}%; background-position:{strip.cols <= 1 ? 0 : (cell.x / (strip.cols - 1)) * 100}% {strip.rows <= 1 ? 0 : (cell.y / (strip.rows - 1)) * 100}%"
       ></div>
     {/if}
     {#if isVideo && settings.s.liveScrub && scrub != null}
@@ -187,8 +212,10 @@
   .ph.vid .vext { font-size: 10px; font-weight: 700; color: var(--text-dim); letter-spacing: 0.5px; }
   .scrubLayer {
     position: absolute;
-    inset: 0;
+    top: 50%;
+    left: 50%;
     z-index: 1;
+    transform: translate(-50%, -50%);
     background-repeat: no-repeat;
     background-color: #050505;
   }

@@ -27,7 +27,9 @@
     refreshKey?: number;
   } = $props();
 
-  type PresetId = "original" | "landscape" | "square" | "reels";
+  type PresetId = "original" | "landscape" | "square" | "reels" | "mobile";
+  type ExportTarget = "instagram_reels" | "instagram_square" | "instagram_landscape" | "whatsapp" | "archive";
+  type LookPresetId = "neutral" | "drone" | "osmo" | "phone" | "sunset" | "lowlight";
   type Encoder = "auto" | "x264" | "nvenc";
   type Quality = "best" | "high" | "standard" | "small";
   type SourceView = "details" | "list" | "thumbs";
@@ -74,6 +76,24 @@
     landscape: { label: "16:9", detail: "1920x1080", w: 1920, h: 1080, fit: "crop" },
     square: { label: "1:1", detail: "1080x1080", w: 1080, h: 1080, fit: "crop" },
     reels: { label: "9:16", detail: "Reels/Stories", w: 1080, h: 1920, fit: "crop" },
+    mobile: { label: "Mobile", detail: "720x1280", w: 720, h: 1280, fit: "crop" },
+  };
+
+  const EXPORT_TARGETS: Record<ExportTarget, { label: string; preset: PresetId; quality: Quality; detail: string }> = {
+    instagram_reels: { label: "Instagram Reels/Stories", preset: "reels", quality: "high", detail: "1080x1920 H.264, source FPS" },
+    instagram_square: { label: "Instagram square", preset: "square", quality: "high", detail: "1080x1080 H.264" },
+    instagram_landscape: { label: "Instagram landscape", preset: "landscape", quality: "high", detail: "1920x1080 H.264" },
+    whatsapp: { label: "WhatsApp/mobile", preset: "mobile", quality: "standard", detail: "Smaller 720x1280 file" },
+    archive: { label: "Archive/original", preset: "original", quality: "best", detail: "Stream-copy when possible" },
+  };
+
+  const LOOK_PRESETS: Record<LookPresetId, { label: string; hint: string; values: EditAdjustments }> = {
+    neutral: { label: "Neutral", hint: "Reset", values: { brightness: 0, contrast: 1, saturation: 1, warmth: 0, sharpen: 0 } },
+    drone: { label: "Drone pop", hint: "Mavic Mini", values: { brightness: 0.015, contrast: 1.11, saturation: 1.16, warmth: 0.015, sharpen: 0.18 } },
+    osmo: { label: "Osmo clean", hint: "Pocket 3", values: { brightness: 0.005, contrast: 1.06, saturation: 1.08, warmth: 0.02, sharpen: 0.12 } },
+    phone: { label: "Phone natural", hint: "Samsung/iPhone", values: { brightness: 0, contrast: 1.04, saturation: 1.04, warmth: 0, sharpen: 0.08 } },
+    sunset: { label: "Warm travel", hint: "Golden hour", values: { brightness: 0.01, contrast: 1.08, saturation: 1.12, warmth: 0.08, sharpen: 0.1 } },
+    lowlight: { label: "Low light", hint: "Night clips", values: { brightness: 0.035, contrast: 0.95, saturation: 1.03, warmth: 0.02, sharpen: 0.05 } },
   };
 
   const VIDEO_LANES = [0, 1, 2];
@@ -93,6 +113,7 @@
   let selectedId = $state<string | null>(null);
   let selectedAudioId = $state<string | null>(null);
   let preset = $state<PresetId>("reels");
+  let exportTarget = $state<ExportTarget>("instagram_reels");
   let encoder = $state<Encoder>("auto");
   let quality = $state<Quality>("high");
   let preserveSourceAudio = $state(true);
@@ -114,6 +135,13 @@
   let sourceFilter = $state<SourceFilter>("all");
   let probes = $state<Record<string, MediaProbe>>({});
   let timelineScale = $state(26);
+  let sourcePanelW = $state(360);
+  let inspectorPanelW = $state(320);
+  let timelinePanelH = $state(260);
+  let sourceCollapsed = $state(false);
+  let inspectorCollapsed = $state(false);
+  let timelineCollapsed = $state(false);
+  let lookCollapsed = $state(false);
   let dragSourcePath = $state<string | null>(null);
   let seededKey = $state("");
   let seeding = $state(false);
@@ -511,11 +539,90 @@
     adjustments = { brightness: 0, contrast: 1, saturation: 1, warmth: 0, sharpen: 0 };
   }
 
+  function applyLook(id: LookPresetId) {
+    adjustments = { ...LOOK_PRESETS[id].values };
+  }
+
+  function applyExportTarget(target: ExportTarget) {
+    exportTarget = target;
+    const targetDef = EXPORT_TARGETS[target];
+    preset = targetDef.preset;
+    quality = targetDef.quality;
+    if (target === "archive") {
+      preserveSourceAudio = true;
+    }
+  }
+
+  function setPreset(id: PresetId) {
+    preset = id;
+    const match = (Object.entries(EXPORT_TARGETS) as [ExportTarget, (typeof EXPORT_TARGETS)[ExportTarget]][]).find(
+      ([, target]) => target.preset === id,
+    );
+    if (match) {
+      exportTarget = match[0];
+    }
+  }
+
+  function clampPanel(n: number, min: number, max: number) {
+    return Math.max(min, Math.min(max, n));
+  }
+
+  function startSourceResize(e: PointerEvent) {
+    e.preventDefault();
+    sourceCollapsed = false;
+    const startX = e.clientX;
+    const startW = sourcePanelW;
+    const move = (ev: PointerEvent) => {
+      sourcePanelW = clampPanel(startW + ev.clientX - startX, 260, 560);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  function startInspectorResize(e: PointerEvent) {
+    e.preventDefault();
+    inspectorCollapsed = false;
+    const startX = e.clientX;
+    const startW = inspectorPanelW;
+    const move = (ev: PointerEvent) => {
+      inspectorPanelW = clampPanel(startW - (ev.clientX - startX), 240, 480);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  function startTimelineResize(e: PointerEvent) {
+    e.preventDefault();
+    timelineCollapsed = false;
+    const startY = e.clientY;
+    const startH = timelinePanelH;
+    const move = (ev: PointerEvent) => {
+      timelinePanelH = clampPanel(startH - (ev.clientY - startY), 120, 460);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
   function exportName() {
     const first = orderedClips[0]?.name ?? "clip";
     const stem = first.replace(/\.[^.]+$/, "");
-    if (preset === "reels") return `${stem}_reel`;
-    if (preset === "original") return `${stem}_edit`;
+    if (exportTarget === "instagram_reels") return `${stem}_reel`;
+    if (exportTarget === "instagram_square") return `${stem}_square`;
+    if (exportTarget === "instagram_landscape") return `${stem}_landscape`;
+    if (exportTarget === "whatsapp") return `${stem}_mobile`;
+    if (exportTarget === "archive") return `${stem}_edit`;
     return `${stem}_${preset}`;
   }
 
@@ -870,7 +977,13 @@
   }
 </script>
 
-<div class="editShell">
+<div
+  class="editShell"
+  class:sourceCollapsed
+  class:inspectorCollapsed
+  class:timelineCollapsed
+  style={`--source-w:${sourceCollapsed ? 0 : sourcePanelW}px; --inspector-w:${inspectorCollapsed ? 0 : inspectorPanelW}px; --timeline-h:${timelineCollapsed ? 0 : timelinePanelH}px;`}
+>
   <aside class="sourcePane">
     <div class="sourceHead">
       <div>
@@ -878,6 +991,7 @@
         <span>{sources.filter((s) => s.kind === "video").length} video · {sources.filter((s) => s.kind === "audio").length} audio</span>
       </div>
       <div class="sourceTools">
+        <button class="miniIcon" onclick={() => (sourceCollapsed = true)} title="Collapse source" aria-label="Collapse source">|&lt;</button>
         <div class="seg">
           <button class="chip" class:on={sourceFilter === "all"} onclick={() => (sourceFilter = "all")}>All</button>
           <button class="chip" class:on={sourceFilter === "video"} onclick={() => (sourceFilter = "video")}>Video</button>
@@ -935,17 +1049,25 @@
     </div>
   </aside>
 
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="panelSplitter sourceSplitter" onpointerdown={startSourceResize} role="separator" title="Resize source"></div>
+
   <section class="workPane">
     <div class="editTop">
       <div class="presetGroup">
         {#each Object.entries(PRESETS) as [id, p]}
-          <button class:on={preset === id} onclick={() => (preset = id as PresetId)}>
+          <button class:on={preset === id} onclick={() => setPreset(id as PresetId)}>
             <strong>{p.label}</strong>
             <span>{p.detail}</span>
           </button>
         {/each}
       </div>
       <span class="status" class:warn={needsRender}>{needsRender ? "Render required" : "Stream copy ready"}</span>
+      <div class="layoutTools">
+        <button class="miniBtn" class:on={!sourceCollapsed} onclick={() => (sourceCollapsed = !sourceCollapsed)}>Source</button>
+        <button class="miniBtn" class:on={!timelineCollapsed} onclick={() => (timelineCollapsed = !timelineCollapsed)}>Timeline</button>
+        <button class="miniBtn" class:on={!inspectorCollapsed} onclick={() => (inspectorCollapsed = !inspectorCollapsed)}>Look</button>
+      </div>
       <span class="spacer"></span>
       <button class="miniBtn" onclick={takeSnapshot} disabled={!selectedClip || snapshotting}>
         {snapshotting ? "Saving" : "Frame"}
@@ -956,6 +1078,14 @@
         </button>
         {#if exportOptionsOpen}
           <div class="exportMenu">
+            <label>Target
+              <select bind:value={exportTarget} onchange={() => applyExportTarget(exportTarget)}>
+                {#each Object.entries(EXPORT_TARGETS) as [id, target]}
+                  <option value={id}>{target.label}</option>
+                {/each}
+              </select>
+            </label>
+            <p class="optionHint">{EXPORT_TARGETS[exportTarget].detail}</p>
             <label>Encoder
               <select bind:value={encoder}>
                 <option value="auto">Auto</option>
@@ -1026,6 +1156,9 @@
       />
     </div>
 
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="timelineResize" onpointerdown={startTimelineResize} role="separator" title="Resize timeline"></div>
+
     <section class="timeline" aria-label="Edit timeline">
       <div class="timelineHead">
         <strong>Timeline</strong>
@@ -1033,6 +1166,7 @@
         <label class="scale">Zoom <input type="range" min="12" max="60" bind:value={timelineScale} /></label>
         <span class="snap">Snap</span>
         <span class="spacer"></span>
+        <button class="ghost" onclick={() => (timelineCollapsed = true)}>Collapse</button>
         <button class="ghost" onclick={() => { clips = []; audioClips = []; }} disabled={!clips.length && !audioClips.length}>Clear</button>
       </div>
       <div class="timelineViewport">
@@ -1093,6 +1227,9 @@
     </section>
   </section>
 
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="panelSplitter inspectorSplitter" onpointerdown={startInspectorResize} role="separator" title="Resize look panel"></div>
+
   <aside class="inspector">
     <div class="block segmentBlock">
       <h3>Segment</h3>
@@ -1120,14 +1257,27 @@
       {/if}
     </div>
 
-    <div class="block">
-      <h3>Look</h3>
-      <label>Brightness <input type="range" min="-0.25" max="0.25" step="0.005" bind:value={adjustments.brightness} /></label>
-      <label>Contrast <input type="range" min="0.6" max="1.6" step="0.01" bind:value={adjustments.contrast} /></label>
-      <label>Saturation <input type="range" min="0" max="2" step="0.01" bind:value={adjustments.saturation} /></label>
-      <label>Warmth <input type="range" min="-0.2" max="0.2" step="0.005" bind:value={adjustments.warmth} /></label>
-      <label>Sharpen <input type="range" min="0" max="1" step="0.01" bind:value={adjustments.sharpen} /></label>
-      <button class="miniBtn" onclick={resetColor}>Reset</button>
+    <div class="block lookBlock">
+      <button class="blockHead" onclick={() => (lookCollapsed = !lookCollapsed)}>
+        <h3>Look</h3>
+        <span>{lookCollapsed ? "Show" : "Hide"}</span>
+      </button>
+      {#if !lookCollapsed}
+        <div class="lookPresets">
+          {#each Object.entries(LOOK_PRESETS) as [id, look]}
+            <button class="lookPreset" onclick={() => applyLook(id as LookPresetId)} title={look.hint}>
+              <strong>{look.label}</strong>
+              <span>{look.hint}</span>
+            </button>
+          {/each}
+        </div>
+        <label>Brightness <input type="range" min="-0.25" max="0.25" step="0.005" bind:value={adjustments.brightness} /></label>
+        <label>Contrast <input type="range" min="0.6" max="1.6" step="0.01" bind:value={adjustments.contrast} /></label>
+        <label>Saturation <input type="range" min="0" max="2" step="0.01" bind:value={adjustments.saturation} /></label>
+        <label>Warmth <input type="range" min="-0.2" max="0.2" step="0.005" bind:value={adjustments.warmth} /></label>
+        <label>Sharpen <input type="range" min="0" max="1" step="0.01" bind:value={adjustments.sharpen} /></label>
+        <button class="miniBtn" onclick={resetColor}>Reset</button>
+      {/if}
     </div>
 
     {#if exportNote}<p class="note sideNote">{exportNote}</p>{/if}
@@ -1169,12 +1319,21 @@
     width: 100%;
     height: 100%;
     display: grid;
-    grid-template-columns: minmax(300px, 25%) minmax(520px, 1fr) minmax(250px, 23%);
+    grid-template-columns: var(--source-w, 360px) 6px minmax(420px, 1fr) 6px var(--inspector-w, 320px);
     background: var(--bg);
     color: var(--text);
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+  .sourceCollapsed {
+    grid-template-columns: 0 6px minmax(420px, 1fr) 6px var(--inspector-w, 320px);
+  }
+  .inspectorCollapsed {
+    grid-template-columns: var(--source-w, 360px) 6px minmax(420px, 1fr) 6px 0;
+  }
+  .sourceCollapsed.inspectorCollapsed {
+    grid-template-columns: 0 6px minmax(420px, 1fr) 6px 0;
   }
   .sourcePane,
   .inspector {
@@ -1189,6 +1348,25 @@
     border-right: 0;
     border-left: 1px solid var(--border);
     overflow-y: auto;
+  }
+  .sourceCollapsed .sourcePane,
+  .inspectorCollapsed .inspector {
+    border: 0;
+    overflow: hidden;
+  }
+  .sourceCollapsed .sourcePane > *,
+  .inspectorCollapsed .inspector > * {
+    display: none;
+  }
+  .panelSplitter {
+    min-width: 6px;
+    cursor: col-resize;
+    background: color-mix(in srgb, var(--border) 35%, transparent);
+    transition: background 0.12s ease;
+  }
+  .panelSplitter:hover,
+  .panelSplitter:active {
+    background: color-mix(in srgb, var(--accent) 58%, var(--border));
   }
   .sourceHead,
   .editTop,
@@ -1216,6 +1394,20 @@
     flex-direction: column;
     align-items: flex-end;
     gap: 5px;
+  }
+  .miniIcon {
+    width: 28px;
+    height: 24px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-elev);
+    color: var(--text-dim);
+    font-size: 11px;
+    line-height: 1;
+  }
+  .miniIcon:hover {
+    background: var(--bg-hover);
+    color: var(--text);
   }
   .sourceHead span,
   .timelineHead span,
@@ -1354,10 +1546,19 @@
     min-width: 0;
     min-height: 0;
     display: grid;
-    grid-template-rows: auto minmax(240px, 1fr) auto 260px;
+    grid-template-rows: auto minmax(180px, 1fr) auto 6px var(--timeline-h, 260px);
   }
   .editTop {
     overflow: hidden;
+  }
+  .timelineCollapsed .workPane {
+    grid-template-rows: auto minmax(180px, 1fr) auto 6px 0;
+  }
+  .layoutTools {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
   }
   .presetGroup {
     display: flex;
@@ -1411,7 +1612,7 @@
     right: 0;
     top: 34px;
     z-index: 40;
-    width: 230px;
+    width: 280px;
     padding: 10px;
     display: flex;
     flex-direction: column;
@@ -1420,6 +1621,11 @@
     border: 1px solid var(--border);
     border-radius: 9px;
     box-shadow: var(--shadow);
+  }
+  .optionHint {
+    margin: -4px 0 0;
+    color: var(--text-faint);
+    font-size: 11.5px;
   }
   .spacer {
     flex: 1 1 auto;
@@ -1495,6 +1701,17 @@
     border-top: 1px solid var(--border);
     background: var(--bg-panel);
   }
+  .timelineResize {
+    min-height: 6px;
+    cursor: row-resize;
+    background: color-mix(in srgb, var(--border) 35%, transparent);
+    border-top: 1px solid var(--border);
+    transition: background 0.12s ease;
+  }
+  .timelineResize:hover,
+  .timelineResize:active {
+    background: color-mix(in srgb, var(--accent) 58%, var(--border));
+  }
   .transport input,
   label input[type="range"],
   .scale input {
@@ -1541,6 +1758,13 @@
     flex-direction: column;
     border-top: 1px solid var(--border);
     background: var(--bg-panel);
+  }
+  .timelineCollapsed .timeline {
+    overflow: hidden;
+    border-top: 0;
+  }
+  .timelineCollapsed .timeline > * {
+    display: none;
   }
   .timelineHead {
     min-height: 38px;
@@ -1590,6 +1814,12 @@
     margin-left: 44px;
     border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
     background: color-mix(in srgb, var(--viewport-bg) 70%, transparent);
+  }
+  .videoTrack {
+    background: color-mix(in srgb, var(--accent) 6%, var(--viewport-bg));
+  }
+  .audioTrack {
+    background: color-mix(in srgb, var(--pick) 7%, var(--viewport-bg));
   }
   .audioTrack.firstAudio {
     margin-top: 10px;
@@ -1673,6 +1903,46 @@
     margin: 0 0 2px;
     font-size: 13px;
   }
+  .blockHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    padding: 0;
+    color: var(--text);
+    background: transparent;
+    text-align: left;
+  }
+  .blockHead span {
+    color: var(--text-faint);
+    font-size: 11.5px;
+  }
+  .lookPresets {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+    gap: 6px;
+  }
+  .lookPreset {
+    min-height: 48px;
+    padding: 7px 8px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--bg-elev);
+    color: var(--text);
+    text-align: left;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .lookPreset:hover {
+    background: var(--bg-hover);
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  }
+  .lookPreset span {
+    color: var(--text-faint);
+    font-size: 11px;
+  }
   .row {
     display: grid;
     grid-template-columns: 72px 1fr;
@@ -1720,9 +1990,13 @@
   }
   @media (max-width: 1180px) {
     .editShell {
-      grid-template-columns: 270px minmax(0, 1fr);
+      grid-template-columns: var(--source-w, 270px) 6px minmax(0, 1fr) 0 0;
     }
-    .inspector {
+    .editShell.sourceCollapsed {
+      grid-template-columns: 0 6px minmax(0, 1fr) 0 0;
+    }
+    .inspector,
+    .inspectorSplitter {
       display: none;
     }
     .presetGroup button {
