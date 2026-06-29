@@ -2,6 +2,7 @@
   import { api } from "$lib/api";
   import { activity } from "$lib/activity.svelte";
   import { loadThumb } from "$lib/thumbnail-loader";
+  import { settings } from "$lib/settings.svelte";
   import type { MediaItem, FilmstripInfo } from "$lib/types";
 
   let { item }: { item: MediaItem | null } = $props();
@@ -75,6 +76,7 @@
 
   $effect(() => {
     const it = item;
+    const liveScrub = settings.s.liveScrub;
     const my = ++epoch;
     failed = false;
     videoErr = false;
@@ -106,14 +108,16 @@
           outS = t[1];
         }
       });
-      // Build/fetch the scrub filmstrip (lazy, cached on the SSD). Failure just
+      // Build/fetch the scrub filmstrip only when Live Scrub is enabled. Failure
       // leaves the timeline as a plain seek bar with no frame preview.
-      api
-        .videoFilmstrip(it.path)
-        .then((f) => {
-          if (my === epoch) strip = f;
-        })
-        .catch(() => {});
+      if (liveScrub) {
+        api
+          .videoFilmstrip(it.path)
+          .then((f) => {
+            if (my === epoch && settings.s.liveScrub) strip = f;
+          })
+          .catch(() => {});
+      }
       api
         .loupeSrc(it.path)
         .then((p) => {

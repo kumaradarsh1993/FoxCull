@@ -11,6 +11,9 @@ import type {
   MoveOutcome,
   EditExportRequest,
   EditExportOutcome,
+  EditSourceItem,
+  MediaProbe,
+  EditSnapshotRequest,
 } from "./types";
 
 export const api = {
@@ -26,6 +29,10 @@ export const api = {
   clearFolderCounts: () => invoke<void>("clear_folder_counts").catch(() => {}),
   listFolderMedia: (dir: string, recursive: boolean) =>
     invoke<MediaItem[]>("list_folder_media", { dir, recursive }),
+  listEditSources: (dir: string, recursive: boolean) =>
+    invoke<EditSourceItem[]>("list_edit_sources", { dir, recursive }),
+  probeMediaInfo: (path: string) =>
+    invoke<MediaProbe>("probe_media_info", { path }),
   thumbnail: (path: string, max: number) =>
     invoke<string>("thumbnail", { path, max }),
   /** Fire-and-forget: pre-warm the whole folder's thumbnails in parallel. */
@@ -39,6 +46,8 @@ export const api = {
   /** Tiled sprite of frames for decode-free scrubbing (built lazily, cached). */
   videoFilmstrip: (path: string) =>
     invoke<FilmstripInfo>("video_filmstrip", { path }),
+  videoScrubstrip: (path: string) =>
+    invoke<FilmstripInfo>("video_scrubstrip", { path }),
   /** Real capture timestamps (EXIF/creation_time), cached; for sort + grouping. */
   captureDates: (dir: string, paths: string[]) =>
     invoke<{ path: string; captured: number }[]>("capture_dates", { dir, paths }),
@@ -60,6 +69,8 @@ export const api = {
     invoke<string>("trim_video", { path, in_s: inS, out_s: outS }),
   editExport: (req: EditExportRequest) =>
     invoke<EditExportOutcome>("edit_export", { req }),
+  editSnapshot: (req: EditSnapshotRequest) =>
+    invoke<string>("edit_snapshot", { req }),
   setRating: (path: string, rating: number) =>
     invoke<void>("set_rating", { path, rating }),
   setLabel: (path: string, label: string | null) =>

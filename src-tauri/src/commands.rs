@@ -235,6 +235,27 @@ pub struct MediaItem {
 }
 
 #[derive(Serialize)]
+pub struct EditSourceItem {
+    pub name: String,
+    pub path: String,
+    pub kind: String,
+    pub ext: String,
+    pub mtime: i64,
+    pub size: u64,
+}
+
+#[derive(Serialize)]
+pub struct MediaProbe {
+    pub duration: f64,
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    pub codec: Option<String>,
+    pub camera: Option<String>,
+    pub captured: Option<i64>,
+}
+
+#[derive(Serialize)]
 pub struct TrashOutcome {
     pub deleted: usize,
     pub failed: Vec<String>,
@@ -339,6 +360,56 @@ fn is_audio_file(path: &Path) -> bool {
         media::ext_lower(path).as_str(),
         "mp3" | "m4a" | "aac" | "wav" | "flac" | "ogg"
     )
+}
+
+fn is_edit_source_file(path: &Path) -> bool {
+    matches!(media::classify(path), Kind::Video) || is_audio_file(path)
+}
+
+fn collect_edit_sources(dir: &Path, recursive: bool, out: &mut Vec<(PathBuf, i64, u64)>) {
+    let rd = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    for entry in rd.flatten() {
+        let ft = match entry.file_type() {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        if ft.is_dir() {
+            let dname = entry.file_name().to_string_lossy().to_string();
+            if !recursive
+                || dname.starts_with('.')
+                || dname.to_ascii_lowercase().starts_with("_foxcull")
+            {
+                continue;
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                const REPARSE: u32 = 0x400;
+                if let Ok(md) = entry.metadata() {
+                    if md.file_attributes() & REPARSE != 0 {
+                        continue;
+                    }
+                }
+            }
+            collect_edit_sources(&entry.path(), true, out);
+        } else if ft.is_file() {
+            let path = entry.path();
+            if is_edit_source_file(&path) {
+                let md = entry.metadata().ok();
+                let mtime = md
+                    .as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let size = md.as_ref().map(|m| m.len()).unwrap_or(0);
+                out.push((path, mtime, size));
+            }
+        }
+    }
 }
 
 fn rel_under(root: &Path, path: &Path) -> String {
@@ -792,6 +863,193 @@ pub fn list_folder_media(
     Ok(items)
 }
 
+/// Edit-mode source browser: videos plus audio tracks from the current folder.
+/// This intentionally stays separate from Library mode so music files do not
+/// become culling items.
+#[tauri::command]
+pub fn list_edit_sources(dir: String, recursive: bool) -> Result<Vec<EditSourceItem>, String> {
+    let p = canonical_dir(Path::new(&dir))?;
+    let mut paths: Vec<(PathBuf, i64, u64)> = Vec::new();
+    collect_edit_sources(&p, recursive, &mut paths);
+    let mut items: Vec<EditSourceItem> = paths
+        .into_iter()
+        .map(|(path, mtime, size)| {
+            let kind = if is_audio_file(&path) { "audio" } else { "video" };
+            EditSourceItem {
+                name: path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                path: path.to_string_lossy().to_string(),
+                kind: kind.into(),
+                ext: media::ext_lower(&path),
+                mtime,
+                size,
+            }
+        })
+        .collect();
+    items.sort_by(|a, b| a.path.to_lowercase().cmp(&b.path.to_lowercase()));
+    Ok(items)
+}
+
+fn parse_duration_token(token: &str) -> Option<f64> {
+    if token.starts_with("N/A") {
+        return None;
+    }
+    let mut parts = token.split(':');
+    let h: f64 = parts.next()?.trim().parse().ok()?;
+    let m: f64 = parts.next()?.trim().parse().ok()?;
+    let s: f64 = parts.next()?.trim().parse().ok()?;
+    let secs = h * 3600.0 + m * 60.0 + s;
+    (secs > 0.0).then_some(secs)
+}
+
+fn parse_banner_duration(err: &str) -> f64 {
+    err.find("Duration:")
+        .and_then(|idx| {
+            err[idx + "Duration:".len()..]
+                .trim_start()
+                .split(',')
+                .next()
+                .and_then(|s| parse_duration_token(s.trim()))
+        })
+        .unwrap_or(0.0)
+}
+
+fn parse_iso_token(s: &str) -> Option<i64> {
+    let token = s.trim().split_whitespace().next()?;
+    if token.len() < 19 {
+        return None;
+    }
+    let num = |a: usize, z: usize| -> Option<i64> { token.get(a..z)?.parse().ok() };
+    let y = num(0, 4)?;
+    let mo = num(5, 7)?;
+    let d = num(8, 10)?;
+    let h = num(11, 13)?;
+    let mi = num(14, 16)?;
+    let se = num(17, 19)?;
+    if y < 1970 || !(1..=12).contains(&mo) {
+        return None;
+    }
+    Some(media::civil_to_unix(y, mo, d, h, mi, se))
+}
+
+fn parse_banner_creation(err: &str) -> Option<i64> {
+    for line in err.lines() {
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("creation_time") {
+            if let Some((_, val)) = line.split_once(':') {
+                if let Some(ts) = parse_iso_token(val) {
+                    return Some(ts);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn parse_video_stream(err: &str) -> (u32, u32, f64, Option<String>) {
+    let mut width = 0u32;
+    let mut height = 0u32;
+    let mut fps = 0.0f64;
+    let mut codec = None;
+    for line in err.lines() {
+        if !line.contains("Video:") {
+            continue;
+        }
+        if let Some(after) = line.split("Video:").nth(1) {
+            codec = after
+                .trim()
+                .split(|c: char| c == ',' || c.is_whitespace())
+                .next()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_ascii_uppercase());
+            for raw in after.split(|c: char| c == ',' || c.is_whitespace()) {
+                let token = raw.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != 'x');
+                if let Some((w, h)) = token.split_once('x') {
+                    if let (Ok(ww), Ok(hh)) = (w.parse::<u32>(), h.parse::<u32>()) {
+                        if ww >= 120 && hh >= 120 {
+                            width = ww;
+                            height = hh;
+                            break;
+                        }
+                    }
+                }
+            }
+            if let Some(idx) = after.find(" fps") {
+                let before = after[..idx].trim_end();
+                if let Some(tok) = before.split_whitespace().last() {
+                    fps = tok.parse::<f64>().unwrap_or(0.0);
+                }
+            }
+            break;
+        }
+    }
+    (width, height, fps, codec)
+}
+
+fn guess_camera(path: &Path, err: &str) -> Option<String> {
+    for key in ["com.apple.quicktime.model", "model", "handler_name"] {
+        if let Some(idx) = err.to_ascii_lowercase().find(key) {
+            let after = &err[idx..];
+            if let Some((_, val)) = after.split_once(':') {
+                let cleaned = val.trim().lines().next().unwrap_or("").trim();
+                if !cleaned.is_empty() && cleaned.len() <= 64 {
+                    return Some(cleaned.to_string());
+                }
+            }
+        }
+    }
+    let name = path.file_name()?.to_string_lossy().to_ascii_uppercase();
+    if name.starts_with("DJI_") || name.starts_with("DJI-") {
+        Some("DJI".into())
+    } else if name.starts_with("VID_") || name.starts_with("PXL_") {
+        Some("Phone".into())
+    } else {
+        None
+    }
+}
+
+#[tauri::command]
+pub async fn probe_media_info(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<MediaProbe, String> {
+    let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg not available")?;
+    let src = canonical_file(Path::new(&path))?;
+    if !matches!(media::classify(&src), Kind::Video) && !is_audio_file(&src) {
+        return Err("not an editable media file".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = Command::new(ffmpeg);
+        cmd.arg("-i")
+            .arg(&src)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let out = cmd.output().map_err(|e| e.to_string())?;
+        let err = String::from_utf8_lossy(&out.stderr);
+        let (width, height, fps, codec) = parse_video_stream(&err);
+        Ok(MediaProbe {
+            duration: parse_banner_duration(&err),
+            width,
+            height,
+            fps,
+            codec,
+            camera: guess_camera(&src, &err),
+            captured: parse_banner_creation(&err),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Frontend-side timing/diagnostic events, funneled into the same logfile.
 #[tauri::command]
 pub fn log_event(msg: String) {
@@ -912,6 +1170,42 @@ pub async fn video_filmstrip(
                 tile_h: fs.tile_h,
                 duration: fs.duration,
             }
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Lighter sprite for grid/source-thumbnail hover scrubbing. This is separate
+/// from the denser Focus filmstrip so Live Scrub can stay responsive on older
+/// laptops.
+#[tauri::command]
+pub async fn video_scrubstrip(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<FilmstripInfo, String> {
+    let cache_dir = state.cache_dir.lock().clone();
+    let ffmpeg = state.ffmpeg.clone();
+    let src = PathBuf::from(&path);
+    tauri::async_runtime::spawn_blocking(move || {
+        let cached = video::scrubstrip_path(&cache_dir, &src).exists();
+        let act_id = format!("scrub:{}", src.to_string_lossy());
+        if !cached {
+            emit_activity(&app, &act_id, "Building quick scrub preview", 0, 0, "running");
+        }
+        let res = video::ensure_scrubstrip(&cache_dir, ffmpeg.as_deref(), &src);
+        if !cached {
+            emit_activity(&app, &act_id, "Building quick scrub preview", 1, 1, "done");
+        }
+        res.map(|(sprite, fs)| FilmstripInfo {
+            src: sprite.to_string_lossy().to_string(),
+            cols: fs.cols,
+            rows: fs.rows,
+            count: fs.count,
+            tile_w: fs.tile_w,
+            tile_h: fs.tile_h,
+            duration: fs.duration,
         })
     })
     .await
@@ -1385,6 +1679,20 @@ pub struct EditExportRequest {
     pub basename: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct EditSnapshotRequest {
+    pub path: String,
+    pub time_s: f64,
+    pub output_w: u32,
+    pub output_h: u32,
+    pub fit: String,
+    pub crop_x: f64,
+    pub crop_y: f64,
+    pub zoom: f64,
+    pub adjustments: EditAdjustments,
+    pub basename: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct EditExportOutcome {
     pub path: String,
@@ -1625,6 +1933,87 @@ fn build_video_filter(req: &EditExportRequest) -> Result<String, String> {
     Ok(chains.join(";"))
 }
 
+fn build_single_frame_filter(
+    output_w: u32,
+    output_h: u32,
+    fit: &str,
+    crop_x: f64,
+    crop_y: f64,
+    zoom: f64,
+    adjustments: &EditAdjustments,
+) -> String {
+    let mut filters = Vec::new();
+    let crop = fit != "original" && output_w > 0 && output_h > 0;
+    if crop {
+        let aspect = output_w as f64 / output_h as f64;
+        let x = crop_x.clamp(0.0, 1.0);
+        let y = crop_y.clamp(0.0, 1.0);
+        let zoom = zoom.clamp(1.0, 4.0);
+        filters.push(format!(
+            "crop=w='trunc(min(iw,ih*{aspect:.8})/{zoom:.6}/2)*2':h='trunc(min(ih,iw/{aspect:.8})/{zoom:.6}/2)*2':x='min(max((iw-ow)*{x:.6},0),iw-ow)':y='min(max((ih-oh)*{y:.6},0),ih-oh)'"
+        ));
+        filters.push(format!("scale={output_w}:{output_h}:flags=lanczos"));
+    }
+    if !neutral_adjustments(adjustments) {
+        filters.push(format!(
+            "eq=brightness={:.4}:contrast={:.4}:saturation={:.4}",
+            adjustments.brightness.clamp(-0.4, 0.4),
+            adjustments.contrast.clamp(0.2, 3.0),
+            adjustments.saturation.clamp(0.0, 3.0)
+        ));
+        if adjustments.warmth.abs() >= 0.001 {
+            let w = adjustments.warmth.clamp(-0.25, 0.25);
+            filters.push(format!("colorbalance=rs={w:.4}:bs={:.4}", -w));
+        }
+        if adjustments.sharpen > 0.001 {
+            filters.push(format!("unsharp=5:5:{:.3}", adjustments.sharpen.clamp(0.0, 1.5)));
+        }
+    }
+    filters.push("setsar=1".into());
+    filters.join(",")
+}
+
+fn snapshot_output_path(req: &EditSnapshotRequest, src: &Path) -> PathBuf {
+    let stem = req
+        .basename
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(clean_name)
+        .or_else(|| {
+            src.file_stem()
+                .map(|s| format!("{}_frame", clean_name(&s.to_string_lossy())))
+        })
+        .unwrap_or_else(|| "foxcull_frame".into());
+    let dest_dir = src.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    uniquify(dest_dir.join(format!("{stem}.jpg")))
+}
+
+fn export_snapshot(ffmpeg: &Path, req: &EditSnapshotRequest, src: &Path, dest: &Path) -> Result<(), String> {
+    let mut cmd = Command::new(ffmpeg);
+    let vf = build_single_frame_filter(
+        req.output_w,
+        req.output_h,
+        &req.fit,
+        req.crop_x,
+        req.crop_y,
+        req.zoom,
+        &req.adjustments,
+    );
+    cmd.args(["-v", "error", "-ss"])
+        .arg(format!("{:.6}", req.time_s.max(0.0)))
+        .arg("-i")
+        .arg(src);
+    if !vf.is_empty() {
+        cmd.args(["-vf", &vf]);
+    }
+    cmd.args(["-frames:v", "1", "-q:v", "2", "-y"])
+        .arg(dest)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    run_ffmpeg(cmd)
+}
+
 fn export_reencoded(
     ffmpeg: &Path,
     req: &EditExportRequest,
@@ -1741,6 +2130,28 @@ pub async fn edit_export(
                 reencoded: false,
             })
         }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn edit_snapshot(
+    state: State<'_, AppState>,
+    mut req: EditSnapshotRequest,
+) -> Result<String, String> {
+    let root = canonical_active_root(&state.root.lock().clone())?;
+    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
+    let src = validate_active_media_file(&root, lib.as_ref(), &req.path)?;
+    if !matches!(media::classify(&src), Kind::Video) {
+        return Err("not a video file".into());
+    }
+    req.path = src.to_string_lossy().to_string();
+    let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg not available")?;
+    let dest = snapshot_output_path(&req, &src);
+    tauri::async_runtime::spawn_blocking(move || {
+        export_snapshot(&ffmpeg, &req, &src, &dest)?;
+        Ok(dest.to_string_lossy().to_string())
     })
     .await
     .map_err(|e| e.to_string())?

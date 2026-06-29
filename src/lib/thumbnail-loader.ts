@@ -24,12 +24,15 @@
 //  - generation token abandons queued work for the old folder on a switch.
 
 import { api } from "./api";
+import type { FilmstripInfo } from "./types";
 
 const MAX_INFLIGHT = 6; // parallel decodes — enough to fill a viewport, gentle on the USB SSD
 const MEMO_CAP = 4000; // bound the URL cache so a long session can't grow it unbounded
 
 const memo = new Map<string, string>(); // key -> asset url (LRU, bounded)
 const pending = new Map<string, Promise<string | null>>(); // key -> in-flight promise
+const stripMemo = new Map<string, FilmstripInfo>(); // key -> filmstrip geometry + asset url
+const stripPending = new Map<string, Promise<FilmstripInfo | null>>();
 type QItem = { key: string; run: () => void };
 let queue: QItem[] = []; // served LIFO (newest request = current viewport first)
 let inflight = 0;
@@ -51,6 +54,22 @@ function memoSet(key: string, url: string) {
   }
 }
 
+function stripMemoGet(key: string): FilmstripInfo | undefined {
+  const v = stripMemo.get(key);
+  if (v) {
+    stripMemo.delete(key);
+    stripMemo.set(key, v);
+  }
+  return v;
+}
+function stripMemoSet(key: string, info: FilmstripInfo) {
+  stripMemo.set(key, info);
+  if (stripMemo.size > MEMO_CAP) {
+    const oldest = stripMemo.keys().next().value as string;
+    stripMemo.delete(oldest);
+  }
+}
+
 function pump() {
   while (inflight < MAX_INFLIGHT && queue.length) {
     queue.pop()!.run(); // LIFO: the most recently requested cell wins the slot
@@ -62,6 +81,8 @@ export function resetThumbs() {
   generation++;
   queue = [];
   pending.clear();
+  stripPending.clear();
+  stripMemo.clear();
   // Release the warm Focus previews from the folder we're leaving.
   loupeDecoded.clear();
   loupeInflight.clear();
@@ -70,11 +91,12 @@ export function resetThumbs() {
 /** Drop a single not-yet-started request (a grid/strip cell scrolled out of
  *  view before its decode began). In-flight requests are cheap to let finish. */
 function cancel(key: string) {
-  if (pending.has(key)) {
+  if (pending.has(key) || stripPending.has(key)) {
     const i = queue.findIndex((q) => q.key === key);
     if (i >= 0) {
       queue.splice(i, 1);
       pending.delete(key);
+      stripPending.delete(key);
     }
   }
 }
@@ -85,6 +107,7 @@ export function loaderStats() {
     memo: memo.size,
     loupe: loupeDecoded.size,
     pending: pending.size,
+    stripPending: stripPending.size,
     queue: queue.length,
     inflight,
   };
@@ -175,6 +198,51 @@ function enqueue(key: string, fetchFsPath: () => Promise<string>): Promise<strin
   return promise;
 }
 
+function enqueueStrip(key: string, fetchInfo: () => Promise<FilmstripInfo>): Promise<FilmstripInfo | null> {
+  const cached = stripMemoGet(key);
+  if (cached) return Promise.resolve(cached);
+
+  const existing = stripPending.get(key);
+  if (existing) {
+    const i = queue.findIndex((q) => q.key === key);
+    if (i >= 0) {
+      const [it] = queue.splice(i, 1);
+      queue.push(it);
+    }
+    return existing;
+  }
+
+  const myGen = generation;
+  const promise = new Promise<FilmstripInfo | null>((resolve) => {
+    const run = () => {
+      if (myGen !== generation) {
+        stripPending.delete(key);
+        resolve(null);
+        pump();
+        return;
+      }
+      inflight++;
+      fetchInfo()
+        .then((info) => {
+          const hydrated = { ...info, src: api.fileSrc(info.src) };
+          stripMemoSet(key, hydrated);
+          resolve(myGen === generation ? hydrated : null);
+        })
+        .catch(() => resolve(null))
+        .finally(() => {
+          inflight--;
+          stripPending.delete(key);
+          pump();
+        });
+    };
+    queue.push({ key, run });
+    pump();
+  });
+
+  stripPending.set(key, promise);
+  return promise;
+}
+
 export function loadThumb(path: string, size: number): Promise<string | null> {
   return enqueue(`${path}@${size}`, () => api.thumbnail(path, size));
 }
@@ -188,4 +256,12 @@ export function loadVideoPoster(path: string): Promise<string | null> {
 }
 export function cancelVideoPoster(path: string): void {
   cancel(`vid:${path}`);
+}
+
+/** Lightweight video sprite for thumbnail hover skimming. */
+export function loadVideoScrubstrip(path: string): Promise<FilmstripInfo | null> {
+  return enqueueStrip(`scrub:${path}`, () => api.videoScrubstrip(path));
+}
+export function cancelVideoScrubstrip(path: string): void {
+  cancel(`scrub:${path}`);
 }

@@ -304,9 +304,11 @@ pub fn ensure_poster(cache_dir: &Path, ffmpeg: Option<&Path>, src: &Path) -> Res
 // first loupe open, then reused on every machine that reads the SSD.
 
 const FILMSTRIP_COLS: u32 = 10;
+const SCRUBSTRIP_COLS: u32 = 8;
 /// Pixel width each frame is scaled to inside the sprite (height follows aspect,
 /// so portrait phone clips stay portrait).
 const FILMSTRIP_TILE_W: u32 = 160;
+const SCRUBSTRIP_TILE_W: u32 = 128;
 
 /// Geometry of a generated filmstrip, persisted in a tiny sidecar so we don't
 /// re-probe the clip on every loupe open.
@@ -325,13 +327,22 @@ pub struct Filmstrip {
 /// Sprite-sheet cache path, prefixed `f` so it never collides with image
 /// thumbnails (`<hash>`) or posters (`v<hash>`).
 pub fn filmstrip_path(cache_dir: &Path, src: &Path) -> PathBuf {
+    sprite_path(cache_dir, src, "f")
+}
+
+/// Lighter sprite-sheet cache path for grid thumbnail hover skimming.
+pub fn scrubstrip_path(cache_dir: &Path, src: &Path) -> PathBuf {
+    sprite_path(cache_dir, src, "s")
+}
+
+fn sprite_path(cache_dir: &Path, src: &Path, prefix: &str) -> PathBuf {
     let (mtime, size) = meta(src);
     let abs = src.to_string_lossy();
     let mut h = std::collections::hash_map::DefaultHasher::new();
     abs.hash(&mut h);
     mtime.hash(&mut h);
     size.hash(&mut h);
-    cache_dir.join(format!("f{:016x}.jpg", h.finish()))
+    cache_dir.join(format!("{prefix}{:016x}.jpg", h.finish()))
 }
 
 /// Read the clip's duration (seconds) from ffmpeg's stderr banner. ffmpeg with
@@ -425,14 +436,20 @@ fn make_filmstrip(
     cols: u32,
     rows: u32,
     fps: f64,
+    tile_w: u32,
+    threads: Option<u32>,
 ) -> Result<(), String> {
     let vf = format!(
-        "fps={fps:.6},scale={FILMSTRIP_TILE_W}:-2,tile={cols}x{rows}:padding=0:margin=0"
+        "fps={fps:.6},scale={tile_w}:-2,tile={cols}x{rows}:padding=0:margin=0"
     );
     let mut cmd = Command::new(ffmpeg);
-    cmd.args(["-v", "error", "-i"])
+    cmd.args(["-v", "error"]);
+    if let Some(n) = threads {
+        cmd.args(["-threads", &n.to_string()]);
+    }
+    cmd.arg("-i")
         .arg(src)
-        .args(["-vf", &vf, "-frames:v", "1", "-an", "-y"])
+        .args(["-vf", &vf, "-frames:v", "1", "-q:v", "5", "-an", "-y"])
         .arg(out)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -458,7 +475,51 @@ pub fn ensure_filmstrip(
     ffmpeg: Option<&Path>,
     src: &Path,
 ) -> Result<(PathBuf, Filmstrip), String> {
-    let sprite = filmstrip_path(cache_dir, src);
+    ensure_sprite(
+        cache_dir,
+        ffmpeg,
+        src,
+        filmstrip_path(cache_dir, src),
+        FILMSTRIP_COLS,
+        FILMSTRIP_TILE_W,
+        16,
+        100,
+        None,
+    )
+}
+
+/// Ensure the lighter grid-hover sprite exists. It samples fewer, smaller frames
+/// and caps ffmpeg threads so sweeping across many large HEVC clips cannot grab
+/// the whole machine.
+pub fn ensure_scrubstrip(
+    cache_dir: &Path,
+    ffmpeg: Option<&Path>,
+    src: &Path,
+) -> Result<(PathBuf, Filmstrip), String> {
+    ensure_sprite(
+        cache_dir,
+        ffmpeg,
+        src,
+        scrubstrip_path(cache_dir, src),
+        SCRUBSTRIP_COLS,
+        SCRUBSTRIP_TILE_W,
+        12,
+        40,
+        Some(2),
+    )
+}
+
+fn ensure_sprite(
+    _cache_dir: &Path,
+    ffmpeg: Option<&Path>,
+    src: &Path,
+    sprite: PathBuf,
+    cols: u32,
+    tile_w: u32,
+    min_frames: u32,
+    max_frames: u32,
+    threads: Option<u32>,
+) -> Result<(PathBuf, Filmstrip), String> {
     let meta_path = sprite.with_extension("json");
     if sprite.exists() && meta_path.exists() {
         if let Ok(txt) = std::fs::read_to_string(&meta_path) {
@@ -469,13 +530,12 @@ pub fn ensure_filmstrip(
     }
     let ff = ffmpeg.ok_or("ffmpeg not available")?;
     let duration = probe_duration(ff, src).ok_or("could not read video duration")?;
-    // ~1 frame/second, clamped 16..=100, so short clips stay dense and long ones
-    // don't blow up the sprite. cols fixed at 10; rows = ceil(count/cols).
-    let count = (duration.round() as u32).clamp(16, 100);
-    let cols = FILMSTRIP_COLS;
+    // ~1 frame/second, clamped so short clips stay dense and long ones do not
+    // blow up cache or keep ffmpeg busy longer than a preview should.
+    let count = (duration.round() as u32).clamp(min_frames, max_frames);
     let rows = count.div_ceil(cols);
     let fps = count as f64 / duration;
-    make_filmstrip(ff, src, &sprite, cols, rows, fps)?;
+    make_filmstrip(ff, src, &sprite, cols, rows, fps, tile_w, threads)?;
     let (w, h) = image::image_dimensions(&sprite).map_err(|e| e.to_string())?;
     let fs = Filmstrip {
         cols,

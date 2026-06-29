@@ -995,7 +995,7 @@
   <aside class="tree" class:collapsed={treeCollapsed} style="width:{treeCollapsed ? 44 : settings.s.treeWidth}px">
     <div class="tree-head">
       <button class="ico sm" onclick={() => (treeCollapsed = !treeCollapsed)} title={treeCollapsed ? "Show folders" : "Hide folders"} aria-label={treeCollapsed ? "Show folders" : "Hide folders"}>
-        {treeCollapsed ? ">" : "<"}
+        <span class="sidebarGlyph" class:closed={treeCollapsed} aria-hidden="true"><span></span></span>
       </button>
       {#if !treeCollapsed}
         <span class="brand">Folders</span>
@@ -1006,7 +1006,7 @@
             onclick={refreshCounts}
             title="Recount folders"
             aria-label="Recount folders"
-          >R</button>
+          ><span class="refreshGlyph" aria-hidden="true"></span></button>
           <button class="btn sm" onclick={openFolderPicker} title="Jump to a folder">Open</button>
         </div>
       {/if}
@@ -1153,7 +1153,7 @@
       {:else}
         <div class="tool-group editModeTitle">
           <span class="ctl-label">Mode</span>
-          <strong>Quick Edit</strong>
+          <strong>Edit</strong>
           <span>{items.filter((item) => item.kind === "video").length} videos in folder</span>
         </div>
       {/if}
@@ -1161,8 +1161,16 @@
       <div class="spacer"></div>
 
       <div class="rightTools">
+        <button
+          class="chip scrubToggle"
+          class:on={settings.s.liveScrub}
+          onclick={() => settings.set({ liveScrub: !settings.s.liveScrub })}
+          title="Toggle thumbnail and timeline hover scrubbing. Off keeps video previews static and avoids scrub-strip generation."
+        >
+          Live Scrub {settings.s.liveScrub ? "On" : "Off"}
+        </button>
         <div class="modeToggle" title="Workspace mode">
-          <button class:on={!editOpen} onclick={() => (editOpen = false)}>Browse</button>
+          <button class:on={!editOpen} onclick={() => (editOpen = false)}>Library</button>
           <button class:on={editOpen} onclick={openEditMode} disabled={!currentDir}>Edit</button>
         </div>
 
@@ -1219,6 +1227,12 @@
             {/each}
           </div>
         </div>
+        <div class="row"><span>Live Scrub</span>
+          <div class="seg">
+            <button class="chip" class:on={settings.s.liveScrub} onclick={() => settings.set({ liveScrub: true })}>On</button>
+            <button class="chip" class:on={!settings.s.liveScrub} onclick={() => settings.set({ liveScrub: false })}>Off</button>
+          </div>
+        </div>
         <div class="row"><span>On delete</span>
           <div class="seg">
             <button class="chip" class:on={settings.s.deleteMode === "folder"} onclick={() => settings.set({ deleteMode: "folder" })} title="Move to this drive's _FoxCullCodex recycle folder — recoverable in the in-app Trash">In-app Trash</button>
@@ -1270,7 +1284,7 @@
             <p>Pick a folder on the left to start culling. Browse-in-place — nothing is imported or changed.</p>
           </div>
         {:else if editOpen}
-          <EditStudio {active} {selectedItems} sourceItems={items} />
+          <EditStudio {active} {selectedItems} sourceItems={items} currentDir={currentDir} recursive={settings.s.includeSub} />
         {:else if view.length === 0}
           <div class="welcome"><p>Nothing here matches the current filters.</p></div>
         {:else if viewMode === "loupe"}
@@ -1409,11 +1423,56 @@
   .ico { width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-elev); font-size: 14px; line-height: 1; }
   .ico:hover { background: var(--bg-hover); }
   .ico.on { border-color: var(--accent); color: var(--accent); }
+  .sidebarGlyph {
+    position: relative;
+    display: block;
+    width: 15px;
+    height: 14px;
+    border-left: 2px solid currentColor;
+    opacity: 0.9;
+  }
+  .sidebarGlyph::before,
+  .sidebarGlyph::after,
+  .sidebarGlyph span {
+    content: "";
+    position: absolute;
+    left: 5px;
+    right: 0;
+    height: 2px;
+    border-radius: 2px;
+    background: currentColor;
+  }
+  .sidebarGlyph::before { top: 1px; }
+  .sidebarGlyph span { top: 6px; }
+  .sidebarGlyph::after { bottom: 1px; }
+  .sidebarGlyph.closed { transform: scaleX(-1); }
+  .refreshGlyph {
+    position: relative;
+    display: block;
+    width: 15px;
+    height: 15px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+  }
+  .refreshGlyph::after {
+    content: "";
+    position: absolute;
+    right: -1px;
+    top: -3px;
+    width: 0;
+    height: 0;
+    border-left: 5px solid currentColor;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    transform: rotate(18deg);
+  }
   .chip { padding: 4px 9px; border-radius: 6px; font-size: 12px; color: var(--text-dim); border: 1px solid transparent; white-space: nowrap; }
   .chip:hover { background: var(--bg-hover); }
   .chip.on { background: var(--accent); color: var(--accent-on); }
   .chip.rej.on { background: var(--reject); border-color: var(--reject); }
   .chip.pick.on { background: var(--pick); border-color: var(--pick); }
+  .scrubToggle { border-color: var(--border); background: var(--bg-elev); }
   .starf { font-size: 14px; color: var(--text-faint); padding: 0 1px; }
   .starf.on { color: var(--star); }
   .dot { width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(0,0,0,0.25); opacity: 0.5; }

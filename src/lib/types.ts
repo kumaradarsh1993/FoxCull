@@ -18,6 +18,25 @@ export interface MediaItem {
   tags: string[];
 }
 
+export interface EditSourceItem {
+  name: string;
+  path: string;
+  kind: "video" | "audio";
+  ext: string;
+  mtime: number;
+  size: number;
+}
+
+export interface MediaProbe {
+  duration: number;
+  width: number;
+  height: number;
+  fps: number;
+  codec: string | null;
+  camera: string | null;
+  captured: number | null;
+}
+
 export interface TrashOutcome {
   deleted: number;
   failed: string[];
@@ -117,6 +136,19 @@ export interface EditExportOutcome {
   path: string;
   mode: string;
   reencoded: boolean;
+}
+
+export interface EditSnapshotRequest {
+  path: string;
+  time_s: number;
+  output_w: number;
+  output_h: number;
+  fit: "crop" | "original";
+  crop_x: number;
+  crop_y: number;
+  zoom: number;
+  adjustments: EditAdjustments;
+  basename: string | null;
 }
 
 export interface Filter {

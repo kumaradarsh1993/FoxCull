@@ -25,6 +25,7 @@ export interface AppSettings {
   groupBy: GroupBy;
   typeFilter: TypeFilter;
   includeSub: boolean;
+  liveScrub: boolean;
   deleteMode: DeleteMode;
   rejectFolder: string | null;
   lastDir: string | null;
@@ -43,6 +44,7 @@ const DEFAULTS: AppSettings = {
   groupBy: "none",
   typeFilter: "all",
   includeSub: true,
+  liveScrub: false,
   deleteMode: "folder",
   rejectFolder: null,
   lastDir: null,
