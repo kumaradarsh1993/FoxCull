@@ -1,13 +1,16 @@
 <script lang="ts">
   import { api } from "$lib/api";
   import type { EditAdjustments, EditExportRequest, MediaItem } from "$lib/types";
+  import Thumb from "./Thumb.svelte";
 
   let {
     active,
     selectedItems,
+    sourceItems = [],
   }: {
     active: MediaItem | null;
     selectedItems: MediaItem[];
+    sourceItems?: MediaItem[];
   } = $props();
 
   type PresetId = "instagram" | "square" | "landscape" | "original";
@@ -27,11 +30,11 @@
     zoom: number;
   };
 
-  const PRESETS: Record<PresetId, { label: string; w: number; h: number; fit: "crop" | "original" }> = {
-    instagram: { label: "9:16", w: 1080, h: 1920, fit: "crop" },
-    square: { label: "1:1", w: 1080, h: 1080, fit: "crop" },
-    landscape: { label: "16:9", w: 1920, h: 1080, fit: "crop" },
-    original: { label: "Original", w: 0, h: 0, fit: "original" },
+  const PRESETS: Record<PresetId, { label: string; detail: string; w: number; h: number; fit: "crop" | "original" }> = {
+    instagram: { label: "9:16", detail: "1080x1920", w: 1080, h: 1920, fit: "crop" },
+    square: { label: "1:1", detail: "1080x1080", w: 1080, h: 1080, fit: "crop" },
+    landscape: { label: "16:9", detail: "1920x1080", w: 1920, h: 1080, fit: "crop" },
+    original: { label: "Original", detail: "Stream-copy", w: 0, h: 0, fit: "original" },
   };
 
   const basename = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
@@ -53,6 +56,10 @@
   let exportNote = $state<string | null>(null);
   let previewVideo = $state<HTMLVideoElement | null>(null);
   let currentTime = $state(0);
+  let dragSourcePath = $state<string | null>(null);
+  let seededKey = $state("");
+  let seeding = $state(false);
+  let lastPreviewClipId = "";
   let dragStart:
     | { x: number; y: number; cropX: number; cropY: number; w: number; h: number }
     | null = null;
@@ -65,9 +72,24 @@
     sharpen: 0,
   });
 
-  let selectedClip = $derived(clips.find((c) => c.id === selectedId) ?? clips[0] ?? null);
   let activeVideo = $derived(active?.kind === "video" ? active : null);
   let selectedVideos = $derived(selectedItems.filter((i) => i.kind === "video"));
+  let initialVideos = $derived.by(() => (selectedVideos.length ? selectedVideos : activeVideo ? [activeVideo] : []));
+  let previewFilter = $derived(
+    `brightness(${Math.max(0, 1 + adjustments.brightness)}) contrast(${adjustments.contrast}) saturate(${adjustments.saturation})`,
+  );
+  let sourceVideos = $derived.by(() => {
+    const seen = new Set<string>();
+    const out: MediaItem[] = [];
+    for (const item of [...initialVideos, ...sourceItems.filter((i) => i.kind === "video")]) {
+      if (seen.has(item.path)) continue;
+      seen.add(item.path);
+      out.push(item);
+    }
+    return out;
+  });
+
+  let selectedClip = $derived(clips.find((c) => c.id === selectedId) ?? clips[0] ?? null);
   let outPreset = $derived(PRESETS[preset]);
   let outAspect = $derived(outPreset.fit === "original" ? 9 / 16 : outPreset.w / outPreset.h);
   let timelineSeconds = $derived(clips.reduce((sum, c) => sum + Math.max(0, c.outS - c.inS), 0));
@@ -84,16 +106,29 @@
   $effect(() => {
     if (!clips.length) {
       selectedId = null;
+      lastPreviewClipId = "";
       return;
     }
     if (!selectedId || !clips.some((c) => c.id === selectedId)) selectedId = clips[0].id;
   });
 
   $effect(() => {
+    const key = initialVideos.map((i) => i.path).join("|");
+    if (!key || clips.length || seeding || seededKey === key) return;
+    seededKey = key;
+    seeding = true;
+    void addItems(initialVideos).finally(() => {
+      seeding = false;
+    });
+  });
+
+  $effect(() => {
     const clip = selectedClip;
-    if (!clip || !previewVideo) return;
+    const video = previewVideo;
+    if (!clip || !video || clip.id === lastPreviewClipId) return;
+    lastPreviewClipId = clip.id;
     currentTime = clip.inS;
-    previewVideo.currentTime = clip.inS;
+    video.currentTime = clip.inS;
   });
 
   function uid() {
@@ -110,11 +145,10 @@
     });
   }
 
-  async function addItem(item: MediaItem | null) {
-    if (!item || item.kind !== "video") return;
+  async function makeClip(item: MediaItem): Promise<TimelineClip> {
     const duration = await durationFor(item.path);
     const out = Math.max(0.1, duration || 1);
-    const clip: TimelineClip = {
+    return {
       id: uid(),
       path: item.path,
       name: item.name,
@@ -126,14 +160,22 @@
       cropY: 0.5,
       zoom: 1,
     };
-    clips = [...clips, clip];
-    selectedId = clip.id;
+  }
+
+  async function addItems(items: MediaItem[]) {
+    const made: TimelineClip[] = [];
+    for (const item of items) {
+      if (item.kind === "video") made.push(await makeClip(item));
+    }
+    if (!made.length) return;
+    clips = [...clips, ...made];
+    selectedId = made[made.length - 1].id;
     exportNote = null;
   }
 
-  async function addSelected() {
-    const batch = selectedVideos.length ? selectedVideos : activeVideo ? [activeVideo] : [];
-    for (const item of batch) await addItem(item);
+  async function addItem(item: MediaItem | null) {
+    if (!item || item.kind !== "video") return;
+    await addItems([item]);
   }
 
   function removeClip(id: string) {
@@ -239,7 +281,7 @@
   async function exportTimeline() {
     if (!clips.length || exporting) return;
     exporting = true;
-    exportNote = "Exporting...";
+    exportNote = "Exporting";
     try {
       const req: EditExportRequest = {
         clips: clips.map((clip) => ({
@@ -298,23 +340,82 @@
     dragStart = null;
     window.removeEventListener("pointermove", onCropDrag);
   }
+
+  function startSourceDrag(e: DragEvent, item: MediaItem) {
+    dragSourcePath = item.path;
+    e.dataTransfer?.setData("application/x-foxcull-edit-path", item.path);
+    e.dataTransfer?.setData("text/plain", item.path);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "copy";
+  }
+
+  function endSourceDrag() {
+    dragSourcePath = null;
+  }
+
+  function allowTimelineDrop(e: DragEvent) {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  }
+
+  function dropOnTimeline(e: DragEvent) {
+    e.preventDefault();
+    const path = e.dataTransfer?.getData("application/x-foxcull-edit-path") || dragSourcePath;
+    const item = sourceVideos.find((v) => v.path === path);
+    if (item) void addItem(item);
+    dragSourcePath = null;
+  }
 </script>
 
-<div class="edit">
-  <section class="stagePane">
+<div class="editShell">
+  <aside class="sourcePane">
+    <div class="paneHead">
+      <div>
+        <strong>Source</strong>
+        <span>{sourceVideos.length} video{sourceVideos.length === 1 ? "" : "s"}</span>
+      </div>
+      <button class="miniBtn" onclick={() => addItems(initialVideos)} disabled={!initialVideos.length}>Add selected</button>
+    </div>
+
+    <div class="sourceList">
+      {#if sourceVideos.length}
+        {#each sourceVideos as item (item.path)}
+          <button
+            class="sourceItem"
+            class:active={selectedClip?.path === item.path}
+            draggable={true}
+            ondragstart={(e) => startSourceDrag(e, item)}
+            ondragend={endSourceDrag}
+            onclick={() => addItem(item)}
+            title={item.path}
+          >
+            <span class="sourceThumb"><Thumb {item} size={192} /></span>
+            <span class="sourceText">
+              <strong>{item.name}</strong>
+              <em>{item.ext.toUpperCase()}</em>
+            </span>
+          </button>
+        {/each}
+      {:else}
+        <div class="emptyState">No videos in this view.</div>
+      {/if}
+    </div>
+  </aside>
+
+  <section class="workPane">
     <div class="editTop">
-      <div class="seg">
+      <div class="presetGroup">
         {#each Object.entries(PRESETS) as [id, p]}
-          <button class="chip" class:on={preset === id} onclick={() => (preset = id as PresetId)}>
-            {p.label}
+          <button class:on={preset === id} onclick={() => (preset = id as PresetId)}>
+            <strong>{p.label}</strong>
+            <span>{p.detail}</span>
           </button>
         {/each}
       </div>
       <span class="status" class:warn={needsEncode}>{needsEncode ? "Encode" : "Stream copy"}</span>
       <span class="spacer"></span>
-      <button class="btn sm" onclick={() => addItem(activeVideo)} disabled={!activeVideo}>Add active</button>
-      <button class="btn sm" onclick={addSelected} disabled={!selectedVideos.length && !activeVideo}>
-        Add selected{selectedVideos.length > 1 ? ` ${selectedVideos.length}` : ""}
+      <button class="miniBtn" onclick={() => addItem(activeVideo)} disabled={!activeVideo}>Add active</button>
+      <button class="exportBtn" onclick={exportTimeline} disabled={!clips.length || exporting}>
+        {exporting ? "Exporting" : "Export"}
       </button>
     </div>
 
@@ -324,6 +425,7 @@
         <video
           bind:this={previewVideo}
           src={selectedClip.src}
+          style:filter={previewFilter}
           onloadedmetadata={onMeta}
           ontimeupdate={onTime}
           onclick={togglePlay}
@@ -341,24 +443,59 @@
           </button>
         {/if}
       {:else}
-        <div class="empty">Add a video to start editing.</div>
+        <div class="emptyState">No clip selected.</div>
       {/if}
     </div>
 
-    {#if selectedClip}
-      <div class="scrub">
-        <button class="play" onclick={togglePlay}>{previewVideo?.paused === false ? "Pause" : "Play"}</button>
-        <span class="time">{fmt(currentTime)} / {fmt(selectedClip.duration)}</span>
-        <input
-          type="range"
-          min="0"
-          max={selectedClip.duration}
-          step="0.01"
-          value={currentTime}
-          oninput={(e) => seek(Number((e.currentTarget as HTMLInputElement).value))}
-        />
+    <div class="transport">
+      <button class="play" onclick={togglePlay} disabled={!selectedClip}>{previewVideo?.paused === false ? "Pause" : "Play"}</button>
+      <span class="time">{fmt(currentTime)} / {fmt(selectedClip?.duration ?? 0)}</span>
+      <input
+        type="range"
+        min="0"
+        max={selectedClip?.duration ?? 1}
+        step="0.01"
+        value={currentTime}
+        disabled={!selectedClip}
+        oninput={(e) => seek(Number((e.currentTarget as HTMLInputElement).value))}
+      />
+    </div>
+
+    <section class="timeline" aria-label="Edit timeline" ondragover={allowTimelineDrop} ondrop={dropOnTimeline}>
+      <div class="timelineHead">
+        <strong>Timeline</strong>
+        <span>{clips.length} clip{clips.length === 1 ? "" : "s"}</span>
+        <span>{fmt(timelineSeconds)}</span>
+        <span class="spacer"></span>
+        <button class="ghost" onclick={() => (clips = [])} disabled={!clips.length}>Clear</button>
       </div>
-    {/if}
+      <div class="rail">
+        {#if clips.length}
+          {#each clips as clip, i (clip.id)}
+            <div
+              class="clip"
+              class:on={clip.id === selectedId}
+              role="button"
+              tabindex="0"
+              onclick={() => (selectedId = clip.id)}
+              onkeydown={(e) => e.key === "Enter" && (selectedId = clip.id)}
+            >
+              <span class="idx">{i + 1}</span>
+              <span class="cn" title={clip.path}>{clip.name}</span>
+              <span class="dur">{fmt(clip.outS - clip.inS)}</span>
+              <span class="acts">
+                <button onclick={(e) => { e.stopPropagation(); moveClip(clip.id, -1); }} disabled={i === 0}>Up</button>
+                <button onclick={(e) => { e.stopPropagation(); moveClip(clip.id, 1); }} disabled={i === clips.length - 1}>Down</button>
+                <button onclick={(e) => { e.stopPropagation(); duplicateClip(clip); }}>Duplicate</button>
+                <button class="danger" onclick={(e) => { e.stopPropagation(); removeClip(clip.id); }}>Remove</button>
+              </span>
+            </div>
+          {/each}
+        {:else}
+          <div class="emptyTrack">Drop clips here.</div>
+        {/if}
+      </div>
+    </section>
   </section>
 
   <aside class="inspector">
@@ -366,7 +503,7 @@
       <h3>Segment</h3>
       {#if selectedClip}
         <div class="row">
-          <button class="btn sm" onclick={setIn}>Set in</button>
+          <button class="miniBtn" onclick={setIn}>Set in</button>
           <input
             type="number"
             min="0"
@@ -378,7 +515,7 @@
           />
         </div>
         <div class="row">
-          <button class="btn sm" onclick={setOut}>Set out</button>
+          <button class="miniBtn" onclick={setOut}>Set out</button>
           <input
             type="number"
             min={selectedClip.inS}
@@ -407,11 +544,11 @@
       <label>Saturation <input type="range" min="0" max="2" step="0.01" bind:value={adjustments.saturation} /></label>
       <label>Warmth <input type="range" min="-0.2" max="0.2" step="0.005" bind:value={adjustments.warmth} /></label>
       <label>Sharpen <input type="range" min="0" max="1" step="0.01" bind:value={adjustments.sharpen} /></label>
-      <button class="btn sm" onclick={resetColor}>Reset</button>
+      <button class="miniBtn" onclick={resetColor}>Reset</button>
     </div>
 
     <div class="block">
-      <h3>Export</h3>
+      <h3>Audio & Export</h3>
       <label>Encoder
         <select bind:value={encoder}>
           <option value="auto">Auto</option>
@@ -429,115 +566,173 @@
       </label>
       <label class="check"><input type="checkbox" bind:checked={preserveSourceAudio} disabled={!!musicPath || clips.length !== 1} /> Source audio</label>
       <div class="music">
-        <button class="btn sm" onclick={pickMusic}>Music</button>
+        <button class="miniBtn" onclick={pickMusic}>Choose audio</button>
         {#if musicPath}
           <button class="ghost" onclick={() => (musicPath = null)} title={musicPath}>{basename(musicPath)}</button>
         {/if}
       </div>
-      <button class="export" onclick={exportTimeline} disabled={!clips.length || exporting}>
-        {exporting ? "Exporting..." : "Export"}
-      </button>
       {#if exportNote}<p class="note">{exportNote}</p>{/if}
     </div>
   </aside>
-
-  <section class="timeline">
-    <div class="timelineHead">
-      <strong>{clips.length} clip{clips.length === 1 ? "" : "s"}</strong>
-      <span>{fmt(timelineSeconds)}</span>
-      <span class="spacer"></span>
-      <button class="ghost" onclick={() => (clips = [])} disabled={!clips.length}>Clear</button>
-    </div>
-    <div class="rail">
-      {#if clips.length}
-        {#each clips as clip, i (clip.id)}
-          <div
-            class="clip"
-            class:on={clip.id === selectedId}
-            role="button"
-            tabindex="0"
-            onclick={() => (selectedId = clip.id)}
-            onkeydown={(e) => e.key === "Enter" && (selectedId = clip.id)}
-          >
-            <span class="idx">{i + 1}</span>
-            <span class="cn" title={clip.path}>{clip.name}</span>
-            <span class="dur">{fmt(clip.outS - clip.inS)}</span>
-            <span class="acts">
-              <button onclick={(e) => { e.stopPropagation(); moveClip(clip.id, -1); }} disabled={i === 0}>Up</button>
-              <button onclick={(e) => { e.stopPropagation(); moveClip(clip.id, 1); }} disabled={i === clips.length - 1}>Down</button>
-              <button onclick={(e) => { e.stopPropagation(); duplicateClip(clip); }}>Copy</button>
-              <button class="danger" onclick={(e) => { e.stopPropagation(); removeClip(clip.id); }}>Remove</button>
-            </span>
-          </div>
-        {/each}
-      {:else}
-        <div class="drop">Timeline is empty.</div>
-      {/if}
-    </div>
-  </section>
 </div>
 
 <style>
-  .edit {
+  .editShell {
+    width: 100%;
     height: 100%;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 300px;
-    grid-template-rows: minmax(0, 1fr) 170px;
+    grid-template-columns: minmax(190px, 22%) minmax(360px, 1fr) minmax(230px, 26%);
     background: var(--bg);
     color: var(--text);
     min-width: 0;
+    min-height: 0;
+    overflow: hidden;
   }
-  .stagePane {
+  .sourcePane,
+  .inspector {
     min-width: 0;
     min-height: 0;
+    background: var(--bg-panel);
+    border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    border-right: 1px solid var(--border);
   }
+  .inspector {
+    border-right: 0;
+    border-left: 1px solid var(--border);
+    overflow-y: auto;
+  }
+  .paneHead,
   .editTop,
   .timelineHead {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 7px;
+    min-height: 44px;
     padding: 8px 10px;
     border-bottom: 1px solid var(--border);
     background: var(--bg-panel);
   }
-  .seg {
+  .editTop {
+    overflow: hidden;
+  }
+  .editTop .miniBtn {
+    flex: 0 0 auto;
+  }
+  .paneHead > div {
+    min-width: 0;
     display: flex;
-    gap: 3px;
+    flex-direction: column;
+    line-height: 1.15;
+  }
+  .paneHead span,
+  .timelineHead span,
+  .small,
+  .note,
+  .time,
+  .sourceText em {
+    color: var(--text-faint);
+    font-size: 12px;
+  }
+  .sourceList {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+  .sourceItem {
+    display: grid;
+    grid-template-columns: 58px minmax(0, 1fr);
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    min-height: 66px;
+    padding: 6px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    background: transparent;
+    text-align: left;
+  }
+  .sourceItem:hover {
+    background: var(--bg-hover);
+  }
+  .sourceItem.active {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+  .sourceThumb {
+    width: 58px;
+    height: 50px;
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--viewport-bg);
+  }
+  .sourceText {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .sourceText strong,
+  .cn {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .workPane {
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto 190px;
+  }
+  .presetGroup {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 4px;
     padding: 2px;
     border: 1px solid var(--border);
     border-radius: 8px;
     background: var(--bg-elev);
   }
-  .chip {
-    padding: 4px 9px;
+  .presetGroup button {
+    min-width: 64px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 5px 7px;
     border-radius: 6px;
-    font-size: 12px;
+    text-align: left;
     color: var(--text-dim);
   }
-  .chip.on {
+  .presetGroup button.on {
     background: var(--accent);
     color: var(--accent-on);
   }
+  .presetGroup span {
+    font-size: 10.5px;
+    opacity: 0.75;
+  }
   .status {
-    padding: 4px 9px;
+    padding: 5px 8px;
     border-radius: 999px;
     background: color-mix(in srgb, var(--pick) 18%, transparent);
     color: var(--pick);
-    font-size: 12px;
+    font-size: 11.5px;
+    white-space: nowrap;
   }
   .status.warn {
     background: color-mix(in srgb, var(--accent) 22%, transparent);
     color: var(--accent);
   }
   .spacer {
-    flex: 1;
+    flex: 1 1 auto;
+    min-width: 8px;
   }
   .preview {
     position: relative;
-    flex: 1;
     min-height: 0;
     display: flex;
     align-items: center;
@@ -550,10 +745,20 @@
     height: 100%;
     object-fit: contain;
   }
-  .empty,
-  .drop {
+  .emptyState,
+  .emptyTrack {
     color: var(--text-faint);
     font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    width: 100%;
+    border: 1px dashed color-mix(in srgb, var(--text-faint) 36%, transparent);
+    border-radius: 8px;
+  }
+  .sourceList .emptyState {
+    min-height: 120px;
   }
   .cropFrame {
     position: absolute;
@@ -576,66 +781,106 @@
     border-top: 1px solid rgba(255, 255, 255, 0.45);
     border-bottom: 1px solid rgba(255, 255, 255, 0.45);
   }
-  .cropFrame::before,
-  .cropFrame::after {
+  .cropFrame::before {
     content: "";
     position: absolute;
     top: 0;
     bottom: 0;
+    left: 33.333%;
     width: 33.333%;
     border-left: 1px solid rgba(255, 255, 255, 0.45);
     border-right: 1px solid rgba(255, 255, 255, 0.45);
   }
-  .cropFrame::before {
-    left: 33.333%;
-  }
-  .cropFrame::after {
-    display: none;
-  }
-  .scrub {
+  .transport {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 9px 10px;
+    min-height: 42px;
+    padding: 7px 10px;
     border-top: 1px solid var(--border);
     background: var(--bg-panel);
   }
-  .scrub input {
+  .transport input {
     flex: 1;
     accent-color: var(--accent);
   }
   .play,
-  .btn.sm,
+  .miniBtn,
   .ghost,
   .clip .acts button {
     border: 1px solid var(--border);
     background: var(--bg-elev);
     border-radius: 7px;
-    padding: 5px 10px;
+    padding: 5px 9px;
     font-size: 12px;
+    white-space: nowrap;
   }
   .play:hover,
-  .btn.sm:hover,
+  .miniBtn:hover,
   .ghost:hover,
   .clip .acts button:hover {
     background: var(--bg-hover);
+  }
+  .exportBtn {
+    padding: 7px 12px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: var(--accent-on);
+    font-weight: 700;
+    white-space: nowrap;
   }
   button:disabled {
     opacity: 0.42;
     cursor: not-allowed;
   }
-  .time,
-  .small,
-  .note,
-  .timelineHead span {
-    color: var(--text-faint);
-    font-size: 12px;
-  }
-  .inspector {
+  .timeline {
     min-width: 0;
     min-height: 0;
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid var(--border);
     background: var(--bg-panel);
+  }
+  .rail {
+    flex: 1;
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding: 10px;
+    align-items: stretch;
+  }
+  .clip {
+    flex: 0 0 250px;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    grid-template-rows: auto auto;
+    gap: 7px 8px;
+    align-content: start;
+    text-align: left;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px;
+    background: var(--bg-elev);
+  }
+  .clip.on {
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+  .idx,
+  .dur {
+    color: var(--text-faint);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .acts {
+    grid-column: 1 / 4;
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+  }
+  .acts .danger {
+    color: var(--reject);
+    border-color: color-mix(in srgb, var(--reject) 55%, var(--border));
   }
   .block {
     padding: 12px;
@@ -674,9 +919,9 @@
     accent-color: var(--accent);
   }
   .check {
+    display: flex;
     grid-template-columns: auto 1fr;
     align-items: center;
-    display: flex;
     gap: 7px;
   }
   .music {
@@ -691,71 +936,18 @@
     white-space: nowrap;
     min-width: 0;
   }
-  .export {
-    margin-top: 2px;
-    padding: 9px 12px;
-    border-radius: 8px;
-    background: var(--accent);
-    color: var(--accent-on);
-    font-weight: 700;
+  .note {
+    margin: 0;
   }
-  .timeline {
-    grid-column: 1 / 3;
-    min-width: 0;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    border-top: 1px solid var(--border);
-    background: var(--bg-panel);
-  }
-  .rail {
-    flex: 1;
-    display: flex;
-    gap: 8px;
-    overflow-x: auto;
-    padding: 10px;
-    align-items: stretch;
-  }
-  .clip {
-    flex: 0 0 260px;
-    display: grid;
-    grid-template-columns: auto 1fr auto;
-    grid-template-rows: auto auto;
-    gap: 7px 8px;
-    align-content: start;
-    text-align: left;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 9px;
-    background: var(--bg-elev);
-  }
-  .clip.on {
-    border-color: var(--accent);
-    box-shadow: inset 0 0 0 1px var(--accent);
-  }
-  .idx {
-    color: var(--text-faint);
-    font-size: 12px;
-  }
-  .cn {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-weight: 600;
-  }
-  .dur {
-    color: var(--text-faint);
-    font-size: 12px;
-    font-variant-numeric: tabular-nums;
-  }
-  .acts {
-    grid-column: 1 / 4;
-    display: flex;
-    gap: 5px;
-    flex-wrap: wrap;
-  }
-  .acts .danger {
-    color: var(--reject);
-    border-color: color-mix(in srgb, var(--reject) 55%, var(--border));
+  @media (max-width: 1120px) {
+    .editShell {
+      grid-template-columns: 210px minmax(0, 1fr);
+    }
+    .inspector {
+      display: none;
+    }
+    .presetGroup button {
+      min-width: 58px;
+    }
   }
 </style>

@@ -68,9 +68,13 @@
   let allTags = $state<[string, number][]>([]);
   let tagInput = $state("");
 
-  // How many of the secondary (popover) filters are active — shown as a badge.
+  // How many popover filters are active — shown as a badge.
   let activeFilterCount = $derived(
-    (minRating > 0 ? 1 : 0) + (labelFilter ? 1 : 0) + (tagFilter ? 1 : 0),
+    (settings.s.typeFilter !== "all" ? 1 : 0) +
+      (flagFilter !== "all" ? 1 : 0) +
+      (minRating > 0 ? 1 : 0) +
+      (labelFilter ? 1 : 0) +
+      (tagFilter ? 1 : 0),
   );
 
   let dimLevel = $state(0); // 0 normal · 1 dim panels · 2 lights out
@@ -80,6 +84,7 @@
   let trashOpen = $state(false);
   let trashItems = $state<TrashItem[]>([]);
   let editOpen = $state(false);
+  let treeCollapsed = $state(false);
   // Bumped by the tree's ↻ button to make expanded folders recount their badges.
   let countsGen = $state(0);
   let gridComp = $state<{ scrollToIndex: (i: number, center?: boolean) => void } | null>(null);
@@ -203,6 +208,11 @@
 
   let active = $derived(view.length ? view[Math.min(activeIndex, view.length - 1)] : null);
   let selectedItems = $derived(items.filter((i) => selected.has(i.path)));
+  let actionTargets = $derived.by(() => {
+    if (selected.size > 1) return items.filter((i) => selected.has(i.path));
+    return active ? [active] : [];
+  });
+  let allTargetsRejected = $derived(actionTargets.length > 0 && actionTargets.every((i) => i.flag === "reject"));
   let rejectedCount = $derived(items.filter((i) => i.flag === "reject").length);
   let pickCount = $derived(items.filter((i) => i.flag === "pick").length);
   let stripCell = $derived(Math.max(64, settings.s.filmstripSize - 24));
@@ -397,8 +407,7 @@
   }
 
   function targets(): MediaItem[] {
-    if (selected.size > 1) return items.filter((i) => selected.has(i.path));
-    return active ? [active] : [];
+    return actionTargets;
   }
 
   function targetPaths(): string[] {
@@ -651,10 +660,11 @@
     selected = new Set(view.map((i) => i.path));
   }
   function rejectSelected() {
-    const sel = items.filter((i) => selected.has(i.path));
+    const sel = targets();
     if (!sel.length) return;
-    for (const it of sel) it.flag = "reject";
-    api.setFlagMany(sel.map((i) => i.path), "reject").catch(() => {});
+    const next = sel.every((i) => i.flag === "reject") ? null : "reject";
+    for (const it of sel) it.flag = next;
+    api.setFlagMany(sel.map((i) => i.path), next).catch(() => {});
   }
 
   function gridCellClick(e: MouseEvent, i: number) {
@@ -713,14 +723,6 @@
         action: () => api.openExternal(ctx.path),
       },
       { label: revealLabel, icon: "⤴", action: () => api.reveal(ctx.path) },
-      { separator: true },
-      { label: "Cut for move" + sfx, icon: "✂", disabled: !ts.length, action: cutSelection },
-      {
-        label: `Paste into ${currentDir ? basename(currentDir) : "folder"}`,
-        icon: "↳",
-        disabled: !currentDir || cutPaths.length === 0 || movingFiles,
-        action: pasteCutSelection,
-      },
       { separator: true },
       { label: (allPick ? "Clear pick" : "Pick") + sfx, icon: "✓", on: allPick, action: () => flag("pick") },
       {
@@ -990,33 +992,42 @@
 
 <div class="app" data-dim={dimLevel} class:fs={fullscreen}>
   <!-- ░ left: drives + folder tree ░ -->
-  <aside class="tree" style="width:{settings.s.treeWidth}px">
+  <aside class="tree" class:collapsed={treeCollapsed} style="width:{treeCollapsed ? 44 : settings.s.treeWidth}px">
     <div class="tree-head">
-      <span class="brand">FoxCull Codex</span>
-      <div class="tree-actions">
-        <button
-          class="ico sm"
-          class:spin={recounting}
-          onclick={refreshCounts}
-          title="Recount folders (the counts are cached — refresh after adding or removing files)"
-          aria-label="Recount folders"
-        >↻</button>
-        <button class="btn sm" onclick={openFolderPicker} title="Jump to a folder">Open…</button>
-      </div>
-    </div>
-    <ActivityBar />
-    <div class="tree-body">
-      {#if drives.length}
-        {#each drives as d (d.path)}
-          <TreeNode node={d} {currentDir} onselect={openFolder} onmove={(dest) => movePathsTo(draggingPaths, dest)} {countsGen} />
-        {/each}
-      {:else}
-        <p class="hint">No drives detected.</p>
+      <button class="ico sm" onclick={() => (treeCollapsed = !treeCollapsed)} title={treeCollapsed ? "Show folders" : "Hide folders"} aria-label={treeCollapsed ? "Show folders" : "Hide folders"}>
+        {treeCollapsed ? ">" : "<"}
+      </button>
+      {#if !treeCollapsed}
+        <span class="brand">Folders</span>
+        <div class="tree-actions">
+          <button
+            class="ico sm"
+            class:spin={recounting}
+            onclick={refreshCounts}
+            title="Recount folders"
+            aria-label="Recount folders"
+          >R</button>
+          <button class="btn sm" onclick={openFolderPicker} title="Jump to a folder">Open</button>
+        </div>
       {/if}
     </div>
+    {#if !treeCollapsed}
+      <ActivityBar />
+      <div class="tree-body">
+        {#if drives.length}
+          {#each drives as d (d.path)}
+            <TreeNode node={d} {currentDir} onselect={openFolder} onmove={(dest) => movePathsTo(draggingPaths, dest)} {countsGen} />
+          {/each}
+        {:else}
+          <p class="hint">No drives detected.</p>
+        {/if}
+      </div>
+    {/if}
   </aside>
 
-  <div class="vsplit" role="separator" tabindex="-1" onpointerdown={startTreeResize}></div>
+  {#if !treeCollapsed}
+    <div class="vsplit" role="separator" tabindex="-1" onpointerdown={startTreeResize}></div>
+  {/if}
 
   <!-- ░ center ░ -->
   <main class="center">
@@ -1027,20 +1038,23 @@
     <!-- top bar -->
     <div class="bar">
       <!-- view mode -->
-      <div class="seg modes" title="View (G grid · D details · Enter focus)">
-        <button class="chip" class:on={viewMode === "grid"} onclick={() => setView("grid")}>▦ Grid</button>
-        <button class="chip" class:on={viewMode === "details"} onclick={() => setView("details")}>≣ Details</button>
-        <button class="chip" class:on={viewMode === "loupe"} onclick={() => setView("loupe")}>▣ Focus</button>
-        <button class="chip" class:on={editOpen} onclick={openEditMode}>Edit</button>
+      <div class="tool-group viewGroup">
+        <span class="ctl-label">View</span>
+        <div class="seg modes" title="View">
+          <button class="chip" class:on={viewMode === "grid" && !editOpen} onclick={() => setView("grid")}>Grid</button>
+          <button class="chip" class:on={viewMode === "details" && !editOpen} onclick={() => setView("details")}>Details</button>
+          <button class="chip" class:on={viewMode === "loupe" && !editOpen} onclick={() => setView("loupe")}>Focus</button>
+        </div>
       </div>
 
       <span class="div"></span>
 
       <!-- sort + date grouping -->
-      <div class="grp">
+      <div class="tool-group">
+        <span class="ctl-label">Sort</span>
         <select class="sel" title="Sort order" bind:value={settings.s.sortBy} onchange={() => { settings.set({ sortBy: settings.s.sortBy }); maybeFetchCaptures(); }}>
           <option value="name">Name</option>
-          <option value="date">Date (modified)</option>
+          <option value="date">Modified</option>
           <option value="capture">Capture date</option>
           <option value="type">Type</option>
           <option value="size">Size</option>
@@ -1048,39 +1062,45 @@
         <button class="ico" title="Sort direction" onclick={() => settings.set({ sortDir: settings.s.sortDir === "asc" ? "desc" : "asc" })}>
           {settings.s.sortDir === "asc" ? "↑" : "↓"}
         </button>
+      </div>
+      <div class="tool-group">
+        <span class="ctl-label">Group</span>
         <select class="sel" title="Split the grid into sections" bind:value={settings.s.groupBy} onchange={() => { settings.set({ groupBy: settings.s.groupBy }); maybeFetchCaptures(); }}>
           <option value="none">No groups</option>
-          <option value="folder">Group: folder</option>
-          <option value="type">Group: type</option>
-          <option value="year">Group: year</option>
-          <option value="month">Group: month</option>
-          <option value="week">Group: week</option>
+          <option value="folder">Folder</option>
+          <option value="type">Type</option>
+          <option value="year">Year</option>
+          <option value="month">Month</option>
+          <option value="week">Week</option>
         </select>
       </div>
 
       <span class="div"></span>
 
-      <!-- type + flag (primary culling filters) -->
-      <div class="seg">
-        {#each [["all", "All"], ["image", "Photos"], ["video", "Video"], ["raw", "RAW"]] as [val, lbl]}
-          <button class="chip" class:on={settings.s.typeFilter === val} onclick={() => settings.set({ typeFilter: val as typeof settings.s.typeFilter })}>{lbl}</button>
-        {/each}
-      </div>
-
-      <div class="seg flags">
-        <button class="chip" class:on={flagFilter === "all"} onclick={() => (flagFilter = "all")}>All</button>
-        <button class="chip pick" class:on={flagFilter === "pick"} onclick={() => (flagFilter = "pick")}>Picks</button>
-        <button class="chip rej" class:on={flagFilter === "reject"} onclick={() => (flagFilter = "reject")}>Rejected</button>
-        <button class="chip" class:on={flagFilter === "unflagged"} onclick={() => (flagFilter = "unflagged")}>Unflagged</button>
-      </div>
-
-      <!-- consolidated secondary filters (rating · label · tag · scope) -->
+      <!-- media, culling and metadata filters -->
       <div class="grp filterwrap">
-        <button class="chip" class:on={filtersOpen || activeFilterCount > 0} onclick={() => (filtersOpen = !filtersOpen)} title="Rating, label, tag & scope filters">
-          ⛃ Filters{activeFilterCount ? ` ·${activeFilterCount}` : ""}
+        <button class="chip" class:on={filtersOpen || activeFilterCount > 0} onclick={() => (filtersOpen = !filtersOpen)} title="Media, culling and metadata filters">
+          Filters{activeFilterCount ? ` ${activeFilterCount}` : ""}
         </button>
         {#if filtersOpen}
           <div class="filtermenu">
+            <div class="fm-row">
+              <span class="fm-lbl">Type</span>
+              <div class="seg">
+                {#each [["all", "All"], ["image", "Photos"], ["video", "Video"], ["raw", "RAW"]] as [val, lbl]}
+                  <button class="chip" class:on={settings.s.typeFilter === val} onclick={() => settings.set({ typeFilter: val as typeof settings.s.typeFilter })}>{lbl}</button>
+                {/each}
+              </div>
+            </div>
+            <div class="fm-row">
+              <span class="fm-lbl">Status</span>
+              <div class="seg flags">
+                <button class="chip" class:on={flagFilter === "all"} onclick={() => (flagFilter = "all")}>All</button>
+                <button class="chip pick" class:on={flagFilter === "pick"} onclick={() => (flagFilter = "pick")}>Picks</button>
+                <button class="chip rej" class:on={flagFilter === "reject"} onclick={() => (flagFilter = "reject")}>Rejected</button>
+                <button class="chip" class:on={flagFilter === "unflagged"} onclick={() => (flagFilter = "unflagged")}>Unflagged</button>
+              </div>
+            </div>
             <div class="fm-row">
               <span class="fm-lbl">Rating</span>
               <div class="seg">
@@ -1110,7 +1130,7 @@
                     </button>
                   {/each}
                 {:else}
-                  <p class="tagempty">No tags yet. Add one to the selected photo below.</p>
+                  <p class="tagempty">No tags yet.</p>
                 {/if}
               </div>
             </div>
@@ -1132,43 +1152,44 @@
 
       <div class="spacer"></div>
 
-      <!-- actions (top-right) -->
-      <button
-        class="btn sm prep"
-        class:on={preparing || prepared}
-        onclick={prepareFolder}
-        disabled={!view.length || preparing}
-        title="Pre-render full-size Focus previews for this whole folder, so flipping through it in Focus view has zero loading blur. (Grid thumbnails are already pre-cached when a folder opens.)"
-      >
-        {#if preparing}<span class="prep-fill" style="width:{prepPct}%"></span>{/if}
-        <span class="prep-lbl">
-          {#if preparing}⏳ {prepPct}%{prepEta ? ` · ${prepEta}` : ""}{:else if prepared}✓ Ready{:else}⚡ Prepare{/if}
-        </span>
-      </button>
-      <button class="btn sm" onclick={selectAllFiltered} disabled={!view.length} title="Select all in view">Select all{view.length ? ` (${view.length})` : ""}</button>
-      <button class="btn sm" onclick={cutSelection} disabled={selected.size === 0 || movingFiles} title="Mark selected files to move with Paste">
-        Cut{selected.size > 1 ? ` ${selected.size}` : ""}
-      </button>
-      <button class="btn sm" onclick={pasteCutSelection} disabled={!currentDir || cutPaths.length === 0 || movingFiles} title="Move cut files into the open folder">
-        Paste{cutPaths.length ? ` ${cutPaths.length}` : ""}
-      </button>
-      <button class="btn sm danger" onclick={rejectSelected} disabled={selected.size === 0} title="Flag the selection as reject">
-        Reject{selected.size > 1 ? ` ${selected.size}` : ""}
-      </button>
-      <button
-        class="btn sm danger hold"
-        disabled={!writable || rejectedCount === 0}
-        onpointerdown={startHold}
-        onpointerup={endHold}
-        onpointerleave={endHold}
-        onpointercancel={endHold}
-        title="Hold to delete all {rejectedCount} rejected"
-      >
-        <span class="hold-fill" style="width:{(holdMs / HOLD_MS) * 100}%"></span>
-        <span class="hold-lbl">🗑 Delete{rejectedCount ? ` ${rejectedCount}` : ""} <em>(hold)</em></span>
-      </button>
-      <button class="btn sm" onclick={openTrash} title="View deleted items — restore or remove permanently">♻ Trash</button>
-      <button class="ico gear" class:on={settingsOpen} onclick={() => (settingsOpen = !settingsOpen)} title="Settings">⚙</button>
+      <div class="rightTools">
+        <div class="modeToggle" title="Workspace mode">
+          <button class:on={!editOpen} onclick={() => (editOpen = false)}>Browse</button>
+          <button class:on={editOpen} onclick={openEditMode}>Edit</button>
+        </div>
+
+        <!-- actions (top-right) -->
+        <button
+          class="btn sm prep"
+          class:on={preparing || prepared}
+          onclick={prepareFolder}
+          disabled={!view.length || preparing}
+          title="Pre-render full-size Focus previews for this whole folder, so flipping through it in Focus view has zero loading blur. (Grid thumbnails are already pre-cached when a folder opens.)"
+        >
+          {#if preparing}<span class="prep-fill" style="width:{prepPct}%"></span>{/if}
+          <span class="prep-lbl">
+            {#if preparing}{prepPct}%{prepEta ? ` ${prepEta}` : ""}{:else if prepared}Ready{:else}Prepare{/if}
+          </span>
+        </button>
+        <button class="btn sm" onclick={selectAllFiltered} disabled={!view.length} title="Select all in view">All{view.length ? ` ${view.length}` : ""}</button>
+        <button class="btn sm danger" onclick={rejectSelected} disabled={actionTargets.length === 0} title="Toggle rejected on the active item or selection">
+          {allTargetsRejected ? "Unreject" : "Reject"}{selected.size > 1 ? ` ${selected.size}` : ""}
+        </button>
+        <button
+          class="btn sm danger hold"
+          disabled={!writable || rejectedCount === 0}
+          onpointerdown={startHold}
+          onpointerup={endHold}
+          onpointerleave={endHold}
+          onpointercancel={endHold}
+          title="Hold to delete all {rejectedCount} rejected"
+        >
+          <span class="hold-fill" style="width:{(holdMs / HOLD_MS) * 100}%"></span>
+          <span class="hold-lbl">Delete{rejectedCount ? ` ${rejectedCount}` : ""}</span>
+        </button>
+        <button class="btn sm" onclick={openTrash} title="View deleted items and restore them">Trash</button>
+        <button class="ico gear" class:on={settingsOpen} onclick={() => (settingsOpen = !settingsOpen)} title="Settings">...</button>
+      </div>
     </div>
 
     <!-- settings popover -->
@@ -1241,7 +1262,7 @@
         {:else if view.length === 0}
           <div class="welcome"><p>Nothing here matches the current filters.</p></div>
         {:else if editOpen}
-          <EditStudio {active} {selectedItems} />
+          <EditStudio {active} {selectedItems} sourceItems={view} />
         {:else if viewMode === "loupe"}
           <Loupe item={active} bind:this={loupeComp} />
         {:else if viewMode === "details"}
@@ -1290,7 +1311,7 @@
           <button class="dot sm" class:on={active.label === l.key} style="background:var({l.varName})" title={l.name} aria-label={l.name} onclick={() => label(l.key)}></button>
         {/each}
         <button class="btn sm" class:on={active.flag === "pick"} onclick={() => flag("pick")}>Pick</button>
-        <button class="btn sm danger" class:on={active.flag === "reject"} onclick={() => flag("reject")}>Reject</button>
+        <button class="btn sm danger" class:on={active.flag === "reject"} onclick={() => flag("reject")}>{active.flag === "reject" ? "Unreject" : "Reject"}</button>
 
         <!-- tags -->
         <div class="tags">
@@ -1343,8 +1364,10 @@
   .app.fs .bstrip,
   .app.fs .rstrip,
   .app.fs .pop { display: none; }
-  .tree { display: flex; flex-direction: column; background: var(--bg-panel); border-right: 1px solid var(--border); flex: 0 0 auto; min-width: 0; }
-  .tree-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+  .tree { display: flex; flex-direction: column; background: var(--bg-panel); border-right: 1px solid var(--border); flex: 0 0 auto; min-width: 0; transition: width 0.14s ease; }
+  .tree.collapsed { align-items: center; }
+  .tree-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 45px; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+  .tree.collapsed .tree-head { width: 100%; justify-content: center; padding: 8px; }
   .tree-actions { display: flex; align-items: center; gap: 6px; }
   .ico.sm { width: 26px; height: 26px; font-size: 13px; }
   .ico.spin { animation: spin 0.5s linear; color: var(--accent); border-color: var(--accent); }
@@ -1362,13 +1385,17 @@
 
   .center { display: flex; flex-direction: column; flex: 1; min-width: 0; height: 100vh; }
 
-  .bar { position: relative; display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-bottom: 1px solid var(--border); background: var(--bg-panel); flex-wrap: wrap; }
+  .bar { position: relative; display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--bg-panel); flex-wrap: nowrap; }
+  .tool-group { display: flex; align-items: center; gap: 5px; min-width: 0; flex: 0 0 auto; }
+  .ctl-label { color: var(--text-faint); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; white-space: nowrap; }
+  .viewGroup { padding-right: 1px; }
+  .rightTools { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
   .grp { display: flex; align-items: center; gap: 4px; }
   .seg { display: flex; align-items: center; gap: 3px; }
   .seg.flags { gap: 2px; }
   .seg.modes { gap: 2px; padding: 2px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; }
-  .spacer { flex: 1; }
-  .sel { background: var(--bg-elev); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 4px 6px; font-size: 12.5px; }
+  .spacer { flex: 1 1 auto; min-width: 10px; }
+  .sel { max-width: 128px; background: var(--bg-elev); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 4px 6px; font-size: 12.5px; }
   .ico { width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-elev); font-size: 14px; line-height: 1; }
   .ico:hover { background: var(--bg-hover); }
   .ico.on { border-color: var(--accent); color: var(--accent); }
@@ -1386,7 +1413,11 @@
   .zoom { gap: 6px; }
   .zoom .mini { color: var(--text-faint); font-size: 12px; }
   .zoom input { width: 90px; accent-color: var(--accent); }
-  .btn.sm { padding: 5px 10px; border-radius: 7px; font-size: 12.5px; }
+  .modeToggle { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-elev); }
+  .modeToggle button { min-width: 58px; padding: 5px 10px; border-radius: 7px; color: var(--text-dim); font-size: 12.5px; font-weight: 700; }
+  .modeToggle button:hover { background: var(--bg-hover); }
+  .modeToggle button.on { background: var(--accent); color: var(--accent-on); }
+  .btn.sm { padding: 5px 9px; border-radius: 7px; font-size: 12.5px; }
   .btn.sm.on { border-color: var(--accent); color: var(--accent); }
   .prep { position: relative; overflow: hidden; min-width: 96px; text-align: center; }
   .prep-fill { position: absolute; left: 0; top: 0; bottom: 0; background: color-mix(in srgb, var(--accent) 30%, transparent); transition: width 0.2s ease; }
@@ -1411,7 +1442,6 @@
   .hold { position: relative; overflow: hidden; }
   .hold-fill { position: absolute; left: 0; top: 0; bottom: 0; background: color-mix(in srgb, var(--reject) 35%, transparent); }
   .hold-lbl { position: relative; z-index: 1; }
-  .hold em { font-style: normal; opacity: 0.6; font-size: 11px; }
 
   .pop { position: absolute; right: 10px; top: 46px; z-index: 30; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 12px; width: 340px; display: flex; flex-direction: column; gap: 10px; }
   .pop .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; }

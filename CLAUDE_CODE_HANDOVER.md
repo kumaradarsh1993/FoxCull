@@ -12,7 +12,7 @@ Claude-built FoxCull project.
 - Visibility at creation time: private
 - Default branch: `main`
 - Codex-origin first commit: `b7a256f` / tag `v0.1.0`
-- Current Codex commit at this handover: `c187efe` / tag `v0.2.0`
+- Codex releases documented here: `v0.1.0`, `v0.2.0`, `v0.3.0`
 
 The original `fox-cull` folder was treated as read-only reference material.
 The fork was created by copying `fox-cull` into `FoxCullCodex` while excluding
@@ -162,7 +162,6 @@ Physical media organization:
 - UI features added:
   - drag media from Grid onto a folder in the left tree;
   - drag media from Details view onto a folder in the left tree;
-  - toolbar Cut/Paste buttons;
   - keyboard `Ctrl/Cmd+X` then `Ctrl/Cmd+V` to move selected files into the
     currently open folder.
 - Moves physically move files on disk and uniquify target names on collision.
@@ -184,24 +183,84 @@ Validation run for v0.2:
   `Cannot find type definition file for 'node'`.
 - `npm run build` passed.
 
+## Version 0.3.0: Editor Entry Flow And UI Repair
+
+Tag: `v0.3.0`
+
+User feedback that triggered this release:
+
+- Clicking Edit after selecting a video opened an empty editor with no obvious
+  way to add the video.
+- The left folder tree must remain folder-only, but needed a collapse control.
+- The top toolbar was cluttered, wrapped to a second line, and made Edit look
+  like another view button instead of a dedicated mode.
+- Type/status/rating/tag controls needed clearer information grouping.
+- Visible Cut/Paste controls were unwanted; the user wanted keyboard move
+  semantics and drag-to-folder organization.
+- Reject should become Unreject when the active item or selection is already
+  rejected.
+
+UI/editor changes:
+
+- Edit is now a dedicated Browse/Edit mode toggle on the top-right.
+- Grid, Details, and Focus remain grouped under View.
+- Sort and Group have explicit labels and shorter option names.
+- Type, Status, Rating, Label, Tag, and Scope moved into one Filters popover;
+  the Filters button shows a count when any of those filters is active.
+- The left folder pane can collapse to a narrow rail and expand again without
+  exposing files in the tree.
+- Visible toolbar/context-menu Cut/Paste entries were removed. `Ctrl/Cmd+X`
+  and `Ctrl/Cmd+V` still move selected files into the current folder, and
+  drag-to-folder still works.
+- Reject now toggles to Unreject when all active targets are rejected.
+- The bottom active-item Reject button also shows Unreject for rejected media.
+
+Edit workspace changes:
+
+- `EditStudio.svelte` now receives the current media view as `sourceItems`.
+- Opening Edit with selected videos preloads those videos into the edit
+  timeline; if no selected video exists, the active video is used.
+- The editor viewport is split into:
+  - source video tray;
+  - preview/transport/timeline work area;
+  - segment/look/audio/export inspector.
+- Current view videos appear in the source tray and can be clicked or dragged
+  into the timeline.
+- Timeline drop target is visible even when empty.
+- Preview brightness/contrast/saturation now reflect the current look sliders.
+- The source item double-click duplicate-add path was removed so clip adding has
+  one predictable click/drag path.
+
+Validation run for v0.3:
+
+- `cargo check` passed.
+- `npm run check` passed with 0 errors and one existing Node type warning:
+  `Cannot find type definition file for 'node'`.
+- `npm run build` passed.
+- In-app browser smoke test passed for:
+  - one-line toolbar;
+  - Filters popover with Type/Status controls;
+  - collapsed folder rail.
+
 ## Release State
 
 Published releases at handover time:
 
 - `v0.1.0`: `https://github.com/kumaradarsh1993/FoxCullCodex/releases/tag/v0.1.0`
 - `v0.2.0`: `https://github.com/kumaradarsh1993/FoxCullCodex/releases/tag/v0.2.0`
+- `v0.3.0`: `https://github.com/kumaradarsh1993/FoxCullCodex/releases/tag/v0.3.0`
 
-Important v0.2.0 assets:
+Important v0.3.0 assets:
 
 - Windows installer:
-  `FoxCull.Codex_0.2.0_x64-setup.exe`
+  `FoxCull.Codex_0.3.0_x64-setup.exe`
 - Windows portable:
-  `foxcull-codex_0.2.0_x64_portable.zip`
+  `foxcull-codex_0.3.0_x64_portable.zip`
 - macOS Apple Silicon:
-  `FoxCull.Codex_0.2.0_aarch64.dmg`
+  `FoxCull.Codex_0.3.0_aarch64.dmg`
 - Linux:
-  `FoxCull.Codex_0.2.0_amd64.AppImage`
-  and `FoxCull.Codex_0.2.0_amd64.deb`
+  `FoxCull.Codex_0.3.0_amd64.AppImage`
+  and `FoxCull.Codex_0.3.0_amd64.deb`
 
 Because the repository is private, release pages and assets are visible only to
 accounts with access to the repository.

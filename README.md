@@ -9,8 +9,12 @@ share the stable app's `_FoxCull` catalog/trash while new editing work evolves.
 
 ## Codex-origin quick edit
 
-- **Edit mode** sits beside Grid, Details and Focus.
-- Add the active video, selected videos, or duplicate timeline segments.
+- **Edit mode** is a dedicated Browse/Edit workspace toggle.
+- Opening Edit with an active or selected video now preloads that video into the
+  editor source tray/timeline instead of starting from a dead empty state.
+- The edit workspace has a source video tray, preview, transport controls,
+  timeline, segment trims, crop controls, look controls, audio selection, and
+  export controls in one screen.
 - Use 9:16, 1:1, 16:9, or original-output presets.
 - Drag/adjust a per-segment crop frame for portrait exports.
 - Export uses stream-copy trim/concat when no pixel changes are requested.
@@ -21,12 +25,14 @@ share the stable app's `_FoxCull` catalog/trash while new editing work evolves.
 
 - Drag selected media from Grid or Details onto a folder in the left tree to
   physically move those files.
-- Use Cut/Paste or `Ctrl/Cmd+X` then `Ctrl/Cmd+V` to move selected files into
-  the currently open folder.
+- Use `Ctrl/Cmd+X` then `Ctrl/Cmd+V` to move selected files into the currently
+  open folder.
 - Moves preserve catalog metadata: ratings, labels, flags, tags, trims, and
   cached capture dates follow the new file path.
 - Destructive commands now validate backend paths against the active library
   root and tracked in-app Trash entries before touching disk.
+- The folder tree can collapse to a narrow rail when the editor or grid needs
+  more horizontal room.
 
 ---
 
