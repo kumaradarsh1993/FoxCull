@@ -83,7 +83,7 @@
       loadVideoScrubstrip(path).then((s) => {
         if (item.path === path && settings.s.liveScrub && s) strip = s;
       });
-    }, 160);
+    }, 60);
   }
 
   function leaveThumb() {
@@ -114,6 +114,10 @@
         class="scrubLayer"
         style="background-image:url('{strip.src}'); background-size:{strip.cols * 100}% {strip.rows * 100}%; background-position:{strip.cols <= 1 ? 0 : (cell.x / (strip.cols - 1)) * 100}% {strip.rows <= 1 ? 0 : (cell.y / (strip.rows - 1)) * 100}%"
       ></div>
+    {/if}
+    {#if isVideo && settings.s.liveScrub && scrub != null}
+      <span class="scrubRail"><span style="width:{scrub * 100}%"></span></span>
+      {#if !strip}<span class="scrubHint" style="left:{scrub * 100}%"></span>{/if}
     {/if}
     {#if isVideo}<span class="play">▶</span>{/if}
   {:else if isVideo}
@@ -188,6 +192,36 @@
     background-repeat: no-repeat;
     background-color: #050505;
   }
+  .scrubRail {
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: 7px;
+    z-index: 3;
+    height: 3px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.45);
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .scrubRail span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--accent);
+  }
+  .scrubHint {
+    position: absolute;
+    bottom: 12px;
+    z-index: 3;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    transform: translateX(-50%);
+    background: var(--accent);
+    box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.28);
+    pointer-events: none;
+  }
   .play {
     position: absolute;
     z-index: 2;
@@ -205,6 +239,9 @@
     font-size: 13px;
     padding-left: 2px;
     pointer-events: none;
+  }
+  .thumb:has(.scrubRail) .play {
+    display: none;
   }
   .badge {
     position: absolute;

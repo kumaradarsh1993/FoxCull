@@ -8,6 +8,7 @@
     MediaItem,
     MediaProbe,
   } from "$lib/types";
+  import ContextMenu, { type MenuEntry } from "./ContextMenu.svelte";
   import Thumb from "./Thumb.svelte";
 
   let {
@@ -16,12 +17,14 @@
     sourceItems = [],
     currentDir = null,
     recursive = true,
+    refreshKey = 0,
   }: {
     active: MediaItem | null;
     selectedItems: MediaItem[];
     sourceItems?: MediaItem[];
     currentDir?: string | null;
     recursive?: boolean;
+    refreshKey?: number;
   } = $props();
 
   type PresetId = "original" | "landscape" | "square" | "reels";
@@ -78,6 +81,12 @@
   const SNAP = 0.16;
   const basename = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
   const extOf = (p: string) => (basename(p).match(/\.([^.]+)$/)?.[1] ?? "").toLowerCase();
+  const normPath = (p: string) =>
+    p
+      .replace(/^\\\\\?\\/, "")
+      .replace(/\//g, "\\")
+      .replace(/\\+$/g, "")
+      .toLowerCase();
 
   let clips = $state<TimelineClip[]>([]);
   let audioClips = $state<AudioClip[]>([]);
@@ -110,6 +119,8 @@
   let seeding = $state(false);
   let lastPreviewClipId = "";
   let timelineDrag: TimelineDrag | null = null;
+  let sourceMenu = $state<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
+  let exportOptionsOpen = $state(false);
   let cropDrag:
     | { x: number; y: number; cropX: number; cropY: number; imgW: number; imgH: number; cropW: number; cropH: number }
     | null = null;
@@ -180,8 +191,9 @@
     const seen = new Set<string>();
     const out: EditSourceItem[] = [];
     for (const item of [...sourceBase, ...initialVideos.map(mediaToSource), ...sourceItems.filter((i) => i.kind === "video").map(mediaToSource)]) {
-      if (seen.has(item.path)) continue;
-      seen.add(item.path);
+      const key = normPath(item.path);
+      if (seen.has(key)) continue;
+      seen.add(key);
       out.push(item);
     }
     return out;
@@ -197,6 +209,7 @@
   $effect(() => {
     const dir = currentDir;
     const rec = recursive;
+    refreshKey;
     let alive = true;
     sourceBase = [];
     if (!dir) return;
@@ -389,6 +402,22 @@
     exportNote = null;
   }
 
+  function duplicateClip(clip: TimelineClip) {
+    const copy = { ...clip, id: uid(), start: clip.start + Math.max(0.1, clip.outS - clip.inS) };
+    clips = [...clips, copy];
+    selectedId = copy.id;
+    selectedAudioId = null;
+    exportNote = null;
+  }
+
+  function duplicateAudio(clip: AudioClip) {
+    const copy = { ...clip, id: uid(), start: clip.start + Math.max(0.1, clip.duration) };
+    audioClips = [...audioClips, copy];
+    selectedAudioId = copy.id;
+    selectedId = null;
+    exportNote = null;
+  }
+
   function updateClip(id: string, patch: Partial<TimelineClip>) {
     clips = clips.map((clip) => (clip.id === id ? { ...clip, ...patch } : clip));
   }
@@ -504,6 +533,68 @@
     sourceBase = [src, ...sourceBase.filter((s) => s.path !== picked)];
     sourceFocusPath = picked;
     await addAudio(src);
+  }
+
+  function openSourceMenu(e: MouseEvent, item: EditSourceItem) {
+    e.preventDefault();
+    e.stopPropagation();
+    sourceFocusPath = item.path;
+    ensureProbe(item);
+    const entries: MenuEntry[] = [
+      {
+        label: item.kind === "audio" ? "Add to A1" : "Add to V1",
+        icon: "+",
+        action: () => (item.kind === "audio" ? void addAudio(item, 0) : void addVideos([item], 0)),
+      },
+      {
+        label: item.kind === "audio" ? "Add to next audio gap" : "Add to end",
+        icon: "→",
+        action: () => (item.kind === "audio" ? void addAudio(item) : void addVideos([item])),
+      },
+      { separator: true },
+      { label: "Reveal in Explorer", icon: "↗", action: () => api.reveal(item.path) },
+      { label: "Open externally", icon: "□", action: () => api.openExternal(item.path) },
+      {
+        label: "Copy path",
+        icon: "⧉",
+        action: () => navigator.clipboard?.writeText(item.path).catch(() => {}),
+      },
+    ];
+    sourceMenu = { x: e.clientX, y: e.clientY, entries };
+  }
+
+  function openTimelineMenu(e: MouseEvent, clip: TimelineClip) {
+    e.preventDefault();
+    e.stopPropagation();
+    selectClip(clip.id);
+    sourceMenu = {
+      x: e.clientX,
+      y: e.clientY,
+      entries: [
+        { label: "Duplicate clip", icon: "+", action: () => duplicateClip(clip) },
+        { label: "Remove clip", icon: "×", danger: true, action: () => removeClip(clip.id) },
+        { separator: true },
+        { label: "Reveal source", icon: "↗", action: () => api.reveal(clip.path) },
+        { label: "Copy source path", icon: "⧉", action: () => navigator.clipboard?.writeText(clip.path).catch(() => {}) },
+      ],
+    };
+  }
+
+  function openAudioMenu(e: MouseEvent, clip: AudioClip) {
+    e.preventDefault();
+    e.stopPropagation();
+    selectAudio(clip.id);
+    sourceMenu = {
+      x: e.clientX,
+      y: e.clientY,
+      entries: [
+        { label: "Duplicate audio", icon: "+", action: () => duplicateAudio(clip) },
+        { label: "Remove audio", icon: "×", danger: true, action: () => removeAudio(clip.id) },
+        { separator: true },
+        { label: "Reveal source", icon: "↗", action: () => api.reveal(clip.path) },
+        { label: "Copy source path", icon: "⧉", action: () => navigator.clipboard?.writeText(clip.path).catch(() => {}) },
+      ],
+    };
   }
 
   async function exportTimeline() {
@@ -812,6 +903,7 @@
             draggable={true}
             ondragstart={(e) => startSourceDrag(e, item)}
             ondragend={endSourceDrag}
+            oncontextmenu={(e) => openSourceMenu(e, item)}
             onclick={() => {
               sourceFocusPath = item.path;
               ensureProbe(item);
@@ -858,6 +950,32 @@
       <button class="miniBtn" onclick={takeSnapshot} disabled={!selectedClip || snapshotting}>
         {snapshotting ? "Saving" : "Frame"}
       </button>
+      <div class="exportOpts">
+        <button class="miniBtn" class:on={exportOptionsOpen} onclick={() => (exportOptionsOpen = !exportOptionsOpen)}>
+          Options
+        </button>
+        {#if exportOptionsOpen}
+          <div class="exportMenu">
+            <label>Encoder
+              <select bind:value={encoder}>
+                <option value="auto">Auto</option>
+                <option value="x264">x264</option>
+                <option value="nvenc">NVIDIA</option>
+              </select>
+            </label>
+            <label>Quality
+              <select bind:value={quality}>
+                <option value="best">Best</option>
+                <option value="high">High</option>
+                <option value="standard">Standard</option>
+                <option value="small">Small</option>
+              </select>
+            </label>
+            <label class="check"><input type="checkbox" bind:checked={preserveSourceAudio} disabled={audioClips.length > 0 || orderedClips.length !== 1} /> Keep source audio</label>
+            <button class="miniBtn" onclick={() => { exportOptionsOpen = false; void pickAudio(); }}>Choose audio</button>
+          </div>
+        {/if}
+      </div>
       <button class="exportBtn" onclick={exportTimeline} disabled={!clips.length || exporting}>
         {exporting ? "Exporting" : "Export"}
       </button>
@@ -913,7 +1031,7 @@
         <strong>Timeline</strong>
         <span>{clips.length} video · {audioClips.length} audio · {fmt(timelineSeconds)}</span>
         <label class="scale">Zoom <input type="range" min="12" max="60" bind:value={timelineScale} /></label>
-        <span class="snap">Snap on</span>
+        <span class="snap">Snap</span>
         <span class="spacer"></span>
         <button class="ghost" onclick={() => { clips = []; audioClips = []; }} disabled={!clips.length && !audioClips.length}>Clear</button>
       </div>
@@ -935,6 +1053,7 @@
                   class:on={clip.id === selectedId}
                   style="left:{clip.start * timelineScale}px; width:{Math.max(42, (clip.outS - clip.inS) * timelineScale)}px"
                   onclick={() => selectClip(clip.id)}
+                  oncontextmenu={(e) => openTimelineMenu(e, clip)}
                   onpointerdown={(e) => startTimelinePointer(e, "video", clip.id, "move")}
                   title={clip.path}
                 >
@@ -951,7 +1070,7 @@
 
           {#each AUDIO_LANES as lane}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="track audioTrack" ondragover={allowDrop} ondrop={(e) => dropOnLane(e, "audio", lane)}>
+            <div class="track audioTrack" class:firstAudio={lane === 0} ondragover={allowDrop} ondrop={(e) => dropOnLane(e, "audio", lane)}>
               <span class="trackLabel">A{lane + 1}</span>
               {#each audioClips.filter((c) => c.lane === lane) as clip (clip.id)}
                 <button
@@ -959,6 +1078,7 @@
                   class:on={clip.id === selectedAudioId}
                   style="left:{clip.start * timelineScale}px; width:{Math.max(80, clip.duration * timelineScale)}px"
                   onclick={() => selectAudio(clip.id)}
+                  oncontextmenu={(e) => openAudioMenu(e, clip)}
                   onpointerdown={(e) => startTimelinePointer(e, "audio", clip.id, "move")}
                   title={clip.path}
                 >
@@ -974,7 +1094,7 @@
   </section>
 
   <aside class="inspector">
-    <div class="block">
+    <div class="block segmentBlock">
       <h3>Segment</h3>
       {#if selectedClip}
         <div class="row">
@@ -1010,7 +1130,9 @@
       <button class="miniBtn" onclick={resetColor}>Reset</button>
     </div>
 
-    <div class="block">
+    {#if exportNote}<p class="note sideNote">{exportNote}</p>{/if}
+
+    <div class="block exportBlock">
       <h3>Audio & Export</h3>
       <label>Encoder
         <select bind:value={encoder}>
@@ -1037,6 +1159,9 @@
       {#if exportNote}<p class="note">{exportNote}</p>{/if}
     </div>
   </aside>
+  {#if sourceMenu}
+    <ContextMenu x={sourceMenu.x} y={sourceMenu.y} entries={sourceMenu.entries} onclose={() => (sourceMenu = null)} />
+  {/if}
 </div>
 
 <style>
@@ -1273,6 +1398,29 @@
     background: color-mix(in srgb, var(--accent) 20%, transparent);
     color: var(--accent);
   }
+  .exportOpts {
+    position: relative;
+    flex: 0 0 auto;
+  }
+  .miniBtn.on {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .exportMenu {
+    position: absolute;
+    right: 0;
+    top: 34px;
+    z-index: 40;
+    width: 230px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    box-shadow: var(--shadow);
+  }
   .spacer {
     flex: 1 1 auto;
     min-width: 8px;
@@ -1443,6 +1591,20 @@
     border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
     background: color-mix(in srgb, var(--viewport-bg) 70%, transparent);
   }
+  .audioTrack.firstAudio {
+    margin-top: 10px;
+    border-top: 2px solid color-mix(in srgb, var(--accent) 65%, var(--border));
+  }
+  .audioTrack.firstAudio::before {
+    content: "Audio";
+    position: absolute;
+    left: -38px;
+    top: -12px;
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
   .track:hover {
     background: color-mix(in srgb, var(--accent) 8%, var(--viewport-bg));
   }
@@ -1503,6 +1665,10 @@
     flex-direction: column;
     gap: 9px;
   }
+  .segmentBlock,
+  .exportBlock {
+    display: none;
+  }
   .block h3 {
     margin: 0 0 2px;
     font-size: 13px;
@@ -1542,6 +1708,15 @@
   }
   .note {
     margin: 0;
+  }
+  .sideNote {
+    margin: 10px 12px 0;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-elev);
+    color: var(--text-dim);
+    font-size: 12px;
   }
   @media (max-width: 1180px) {
     .editShell {

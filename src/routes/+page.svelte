@@ -87,6 +87,7 @@
   let treeCollapsed = $state(false);
   // Bumped by the tree's ↻ button to make expanded folders recount their badges.
   let countsGen = $state(0);
+  let folderRefreshKey = $state(0);
   let gridComp = $state<{ scrollToIndex: (i: number, center?: boolean) => void } | null>(null);
   let loupeComp = $state<{ togglePlay: () => void; seekBy: (d: number) => void } | null>(null);
 
@@ -293,9 +294,15 @@
   async function refreshCounts() {
     if (recounting) return;
     recounting = true;
+    const dir = currentDir;
+    const keepPath = active?.path ?? null;
+    const keepIndex = activeIndex;
     try {
       await api.clearFolderCounts();
       countsGen++;
+      if (dir) {
+        await openFolder(dir, { selectPath: keepPath, selectIndex: keepIndex });
+      }
     } finally {
       // Brief spin so the click feels acknowledged even when it's instant.
       setTimeout(() => (recounting = false), 400);
@@ -315,9 +322,11 @@
     try {
       libInfo = await api.setLibraryRoot(rootForDir(dir));
       items = await api.listFolderMedia(dir, settings.s.includeSub);
+      folderRefreshKey++;
       writable = await api.folderWritable(dir);
     } catch (e) {
       items = [];
+      folderRefreshKey++;
       console.error(e);
     }
     // Land on the requested photo (restore on launch) or index (stay put after a
@@ -326,6 +335,7 @@
     if (opts.selectPath) {
       const found = view.findIndex((i) => i.path === opts.selectPath);
       if (found >= 0) idx = found;
+      else if (opts.selectIndex != null) idx = Math.max(0, Math.min(opts.selectIndex, view.length - 1));
     } else if (opts.selectIndex != null) {
       idx = Math.max(0, Math.min(opts.selectIndex, view.length - 1));
     }
@@ -752,6 +762,43 @@
     menu = { x: e.clientX, y: e.clientY, entries: mediaMenuEntries(ctx, targets()) };
   }
 
+  async function refreshFolderPath(path: string) {
+    await api.clearFolderCounts();
+    countsGen++;
+    if (currentDir && samePath(path, currentDir)) {
+      await openFolder(path, { selectPath: active?.path ?? null, selectIndex: activeIndex });
+    }
+  }
+
+  function openFolderContextMenu(e: MouseEvent, path: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    const isOpen = currentDir ? samePath(path, currentDir) : false;
+    menu = {
+      x: e.clientX,
+      y: e.clientY,
+      entries: [
+        { label: "Open folder", icon: "▣", on: isOpen, action: () => openFolder(path) },
+        { label: "Refresh folder", icon: "↻", action: () => refreshFolderPath(path) },
+        {
+          label: "Paste moved files here",
+          icon: "⇥",
+          disabled: cutPaths.length === 0,
+          action: () => movePathsTo(cutPaths, path),
+        },
+        { separator: true },
+        { label: revealLabel, icon: "↗", action: () => api.reveal(path) },
+        { label: "Copy folder path", icon: "⧉", action: () => copyPath(path) },
+        { separator: true },
+        {
+          label: settings.s.includeSub ? "Stop including subfolders" : "Include subfolders",
+          icon: "⊞",
+          action: () => toggleSub(),
+        },
+      ],
+    };
+  }
+
   /** Suppress the webview's native menu everywhere except real text inputs. */
   function onGlobalContextMenu(e: MouseEvent) {
     const t = e.target as HTMLElement | null;
@@ -992,41 +1039,40 @@
 
 <div class="app" data-dim={dimLevel} class:fs={fullscreen}>
   <!-- ░ left: drives + folder tree ░ -->
-  <aside class="tree" class:collapsed={treeCollapsed} style="width:{treeCollapsed ? 44 : settings.s.treeWidth}px">
-    <div class="tree-head">
-      <button class="ico sm" onclick={() => (treeCollapsed = !treeCollapsed)} title={treeCollapsed ? "Show folders" : "Hide folders"} aria-label={treeCollapsed ? "Show folders" : "Hide folders"}>
-        <span class="sidebarGlyph" class:closed={treeCollapsed} aria-hidden="true"><span></span></span>
-      </button>
-      {#if !treeCollapsed}
+  {#if !treeCollapsed}
+    <aside class="tree" style="width:{settings.s.treeWidth}px">
+      <div class="tree-head">
+        <button class="ico sm" onclick={() => (treeCollapsed = true)} title="Hide folders" aria-label="Hide folders">
+          <span class="sidebarGlyph" aria-hidden="true"><span></span></span>
+        </button>
         <span class="brand">Folders</span>
         <div class="tree-actions">
           <button
             class="ico sm"
             class:spin={recounting}
             onclick={refreshCounts}
-            title="Recount folders"
-            aria-label="Recount folders"
+            title="Refresh folders and current view"
+            aria-label="Refresh folders and current view"
           ><span class="refreshGlyph" aria-hidden="true"></span></button>
           <button class="btn sm" onclick={openFolderPicker} title="Jump to a folder">Open</button>
         </div>
-      {/if}
-    </div>
-    {#if !treeCollapsed}
+      </div>
       <ActivityBar />
       <div class="tree-body">
         {#if drives.length}
           {#each drives as d (d.path)}
-            <TreeNode node={d} {currentDir} onselect={openFolder} onmove={(dest) => movePathsTo(draggingPaths, dest)} {countsGen} />
+            <TreeNode node={d} {currentDir} onselect={openFolder} onmove={(dest) => movePathsTo(draggingPaths, dest)} onfoldercontext={openFolderContextMenu} {countsGen} />
           {/each}
         {:else}
           <p class="hint">No drives detected.</p>
         {/if}
       </div>
-    {/if}
-  </aside>
-
-  {#if !treeCollapsed}
+    </aside>
     <div class="vsplit" role="separator" tabindex="-1" onpointerdown={startTreeResize}></div>
+  {:else}
+    <button class="treeRestore ico sm" onclick={() => (treeCollapsed = false)} title="Show folders" aria-label="Show folders">
+      <span class="sidebarGlyph closed" aria-hidden="true"><span></span></span>
+    </button>
   {/if}
 
   <!-- ░ center ░ -->
@@ -1284,7 +1330,7 @@
             <p>Pick a folder on the left to start culling. Browse-in-place — nothing is imported or changed.</p>
           </div>
         {:else if editOpen}
-          <EditStudio {active} {selectedItems} sourceItems={items} currentDir={currentDir} recursive={settings.s.includeSub} />
+          <EditStudio {active} {selectedItems} sourceItems={items} currentDir={currentDir} recursive={settings.s.includeSub} refreshKey={folderRefreshKey} />
         {:else if view.length === 0}
           <div class="welcome"><p>Nothing here matches the current filters.</p></div>
         {:else if viewMode === "loupe"}
@@ -1376,7 +1422,7 @@
 </div>
 
 <style>
-  .app { display: flex; height: 100vh; overflow: hidden; }
+  .app { position: relative; display: flex; height: 100vh; overflow: hidden; }
   /* Full-screen mode (F): nothing but the photo stage — every panel, bar and
      strip disappears and the viewport fills the (OS-fullscreened) window. */
   .app.fs .tree,
@@ -1387,11 +1433,17 @@
   .app.fs .info,
   .app.fs .bstrip,
   .app.fs .rstrip,
-  .app.fs .pop { display: none; }
+  .app.fs .pop,
+  .app.fs .treeRestore { display: none; }
   .tree { display: flex; flex-direction: column; background: var(--bg-panel); border-right: 1px solid var(--border); flex: 0 0 auto; min-width: 0; transition: width 0.14s ease; }
-  .tree.collapsed { align-items: center; }
   .tree-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 45px; padding: 9px 10px; border-bottom: 1px solid var(--border); }
-  .tree.collapsed .tree-head { width: 100%; justify-content: center; padding: 8px; }
+  .treeRestore {
+    position: absolute;
+    z-index: 80;
+    left: 8px;
+    top: 8px;
+    box-shadow: var(--shadow);
+  }
   .tree-actions { display: flex; align-items: center; gap: 6px; }
   .ico.sm { width: 26px; height: 26px; font-size: 13px; }
   .ico.spin { animation: spin 0.5s linear; color: var(--accent); border-color: var(--accent); }

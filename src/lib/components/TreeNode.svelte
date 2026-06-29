@@ -8,6 +8,7 @@
     currentDir,
     onselect,
     onmove,
+    onfoldercontext,
     depth = 0,
     count = null,
     countsGen = 0,
@@ -16,6 +17,7 @@
     currentDir: string | null;
     onselect: (path: string) => void;
     onmove?: (path: string) => void;
+    onfoldercontext?: (event: MouseEvent, path: string) => void;
     depth?: number;
     /** Recursive media count for THIS folder (given by the parent), or null. */
     count?: number | null;
@@ -143,6 +145,7 @@
   ondragover={onDragOver}
   ondragleave={onDragLeave}
   ondrop={onDrop}
+  oncontextmenu={(e) => onfoldercontext?.(e, node.path)}
 >
   {#if showChevron}
     <button
@@ -171,6 +174,7 @@
       {currentDir}
       {onselect}
       {onmove}
+      {onfoldercontext}
       depth={depth + 1}
       count={kidCounts[k.path] ?? null}
       {countsGen}

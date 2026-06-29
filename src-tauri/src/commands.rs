@@ -868,9 +868,12 @@ pub fn list_folder_media(
 /// become culling items.
 #[tauri::command]
 pub fn list_edit_sources(dir: String, recursive: bool) -> Result<Vec<EditSourceItem>, String> {
-    let p = canonical_dir(Path::new(&dir))?;
+    let p = Path::new(&dir);
+    if !p.is_dir() {
+        return Err(format!("not a directory: {dir}"));
+    }
     let mut paths: Vec<(PathBuf, i64, u64)> = Vec::new();
-    collect_edit_sources(&p, recursive, &mut paths);
+    collect_edit_sources(p, recursive, &mut paths);
     let mut items: Vec<EditSourceItem> = paths
         .into_iter()
         .map(|(path, mtime, size)| {

@@ -1,6 +1,6 @@
 {
   "name": "foxcull-codex",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Codex-origin photo/video culling and quick-editing tool",
   "type": "module",
   "scripts": {
