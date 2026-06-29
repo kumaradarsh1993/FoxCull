@@ -7,32 +7,32 @@ window.PRODUCT_SITE = {
   repoUrl: "https://github.com/kumaradarsh1993/FoxCullCodex",
   scene: "edit",
   theme: {
-    bg: "#f5f7f2",
-    ink: "#141c17",
-    accent: "#2d7f5e",
-    accent2: "#cf4e58",
-    accent3: "#2b62b2"
+    bg: "#f4f7fb",
+    ink: "#101820",
+    accent: "#12a9a3",
+    accent2: "#ff4f91",
+    accent3: "#7c5cff"
   },
   downloads: [
     {
       label: "Download for Windows",
-      note: "Stable v0.2.0 installer",
-      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.2.0/FoxCull.Codex_0.2.0_x64-setup.exe"
+      note: "Stable v0.4.0 installer",
+      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.4.0/FoxCull.Codex_0.4.0_x64-setup.exe"
     },
     {
       label: "Download for macOS",
       note: "Apple silicon DMG",
-      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.2.0/FoxCull.Codex_0.2.0_aarch64.dmg"
+      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.4.0/FoxCull.Codex_0.4.0_aarch64.dmg"
     },
     {
       label: "Download for Linux",
       note: "AppImage",
-      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.2.0/FoxCull.Codex_0.2.0_amd64.AppImage"
+      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.4.0/FoxCull.Codex_0.4.0_amd64.AppImage"
     },
     {
       label: "Portable Windows",
       note: "Zip build",
-      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.2.0/foxcull-codex_0.2.0_x64_portable.zip"
+      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.4.0/foxcull-codex_0.4.0_x64_portable.zip"
     }
   ],
   secondary: [
@@ -68,7 +68,7 @@ window.PRODUCT_SITE = {
   panels: [
     {
       title: "Stable",
-      body: "The installer links point to the v0.2.0 release assets."
+      body: "The installer links point to the v0.4.0 release assets."
     },
     {
       title: "Private repo",

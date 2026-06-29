@@ -1,89 +1,86 @@
-/* fox-cull theming. Dark (warm fox brown) is the default; light is a warm,
-   complementary "paper" palette sharing the same fox-orange accent — NOT the old
-   cold Google-Photos gray. Components reference the tokens below, so theming is
-   just a palette swap. */
+/* FoxCull Codex theming. The fork now has a distinct cool-cyan identity instead
+   of the original warm fox-orange chrome. Components reference the tokens below,
+   so the app-wide identity remains a palette swap. */
 :root,
 :root[data-theme="light"] {
-  --bg: #f7f2ea; /* warm paper */
-  --bg-panel: #efe8db; /* side panels / bars */
-  --bg-elev: #fffaf2; /* cards, popovers */
-  --bg-hover: #e7ddcb;
-  --viewport-bg: #e3dccf; /* warm neutral behind photos */
-  --border: #ddd2bf;
-  --text: #2a2018; /* warm near-black */
-  --text-dim: #6e5f4b;
-  --text-faint: #a3927a;
-  --accent: #e0701f; /* fox orange */
-  --accent-dim: #f6dfc8; /* light orange fill for active chips */
-  --accent-on: #ffffff;
-  --reject: #c93a2c;
-  --pick: #2e9447;
-  --star: #d9920c;
-  --shadow: 0 4px 18px rgba(74, 52, 28, 0.18);
+  --bg: #f4f7fb;
+  --bg-panel: #e8eef5;
+  --bg-elev: #ffffff;
+  --bg-hover: #dce6ee;
+  --viewport-bg: #dde4eb;
+  --border: #c8d3dd;
+  --text: #101820;
+  --text-dim: #52616d;
+  --text-faint: #83919d;
+  --accent: #12a9a3;
+  --accent-dim: #c7f2ee;
+  --accent-on: #041111;
+  --reject: #d84b65;
+  --pick: #218c62;
+  --star: #c98b12;
+  --shadow: 0 4px 18px rgba(28, 44, 56, 0.16);
 
-  --label-red: #c93a2c;
-  --label-green: #2e9447;
-  --label-yellow: #d9a216;
-  --label-blue: #2f6fd0;
-  --label-purple: #7d50d0;
+  --label-red: #d84b65;
+  --label-green: #218c62;
+  --label-yellow: #c98b12;
+  --label-blue: #2e75d4;
+  --label-purple: #7a5bd6;
 
   --tree-w: 270px;
   --font: "Inter", "Roboto", system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 :root[data-theme="dark"] {
-  --bg: #14110d;
-  --bg-panel: #1d1812;
-  --bg-elev: #272018;
-  --bg-hover: #332a20;
-  --viewport-bg: #0a0805;
-  --border: #3a2f24;
-  --text: #f3ece1;
-  --text-dim: #b6a892;
-  --text-faint: #7d7060;
-  --accent: #ec7c34;
-  --accent-dim: #7a3f16;
-  --accent-on: #ffffff;
-  --reject: #e0533d;
-  --pick: #5bbf6a;
-  --star: #f3c14b;
+  --bg: #101315;
+  --bg-panel: #171c20;
+  --bg-elev: #20272c;
+  --bg-hover: #2a343a;
+  --viewport-bg: #080a0b;
+  --border: #303a42;
+  --text: #eef7f7;
+  --text-dim: #b4c5c7;
+  --text-faint: #74868a;
+  --accent: #25d8c4;
+  --accent-dim: #0b5d58;
+  --accent-on: #041111;
+  --reject: #ff5b7a;
+  --pick: #63d68a;
+  --star: #f2b63c;
   --shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
 
-  --label-red: #e0533d;
-  --label-green: #5bbf6a;
-  --label-yellow: #f3c14b;
-  --label-blue: #4d97e0;
-  --label-purple: #9b6fe0;
+  --label-red: #ff5b7a;
+  --label-green: #63d68a;
+  --label-yellow: #f2b63c;
+  --label-blue: #59a8ff;
+  --label-purple: #a78bfa;
 }
 
-/* Warm — for long culling sessions in a dim, warmly-lit room (the night-light
-   case). Chrome drops blue almost entirely: deep amber-browns, candle-toned
-   text, a softer ember accent — nothing in the UI glows colder than the room.
-   The photo stage itself (--viewport-bg) stays a near-black NEUTRAL: a tinted
-   surround would bias how you judge the photos' colors. */
+/* Warm keeps a low-blue option for late-night culling, but uses a plum accent
+   so Codex no longer visually collapses back into the original orange app. The
+   photo stage itself stays neutral: a tinted surround would bias color judgment. */
 :root[data-theme="warm"] {
-  --bg: #191007;
-  --bg-panel: #221709;
-  --bg-elev: #2d1f0e;
-  --bg-hover: #3a2a14;
-  --viewport-bg: #0b0a09; /* neutral near-black — color judgment stays honest */
-  --border: #46331b;
-  --text: #f5e3c8;
-  --text-dim: #c8ab82;
-  --text-faint: #8d7452;
-  --accent: #e8923a;
-  --accent-dim: #6e4312;
-  --accent-on: #1d1206;
-  --reject: #d96a4a;
-  --pick: #9eb35c;
-  --star: #e9b54d;
+  --bg: #171217;
+  --bg-panel: #211a23;
+  --bg-elev: #2b2330;
+  --bg-hover: #372d40;
+  --viewport-bg: #0b0a0c;
+  --border: #4a3a50;
+  --text: #f4ecf7;
+  --text-dim: #c8b9d0;
+  --text-faint: #8e7a99;
+  --accent: #c77dff;
+  --accent-dim: #4b2765;
+  --accent-on: #120818;
+  --reject: #f0677f;
+  --pick: #93c96b;
+  --star: #efb94f;
   --shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
 
-  --label-red: #d96a4a;
-  --label-green: #9eb35c;
-  --label-yellow: #e9b54d;
-  --label-blue: #7e96b8;
-  --label-purple: #a884c0;
+  --label-red: #f0677f;
+  --label-green: #93c96b;
+  --label-yellow: #efb94f;
+  --label-blue: #7ea7d8;
+  --label-purple: #c77dff;
 }
 
 * { box-sizing: border-box; }

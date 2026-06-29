@@ -1,40 +1,37 @@
 <svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#241c14"/>
-      <stop offset="1" stop-color="#120f0b"/>
+    <linearGradient id="tile" x1="76" y1="42" x2="424" y2="474" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#09202a"/>
+      <stop offset="0.48" stop-color="#071214"/>
+      <stop offset="1" stop-color="#121024"/>
     </linearGradient>
-    <linearGradient id="fox" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f59140"/>
-      <stop offset="1" stop-color="#d9641c"/>
+    <linearGradient id="mask" x1="144" y1="106" x2="368" y2="428" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#a9fff4"/>
+      <stop offset="0.52" stop-color="#24d8c4"/>
+      <stop offset="1" stop-color="#0a8f91"/>
     </linearGradient>
+    <linearGradient id="slash" x1="150" y1="420" x2="400" y2="118" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff4f91"/>
+      <stop offset="1" stop-color="#7c5cff"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="20" flood-color="#000000" flood-opacity="0.38"/>
+    </filter>
   </defs>
 
-  <!-- app tile -->
-  <rect x="0" y="0" width="512" height="512" rx="112" fill="url(#bg)"/>
+  <rect width="512" height="512" rx="112" fill="url(#tile)"/>
+  <path d="M88 118Q88 88 118 88h276q30 0 30 30v276q0 30-30 30H118q-30 0-30-30z" fill="none" stroke="#133843" stroke-width="10"/>
+  <path d="M149 420 391 112" stroke="url(#slash)" stroke-width="34" stroke-linecap="round" opacity="0.92"/>
 
-  <!-- fox ears -->
-  <path d="M150 196 L196 96 L242 188 Z" fill="url(#fox)"/>
-  <path d="M362 196 L316 96 L270 188 Z" fill="url(#fox)"/>
-  <path d="M171 178 L197 122 L223 174 Z" fill="#2b2218"/>
-  <path d="M341 178 L315 122 L289 174 Z" fill="#2b2218"/>
-
-  <!-- fox face / camera body -->
-  <circle cx="256" cy="292" r="150" fill="url(#fox)"/>
-
-  <!-- eyes -->
-  <circle cx="210" cy="250" r="11" fill="#2b2218"/>
-  <circle cx="302" cy="250" r="11" fill="#2b2218"/>
-
-  <!-- camera aperture as the snout/nose -->
-  <g stroke="#1a140d" stroke-width="9" stroke-linecap="round">
-    <line x1="296" y1="300" x2="320" y2="300"/>
-    <line x1="276" y1="335" x2="288" y2="355"/>
-    <line x1="236" y1="335" x2="224" y2="355"/>
-    <line x1="216" y1="300" x2="192" y2="300"/>
-    <line x1="236" y1="265" x2="224" y2="245"/>
-    <line x1="276" y1="265" x2="288" y2="245"/>
+  <g filter="url(#shadow)">
+    <path d="M143 210 190 86 241 172q15-4 30 0l51-86 47 124q43 50 38 117-4 58-46 94-41 35-105 35t-105-35q-42-36-46-94-5-67 38-117Z" fill="url(#mask)"/>
+    <path d="M171 195 196 127l28 55q-31 8-53 13Zm170 0-25-68-28 55q31 8 53 13Z" fill="#08242b" opacity="0.88"/>
+    <path d="M178 298q19 65 78 65t78-65q-31 18-78 18t-78-18Z" fill="#eafffb" opacity="0.9"/>
+    <path d="M197 250q18-24 47-14-18 29-47 14Zm118 0q-29 15-47-14 29-10 47 14Z" fill="#061114"/>
+    <path d="M256 264 296 292 281 340h-50l-15-48z" fill="#061114"/>
+    <path d="M256 282 274 296 267 319h-22l-7-23z" fill="#49f4de"/>
+    <path d="M224 359h64" stroke="#061114" stroke-width="11" stroke-linecap="round"/>
   </g>
-  <polygon points="296,300 276,335 236,335 216,300 236,265 276,265" fill="#16110b"/>
-  <circle cx="256" cy="300" r="13" fill="#f7b46a"/>
+
+  <path d="M118 384c41 33 92 50 152 50 45 0 87-10 124-30" fill="none" stroke="#a9fff4" stroke-width="8" stroke-linecap="round" opacity="0.45"/>
 </svg>

@@ -1037,6 +1037,7 @@
 
     <!-- top bar -->
     <div class="bar">
+      {#if !editOpen}
       <!-- view mode -->
       <div class="tool-group viewGroup">
         <span class="ctl-label">View</span>
@@ -1149,15 +1150,23 @@
           <input type="range" min="110" max="360" bind:value={settings.s.gridSize} onchange={() => settings.set({ gridSize: settings.s.gridSize })} />
         </div>
       {/if}
+      {:else}
+        <div class="tool-group editModeTitle">
+          <span class="ctl-label">Mode</span>
+          <strong>Quick Edit</strong>
+          <span>{items.filter((item) => item.kind === "video").length} videos in folder</span>
+        </div>
+      {/if}
 
       <div class="spacer"></div>
 
       <div class="rightTools">
         <div class="modeToggle" title="Workspace mode">
           <button class:on={!editOpen} onclick={() => (editOpen = false)}>Browse</button>
-          <button class:on={editOpen} onclick={openEditMode}>Edit</button>
+          <button class:on={editOpen} onclick={openEditMode} disabled={!currentDir}>Edit</button>
         </div>
 
+        {#if !editOpen}
         <!-- actions (top-right) -->
         <button
           class="btn sm prep"
@@ -1188,6 +1197,7 @@
           <span class="hold-lbl">Delete{rejectedCount ? ` ${rejectedCount}` : ""}</span>
         </button>
         <button class="btn sm" onclick={openTrash} title="View deleted items and restore them">Trash</button>
+        {/if}
         <button class="ico gear" class:on={settingsOpen} onclick={() => (settingsOpen = !settingsOpen)} title="Settings">...</button>
       </div>
     </div>
@@ -1198,7 +1208,7 @@
         <div class="row"><span>Theme</span>
           <div class="seg">
             <button class="chip" class:on={settings.s.theme === "dark"} onclick={() => settings.set({ theme: "dark" })}>Dark</button>
-            <button class="chip" class:on={settings.s.theme === "warm"} onclick={() => settings.set({ theme: "warm" })} title="Low-blue amber chrome for long sessions in a dim, warmly-lit room — the photo stage stays neutral">Warm</button>
+            <button class="chip" class:on={settings.s.theme === "warm"} onclick={() => settings.set({ theme: "warm" })} title="Low-blue plum chrome for long sessions in a dim room; the photo stage stays neutral">Warm</button>
             <button class="chip" class:on={settings.s.theme === "light"} onclick={() => settings.set({ theme: "light" })}>Light</button>
           </div>
         </div>
@@ -1259,10 +1269,10 @@
             <h1>FoxCull Codex</h1>
             <p>Pick a folder on the left to start culling. Browse-in-place — nothing is imported or changed.</p>
           </div>
+        {:else if editOpen}
+          <EditStudio {active} {selectedItems} sourceItems={items} />
         {:else if view.length === 0}
           <div class="welcome"><p>Nothing here matches the current filters.</p></div>
-        {:else if editOpen}
-          <EditStudio {active} {selectedItems} sourceItems={view} />
         {:else if viewMode === "loupe"}
           <Loupe item={active} bind:this={loupeComp} />
         {:else if viewMode === "details"}
@@ -1417,6 +1427,10 @@
   .modeToggle button { min-width: 58px; padding: 5px 10px; border-radius: 7px; color: var(--text-dim); font-size: 12.5px; font-weight: 700; }
   .modeToggle button:hover { background: var(--bg-hover); }
   .modeToggle button.on { background: var(--accent); color: var(--accent-on); }
+  .modeToggle button:disabled { opacity: 0.45; cursor: not-allowed; }
+  .editModeTitle { gap: 9px; }
+  .editModeTitle strong { font-size: 13.5px; }
+  .editModeTitle span:last-child { color: var(--text-faint); font-size: 12px; white-space: nowrap; }
   .btn.sm { padding: 5px 9px; border-radius: 7px; font-size: 12.5px; }
   .btn.sm.on { border-color: var(--accent); color: var(--accent); }
   .prep { position: relative; overflow: hidden; min-width: 96px; text-align: center; }

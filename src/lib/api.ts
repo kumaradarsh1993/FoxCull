@@ -107,4 +107,18 @@ export const api = {
     });
     return typeof r === "string" ? r : null;
   },
+  pickVideos: async (): Promise<string[]> => {
+    const r = await openDialog({
+      directory: false,
+      multiple: true,
+      filters: [
+        {
+          name: "Videos",
+          extensions: ["mp4", "mov", "m4v", "mkv", "avi", "webm", "mts", "m2ts"],
+        },
+      ],
+    });
+    if (Array.isArray(r)) return r.filter((path): path is string => typeof path === "string");
+    return typeof r === "string" ? [r] : [];
+  },
 };

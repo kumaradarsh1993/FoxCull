@@ -12,7 +12,7 @@ Claude-built FoxCull project.
 - Visibility at creation time: private
 - Default branch: `main`
 - Codex-origin first commit: `b7a256f` / tag `v0.1.0`
-- Codex releases documented here: `v0.1.0`, `v0.2.0`, `v0.3.0`
+- Codex releases documented here: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`
 
 The original `fox-cull` folder was treated as read-only reference material.
 The fork was created by copying `fox-cull` into `FoxCullCodex` while excluding
@@ -242,6 +242,69 @@ Validation run for v0.3:
   - Filters popover with Type/Status controls;
   - collapsed folder rail.
 
+## Version 0.4.0: Distinct Identity And Edit Workflow Hardening
+
+Tag: `v0.4.0`
+
+User feedback that triggered this release:
+
+- The Codex fork needed a clearly different desktop identity from the
+  Claude-built original.
+- The old icon was not visually useful; the user wanted a new noticeable app
+  icon across all touchpoints.
+- Edit mode still felt difficult to start because there was no visible way to
+  bring videos into the editor.
+- Edit mode needed a more dedicated workflow, not the full crowded culling
+  toolbar competing with the editor.
+
+Identity/theme changes:
+
+- `assets/icon.svg` was replaced with a cyan/violet fox-skull/camera mark.
+- `scripts/make-icon.mjs` now regenerates:
+  - `assets/icon-1024.png`;
+  - `static/favicon.png`;
+  - `docs/images/foxcull-codex-icon.png`.
+- `npm run tauri -- icon assets/icon-1024.png` regenerated all Tauri icon
+  touchpoints: Windows ICO/store logos, macOS ICNS, Linux PNGs, and mobile
+  generated icons.
+- App theme tokens moved away from orange/brown into:
+  - light cool neutral with teal accent;
+  - dark graphite with cyan accent;
+  - warm low-blue plum accent.
+- The docs/presentation page theme and v0.4.0 download metadata were updated.
+
+Edit workflow changes:
+
+- Edit mode now receives all media from the open folder, not only the filtered
+  Browse view, so active filters no longer hide usable source videos.
+- The editor source panel has explicit `Choose videos`, `Add source`, and
+  `Add selected` actions.
+- Source rows now select/highlight first; adding is visible via the row Add
+  button, double-click, drag-to-timeline, or the header Add button.
+- The empty timeline/preview states now point toward adding video instead of
+  looking like a dead panel.
+- `api.pickVideos()` was added for multi-video selection inside Edit mode.
+- Timeline duration lookup first tries WebView metadata, then falls back to the
+  existing FFmpeg-backed filmstrip metadata for camera-native/HEVC clips.
+- Preview playback uses cached H.264 proxies when available and can generate a
+  proxy on preview decode failure.
+- Multi-clip exports no longer ask the backend to preserve a single source audio
+  track.
+- Browse-mode sort/group/filter/culling actions are hidden while Edit mode is
+  active; the top bar becomes a compact Quick Edit mode header plus the
+  Browse/Edit toggle and Settings.
+
+Validation run for v0.4:
+
+- `npm run check` passed with 0 errors and the existing Node type warning:
+  `Cannot find type definition file for 'node'`.
+- `npm run build` passed.
+- `cargo check` passed.
+- `git diff --check` passed, reporting only normal CRLF line-ending warnings.
+- Per latest user instruction, do not use localhost/browser rendering as release
+  validation; push the tag, wait for GitHub Actions, and provide the release
+  page after native artifacts are built.
+
 ## Release State
 
 Published releases at handover time:
@@ -249,18 +312,19 @@ Published releases at handover time:
 - `v0.1.0`: `https://github.com/kumaradarsh1993/FoxCullCodex/releases/tag/v0.1.0`
 - `v0.2.0`: `https://github.com/kumaradarsh1993/FoxCullCodex/releases/tag/v0.2.0`
 - `v0.3.0`: `https://github.com/kumaradarsh1993/FoxCullCodex/releases/tag/v0.3.0`
+- `v0.4.0`: `https://github.com/kumaradarsh1993/FoxCullCodex/releases/tag/v0.4.0`
 
-Important v0.3.0 assets:
+Important v0.4.0 assets:
 
 - Windows installer:
-  `FoxCull.Codex_0.3.0_x64-setup.exe`
+  `FoxCull.Codex_0.4.0_x64-setup.exe`
 - Windows portable:
-  `foxcull-codex_0.3.0_x64_portable.zip`
+  `foxcull-codex_0.4.0_x64_portable.zip`
 - macOS Apple Silicon:
-  `FoxCull.Codex_0.3.0_aarch64.dmg`
+  `FoxCull.Codex_0.4.0_aarch64.dmg`
 - Linux:
-  `FoxCull.Codex_0.3.0_amd64.AppImage`
-  and `FoxCull.Codex_0.3.0_amd64.deb`
+  `FoxCull.Codex_0.4.0_amd64.AppImage`
+  and `FoxCull.Codex_0.4.0_amd64.deb`
 
 Because the repository is private, release pages and assets are visible only to
 accounts with access to the repository.

@@ -38,6 +38,20 @@
   };
 
   const basename = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+  const extOf = (p: string) => (basename(p).match(/\.([^.]+)$/)?.[1] ?? "mp4").toLowerCase();
+  const videoItemFromPath = (path: string): MediaItem => ({
+    name: basename(path),
+    path,
+    rel: basename(path),
+    kind: "video",
+    ext: extOf(path),
+    mtime: 0,
+    size: 0,
+    rating: 0,
+    label: null,
+    flag: null,
+    tags: [],
+  });
   const fmt = (s: number) => {
     if (!Number.isFinite(s) || s < 0) s = 0;
     const m = Math.floor(s / 60);
@@ -56,6 +70,10 @@
   let exportNote = $state<string | null>(null);
   let previewVideo = $state<HTMLVideoElement | null>(null);
   let currentTime = $state(0);
+  let extraSources = $state<MediaItem[]>([]);
+  let sourceFocusPath = $state<string | null>(null);
+  let pickingVideos = $state(false);
+  let previewPreparing = $state(false);
   let dragSourcePath = $state<string | null>(null);
   let seededKey = $state("");
   let seeding = $state(false);
@@ -81,7 +99,7 @@
   let sourceVideos = $derived.by(() => {
     const seen = new Set<string>();
     const out: MediaItem[] = [];
-    for (const item of [...initialVideos, ...sourceItems.filter((i) => i.kind === "video")]) {
+    for (const item of [...initialVideos, ...extraSources, ...sourceItems.filter((i) => i.kind === "video")]) {
       if (seen.has(item.path)) continue;
       seen.add(item.path);
       out.push(item);
@@ -90,6 +108,7 @@
   });
 
   let selectedClip = $derived(clips.find((c) => c.id === selectedId) ?? clips[0] ?? null);
+  let focusedSource = $derived(sourceVideos.find((item) => item.path === sourceFocusPath) ?? sourceVideos[0] ?? null);
   let outPreset = $derived(PRESETS[preset]);
   let outAspect = $derived(outPreset.fit === "original" ? 9 / 16 : outPreset.w / outPreset.h);
   let timelineSeconds = $derived(clips.reduce((sum, c) => sum + Math.max(0, c.outS - c.inS), 0));
@@ -110,6 +129,13 @@
       return;
     }
     if (!selectedId || !clips.some((c) => c.id === selectedId)) selectedId = clips[0].id;
+  });
+
+  $effect(() => {
+    const first = sourceVideos[0]?.path ?? null;
+    if (!sourceFocusPath || !sourceVideos.some((item) => item.path === sourceFocusPath)) {
+      sourceFocusPath = first;
+    }
   });
 
   $effect(() => {
@@ -135,24 +161,38 @@
     return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
-  function durationFor(path: string): Promise<number> {
-    return new Promise((resolve) => {
+  async function durationFor(path: string): Promise<number> {
+    const browserDuration = await new Promise<number>((resolve) => {
       const video = document.createElement("video");
+      const done = (duration: number) => {
+        clearTimeout(timer);
+        resolve(duration);
+      };
+      const timer = setTimeout(() => done(0), 2500);
       video.preload = "metadata";
       video.src = api.fileSrc(path);
-      video.onloadedmetadata = () => resolve(Number.isFinite(video.duration) ? video.duration : 0);
-      video.onerror = () => resolve(0);
+      video.onloadedmetadata = () => done(Number.isFinite(video.duration) ? video.duration : 0);
+      video.onerror = () => done(0);
     });
+    if (browserDuration > 0) return browserDuration;
+    try {
+      const filmstrip = await api.videoFilmstrip(path);
+      if (filmstrip.duration > 0) return filmstrip.duration;
+    } catch {
+      /* fall through to a tiny editable segment */
+    }
+    return 0;
   }
 
   async function makeClip(item: MediaItem): Promise<TimelineClip> {
     const duration = await durationFor(item.path);
     const out = Math.max(0.1, duration || 1);
+    const cachedProxy = await api.videoProxyCached(item.path);
     return {
       id: uid(),
       path: item.path,
       name: item.name,
-      src: api.fileSrc(item.path),
+      src: api.fileSrc(cachedProxy ?? item.path),
       inS: 0,
       outS: out,
       duration: out,
@@ -176,6 +216,47 @@
   async function addItem(item: MediaItem | null) {
     if (!item || item.kind !== "video") return;
     await addItems([item]);
+  }
+
+  async function chooseVideos() {
+    if (pickingVideos) return;
+    pickingVideos = true;
+    exportNote = null;
+    try {
+      const picked = await api.pickVideos();
+      const incoming = picked.map(videoItemFromPath);
+      if (!incoming.length) return;
+
+      const known = new Set(sourceVideos.map((item) => item.path));
+      const fresh = incoming.filter((item) => !known.has(item.path));
+      if (fresh.length) extraSources = [...extraSources, ...fresh];
+
+      sourceFocusPath = incoming[incoming.length - 1].path;
+      await addItems(incoming);
+    } catch (e) {
+      exportNote = `Could not add video: ${e}`;
+    } finally {
+      pickingVideos = false;
+    }
+  }
+
+  async function ensurePreviewProxy(clip: TimelineClip) {
+    if (previewPreparing || clip.src !== api.fileSrc(clip.path)) return;
+    previewPreparing = true;
+    exportNote = "Preparing preview";
+    try {
+      const proxy = await api.videoProxy(clip.path);
+      clips = clips.map((c) => (c.id === clip.id ? { ...c, src: api.fileSrc(proxy) } : c));
+      exportNote = null;
+    } catch (e) {
+      exportNote = `Preview unavailable: ${e}`;
+    } finally {
+      previewPreparing = false;
+    }
+  }
+
+  function onPreviewError() {
+    if (selectedClip) void ensurePreviewProxy(selectedClip);
   }
 
   function removeClip(id: string) {
@@ -299,7 +380,7 @@
         quality,
         adjustments,
         music_path: musicPath,
-        preserve_source_audio: preserveSourceAudio && !musicPath,
+        preserve_source_audio: preserveSourceAudio && !musicPath && clips.length === 1,
         destination: null,
         basename: exportName(),
       };
@@ -373,19 +454,36 @@
         <strong>Source</strong>
         <span>{sourceVideos.length} video{sourceVideos.length === 1 ? "" : "s"}</span>
       </div>
-      <button class="miniBtn" onclick={() => addItems(initialVideos)} disabled={!initialVideos.length}>Add selected</button>
+      <div class="sourceActions">
+        <button class="miniBtn" onclick={chooseVideos} disabled={pickingVideos}>
+          {pickingVideos ? "Choosing" : "Choose videos"}
+        </button>
+        <button class="miniBtn" onclick={() => addItem(focusedSource)} disabled={!focusedSource}>Add source</button>
+        <button class="miniBtn" onclick={() => addItems(initialVideos)} disabled={!initialVideos.length}>Add selected</button>
+      </div>
     </div>
 
     <div class="sourceList">
       {#if sourceVideos.length}
         {#each sourceVideos as item (item.path)}
-          <button
+          <div
             class="sourceItem"
             class:active={selectedClip?.path === item.path}
+            class:focused={sourceFocusPath === item.path}
+            role="button"
+            tabindex="0"
             draggable={true}
             ondragstart={(e) => startSourceDrag(e, item)}
             ondragend={endSourceDrag}
-            onclick={() => addItem(item)}
+            onclick={() => (sourceFocusPath = item.path)}
+            ondblclick={() => addItem(item)}
+            onkeydown={(e) => {
+              if (e.key === "Enter") sourceFocusPath = item.path;
+              if (e.key === " ") {
+                e.preventDefault();
+                void addItem(item);
+              }
+            }}
             title={item.path}
           >
             <span class="sourceThumb"><Thumb {item} size={192} /></span>
@@ -393,10 +491,18 @@
               <strong>{item.name}</strong>
               <em>{item.ext.toUpperCase()}</em>
             </span>
-          </button>
+            <button
+              class="rowAdd"
+              onclick={(e) => {
+                e.stopPropagation();
+                sourceFocusPath = item.path;
+                void addItem(item);
+              }}
+            >Add</button>
+          </div>
         {/each}
       {:else}
-        <div class="emptyState">No videos in this view.</div>
+        <div class="emptyState">No videos available.</div>
       {/if}
     </div>
   </aside>
@@ -428,8 +534,12 @@
           style:filter={previewFilter}
           onloadedmetadata={onMeta}
           ontimeupdate={onTime}
+          onerror={onPreviewError}
           onclick={togglePlay}
         ></video>
+        {#if previewPreparing}
+          <div class="previewBusy">Preparing preview</div>
+        {/if}
         {#if outPreset.fit !== "original"}
           <button
             class="cropFrame"
@@ -443,7 +553,7 @@
           </button>
         {/if}
       {:else}
-        <div class="emptyState">No clip selected.</div>
+        <div class="emptyState">Add a video to start editing.</div>
       {/if}
     </div>
 
@@ -492,7 +602,7 @@
             </div>
           {/each}
         {:else}
-          <div class="emptyTrack">Drop clips here.</div>
+          <div class="emptyTrack">Drop videos here or use Add.</div>
         {/if}
       </div>
     </section>
@@ -613,6 +723,10 @@
     border-bottom: 1px solid var(--border);
     background: var(--bg-panel);
   }
+  .paneHead {
+    align-items: flex-start;
+    justify-content: space-between;
+  }
   .editTop {
     overflow: hidden;
   }
@@ -624,6 +738,14 @@
     display: flex;
     flex-direction: column;
     line-height: 1.15;
+  }
+  .sourceActions {
+    min-width: 0;
+    display: flex;
+    flex-direction: row;
+    justify-content: flex-end;
+    gap: 5px;
+    flex-wrap: wrap;
   }
   .paneHead span,
   .timelineHead span,
@@ -645,7 +767,7 @@
   }
   .sourceItem {
     display: grid;
-    grid-template-columns: 58px minmax(0, 1fr);
+    grid-template-columns: 58px minmax(0, 1fr) auto;
     align-items: center;
     gap: 9px;
     width: 100%;
@@ -654,6 +776,8 @@
     border-radius: 8px;
     border: 1px solid transparent;
     background: transparent;
+    color: var(--text);
+    cursor: pointer;
     text-align: left;
   }
   .sourceItem:hover {
@@ -662,6 +786,10 @@
   .sourceItem.active {
     border-color: var(--accent);
     background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+  .sourceItem.focused:not(.active) {
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
   }
   .sourceThumb {
     width: 58px;
@@ -681,6 +809,17 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .rowAdd {
+    border: 1px solid var(--border);
+    background: var(--bg-elev);
+    border-radius: 7px;
+    padding: 5px 8px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .rowAdd:hover {
+    background: var(--bg-hover);
   }
   .workPane {
     min-width: 0;
@@ -744,6 +883,17 @@
     width: 100%;
     height: 100%;
     object-fit: contain;
+  }
+  .previewBusy {
+    position: absolute;
+    left: 12px;
+    bottom: 12px;
+    padding: 6px 9px;
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--bg-elev) 88%, transparent);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 12px;
   }
   .emptyState,
   .emptyTrack {

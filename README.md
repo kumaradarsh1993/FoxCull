@@ -6,15 +6,23 @@ treated as read-only reference material.
 
 This fork stores its own per-drive library in `_FoxCullCodex` so it does not
 share the stable app's `_FoxCull` catalog/trash while new editing work evolves.
+The Codex fork also has a distinct cyan/violet app icon and theme so it is
+easy to distinguish from the Claude-built original on the desktop.
 
 ## Codex-origin quick edit
 
 - **Edit mode** is a dedicated Browse/Edit workspace toggle.
 - Opening Edit with an active or selected video now preloads that video into the
   editor source tray/timeline instead of starting from a dead empty state.
+- Edit mode can also choose video files directly from its source panel, and the
+  source tray shows all videos from the open folder even when Browse filters are
+  hiding them.
 - The edit workspace has a source video tray, preview, transport controls,
   timeline, segment trims, crop controls, look controls, audio selection, and
   export controls in one screen.
+- Camera-native clips that WebView cannot preview directly fall back to cached
+  FFmpeg metadata/proxy previews, so HEVC-style DJI/phone footage remains
+  workable.
 - Use 9:16, 1:1, 16:9, or original-output presets.
 - Drag/adjust a per-segment crop frame for portrait exports.
 - Export uses stream-copy trim/concat when no pixel changes are requested.
@@ -96,15 +104,15 @@ labels — and does just that one job, fast.
 
 Grab the latest build from the **[Releases page](../../releases)**:
 
-- **Windows** — `fox-cull_*_x64-setup.exe`. On first launch Windows SmartScreen
+- **Windows** — `FoxCull.Codex_*_x64-setup.exe`. On first launch Windows SmartScreen
   may warn (the app isn't code-signed yet): click **More info → Run anyway**.
-- **macOS (Apple Silicon)** — `fox-cull_*_aarch64.dmg`. It isn't notarized yet,
+- **macOS (Apple Silicon)** — `FoxCull.Codex_*_aarch64.dmg`. It isn't notarized yet,
   so on first launch **right-click the app → Open**, then confirm. (If macOS
   says it's "damaged", open Terminal and run
-  `xattr -dr com.apple.quarantine /Applications/fox-cull.app`.)
+  `xattr -dr com.apple.quarantine /Applications/FoxCull\ Codex.app`.)
 - **Linux** — `.AppImage` (portable) or `.deb`.
-- **Windows portable** — `fox-cull_*_x64_portable.zip`. Unzip anywhere (e.g.
-  onto your SSD). It contains `fox-cull.exe` and a `fox-cull-data` folder; keep
+- **Windows portable** — `foxcull-codex_*_x64_portable.zip`. Unzip anywhere (e.g.
+  onto your SSD). It contains `foxcull-codex.exe` and a `foxcull-codex-data` folder; keep
   them together and the app stores its catalog, cache and settings in that
   folder instead of in Windows AppData — so the whole app travels with you.
   (Needs the Microsoft WebView2 runtime, which ships with Windows 10/11.)
