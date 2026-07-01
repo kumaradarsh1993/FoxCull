@@ -423,6 +423,49 @@ Validation run for v0.5.2-nightly.4:
 - `npm run build` passed.
 - `cargo check` passed after the version bump to `0.5.2-nightly.4`.
 
+## Version 0.5.2-nightly.5: Edit Regression Fixes And Playback Controls
+
+Tag: `v0.5.2-nightly.5`
+
+This pass addressed the user's follow-up screenshots and notes after
+`v0.5.2-nightly.4`:
+
+- Edit Source pane:
+  - Removed duplicate duration/resolution/FPS/codec presentation.
+  - Reworked each source item into a card hierarchy: thumbnail, filename,
+    duration, technical subline, file/date chips, and culling-state chips from
+    the Library metadata when available.
+  - Source cards now surface Pick/Reject/rating/label/tags when the file is
+    also present in the current library listing.
+- Edit workspace:
+  - Space now toggles play/pause in Edit mode without first clicking the video.
+  - Shift+Left/Right seek the edit preview by five seconds.
+  - Edit preview seeking is optimistic and animation-frame throttled, with
+    `fastSeek` used where the WebView supports it.
+  - Preview videos now request `preload="auto"`.
+  - The edit grid no longer forces a 420px center column, reducing the issue
+    where the right Look panel appeared to float over the video on constrained
+    window widths.
+  - Toolbar/menu stacking was tightened so the Options menu stays above preview
+    and timeline content.
+- Focus/video playback:
+  - Dragging the timeline now pauses playback, throttles decoder seeks, updates
+    the playhead immediately, final-seeks on release, and resumes playback if it
+    was playing before the drag.
+  - Focus videos now request `preload="auto"`.
+  - The visible Auto toggle was removed from the Focus video strip; autoplay
+    remains in the app settings menu.
+  - In/out/export controls are tucked behind a `Clip tools` toggle with clearer
+    labels: save current range vs save marked ranges.
+  - The timeline playhead was simplified back to a clean vertical bar, and the
+    information overlay was made more transparent.
+
+Validation run for v0.5.2-nightly.5:
+
+- `npm run check` passed with 0 errors and the existing Node type warning.
+- `npm run build` passed.
+- `cargo check` passed after the version bump to `0.5.2-nightly.5`.
+
 ## Release State
 
 Published releases at handover time:

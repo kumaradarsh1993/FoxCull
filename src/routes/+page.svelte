@@ -91,7 +91,13 @@
   let folderRefreshKey = $state(0);
   let gridComp = $state<{ scrollToIndex: (i: number, center?: boolean) => void } | null>(null);
   let loupeComp = $state<{ togglePlay: () => void; seekBy: (d: number) => void; setInPoint?: () => void; setOutPoint?: () => void } | null>(null);
-  let editComp = $state<{ setOutputPreview?: (on: boolean) => void | Promise<void>; setIn?: () => void; setOut?: () => void } | null>(null);
+  let editComp = $state<{
+    setOutputPreview?: (on: boolean) => void | Promise<void>;
+    setIn?: () => void;
+    setOut?: () => void;
+    togglePlay?: () => void;
+    seekBy?: (d: number) => void;
+  } | null>(null);
 
   const HOLD_MS = 850;
   let holdMs = $state(0);
@@ -1358,8 +1364,11 @@
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
     const k = e.key.toLowerCase();
     if (editOpen) {
+      if (e.key === " " || e.code === "Space") { editComp?.togglePlay?.(); e.preventDefault(); return; }
       if (e.key === "[") { editComp?.setIn?.(); e.preventDefault(); return; }
       if (e.key === "]") { editComp?.setOut?.(); e.preventDefault(); return; }
+      if (e.shiftKey && e.key === "ArrowRight") { editComp?.seekBy?.(5); e.preventDefault(); return; }
+      if (e.shiftKey && e.key === "ArrowLeft") { editComp?.seekBy?.(-5); e.preventDefault(); return; }
       if (k === "f") {
         const entering = !fullscreen;
         if (entering) await editComp?.setOutputPreview?.(true);

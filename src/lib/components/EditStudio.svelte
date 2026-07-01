@@ -154,6 +154,8 @@
   let sourceMenu = $state<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
   let exportOptionsOpen = $state(false);
   let frameToast = $state<string | null>(null);
+  let pendingPreviewSeek = $state<number | null>(null);
+  let previewSeekRAF = 0;
   let cropDrag:
     | { x: number; y: number; cropX: number; cropY: number; imgW: number; imgH: number; cropW: number; cropH: number }
     | null = null;
@@ -230,6 +232,14 @@
       out.push(item);
     }
     return out;
+  });
+
+  let sourceMetaByPath = $derived.by(() => {
+    const m = new Map<string, MediaItem>();
+    for (const item of [...sourceItems, ...selectedItems, ...(active ? [active] : [])]) {
+      m.set(normPath(item.path), item);
+    }
+    return m;
   });
 
   let filteredSources = $derived.by(() => {
@@ -350,23 +360,37 @@
     });
   }
 
-  function fmtSpec(src: EditSourceItem) {
+  function sourceDuration(src: EditSourceItem): string {
     const p = probes[src.path];
-    if (!p) return src.kind === "audio" ? src.ext.toUpperCase() : "Reading...";
-    if (src.kind === "audio") return [fmt(p.duration), p.codec ?? src.ext.toUpperCase()].filter(Boolean).join(" · ");
+    if (p?.duration) return fmt(p.duration);
+    return src.kind === "audio" ? "Audio" : "Video";
+  }
+
+  function sourceSubline(src: EditSourceItem): string {
+    const p = probes[src.path];
+    if (!p) return src.kind === "audio" ? src.ext.toUpperCase() : "Reading details...";
+    if (src.kind === "audio") return [p.codec ?? src.ext.toUpperCase(), fmtSize(src.size)].filter(Boolean).join(" - ");
     const res = p.width && p.height ? `${p.width}x${p.height}` : "";
     const fps = p.fps ? `${Math.round(p.fps)}fps` : "";
-    return [fmt(p.duration), res, fps, p.codec ?? src.ext.toUpperCase()].filter(Boolean).join(" · ");
+    return [res, fps, p.codec ?? src.ext.toUpperCase()].filter(Boolean).join(" - ");
   }
 
   function sourceMetaChips(src: EditSourceItem): string[] {
     const p = probes[src.path];
-    if (src.kind === "audio") return [src.ext.toUpperCase(), fmtSize(src.size), fmtDate(src.mtime)];
-    const res = p?.width && p?.height ? `${p.width}x${p.height}` : "";
-    const fps = p?.fps ? `${Math.round(p.fps)}fps` : "";
-    const codec = p?.codec ? p.codec.toUpperCase() : src.ext.toUpperCase();
-    return [fmt(p?.duration ?? 0), res, fps, codec, p?.camera ?? "", fmtDate(p?.captured ?? src.mtime), fmtSize(src.size)]
-      .filter((v) => v && v !== "0:00" && v !== "-");
+    if (src.kind === "audio") return [fmtDate(src.mtime), fmtSize(src.size)].filter((v) => v && v !== "-");
+    return [p?.camera ?? "", fmtDate(p?.captured ?? src.mtime), fmtSize(src.size)].filter((v) => v && v !== "-");
+  }
+
+  function sourceStateChips(src: EditSourceItem): string[] {
+    const meta = sourceMetaByPath.get(normPath(src.path));
+    if (!meta) return [];
+    const out: string[] = [];
+    if (meta.flag === "pick") out.push("Pick");
+    if (meta.flag === "reject") out.push("Reject");
+    if (meta.rating > 0) out.push(`${meta.rating} star${meta.rating === 1 ? "" : "s"}`);
+    if (meta.label) out.push(meta.label);
+    if (meta.tags.length) out.push(...meta.tags.slice(0, 2).map((t) => `#${t}`));
+    return out;
   }
 
   function ensureProbe(src: EditSourceItem) {
@@ -539,14 +563,36 @@
     }
   }
 
-  function seek(t: number) {
+  function applyPreviewSeek(t: number) {
     if (!previewVideo || !selectedClip) return;
     const next = Math.max(0, Math.min(t, selectedClip.duration));
-    previewVideo.currentTime = next;
     currentTime = next;
+    if ("fastSeek" in previewVideo && typeof previewVideo.fastSeek === "function") {
+      try {
+        previewVideo.fastSeek(next);
+        return;
+      } catch {
+        /* fall back */
+      }
+    }
+    previewVideo.currentTime = next;
   }
 
-  function togglePlay() {
+  function seek(t: number) {
+    if (!selectedClip) return;
+    const next = Math.max(0, Math.min(t, selectedClip.duration));
+    currentTime = next;
+    pendingPreviewSeek = next;
+    if (previewSeekRAF) return;
+    previewSeekRAF = requestAnimationFrame(() => {
+      const target = pendingPreviewSeek;
+      pendingPreviewSeek = null;
+      previewSeekRAF = 0;
+      if (target != null) applyPreviewSeek(target);
+    });
+  }
+
+  export function togglePlay() {
     if (!previewVideo || !selectedClip) return;
     if (previewVideo.paused) {
       if (previewVideo.currentTime < selectedClip.inS || previewVideo.currentTime >= selectedClip.outS) {
@@ -556,6 +602,11 @@
     } else {
       previewVideo.pause();
     }
+  }
+
+  export function seekBy(delta: number) {
+    if (!selectedClip) return;
+    seek(currentTime + delta);
   }
 
   async function syncProductionPreviewTime() {
@@ -1172,13 +1223,23 @@
               {/if}
             </span>
             <span class="sourceName">
-              <strong>{item.name}</strong>
-              <em>{fmtSpec(item)}</em>
+              <span class="sourceTitle">
+                <strong>{item.name}</strong>
+                <span>{sourceDuration(item)}</span>
+              </span>
+              <em>{sourceSubline(item)}</em>
               <span class="sourceChips">
-                {#each sourceMetaChips(item).slice(0, sourceView === "thumbs" ? 3 : 6) as chip}
+                {#each sourceMetaChips(item).slice(0, sourceView === "thumbs" ? 2 : 4) as chip}
                   <span>{chip}</span>
                 {/each}
               </span>
+              {#if sourceStateChips(item).length}
+                <span class="sourceChips stateChips">
+                  {#each sourceStateChips(item).slice(0, sourceView === "thumbs" ? 2 : 4) as chip}
+                    <span>{chip}</span>
+                  {/each}
+                </span>
+              {/if}
             </span>
             {#if sourceView === "details"}
               <span>{probes[item.path]?.camera ?? (item.kind === "audio" ? "Audio" : "-")}</span>
@@ -1276,6 +1337,8 @@
             <video
               bind:this={previewVideo}
               src={selectedClip.src}
+              preload="auto"
+              playsinline
               class="productionVideo"
               style="left:{productionVideoRect.left}px; top:{productionVideoRect.top}px; width:{productionVideoRect.w}px; height:{productionVideoRect.h}px; filter:{previewFilter}"
               onloadedmetadata={onMeta}
@@ -1302,6 +1365,8 @@
           <video
             bind:this={previewVideo}
             src={selectedClip.src}
+            preload="auto"
+            playsinline
             style:filter={previewFilter}
             onloadedmetadata={onMeta}
             ontimeupdate={onTime}
@@ -1506,7 +1571,7 @@
     grid-template-columns:
       var(--source-w, 360px)
       var(--source-splitter-w, 6px)
-      minmax(420px, 1fr)
+      minmax(0, 1fr)
       var(--inspector-splitter-w, 6px)
       var(--inspector-w, 320px);
     background: var(--bg);
@@ -1540,6 +1605,8 @@
     border-right: 0;
     border-left: 1px solid var(--border);
     overflow-y: auto;
+    position: relative;
+    z-index: 2;
   }
   .sourceCollapsed .sourcePane,
   .inspectorCollapsed .inspector {
@@ -1693,8 +1760,8 @@
   }
   .sourceList.thumbs .sourceItem {
     grid-template-columns: 1fr;
-    grid-template-rows: 98px auto;
-    min-height: 150px;
+    grid-template-rows: 102px auto;
+    min-height: 170px;
     align-items: stretch;
   }
   .sourceItem > span:nth-child(n + 3),
@@ -1736,7 +1803,21 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: 4px;
+  }
+  .sourceTitle {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .sourceTitle > span {
+    color: var(--text-dim);
+    font-size: 11.5px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
   .sourceName strong,
   .timelineClip strong {
@@ -1771,12 +1852,19 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  .stateChips span {
+    background: color-mix(in srgb, var(--accent) 14%, var(--viewport-bg));
+    color: color-mix(in srgb, var(--text) 86%, var(--accent));
+  }
   .workPane {
     grid-column: 3;
     min-width: 0;
     min-height: 0;
     display: grid;
     grid-template-rows: auto minmax(180px, 1fr) auto 6px var(--timeline-h, 260px);
+    position: relative;
+    overflow: visible;
+    z-index: 1;
   }
   .productionPreviewMode .workPane {
     grid-column: 3;
@@ -1790,7 +1878,7 @@
   }
   .editTop {
     position: relative;
-    z-index: 80;
+    z-index: 180;
     overflow: visible;
   }
   .timelineCollapsed .workPane {
@@ -1856,7 +1944,7 @@
     position: absolute;
     right: 0;
     top: 34px;
-    z-index: 120;
+    z-index: 240;
     width: 280px;
     padding: 10px;
     display: flex;
@@ -1890,6 +1978,7 @@
   }
   .preview {
     position: relative;
+    z-index: 0;
     min-height: 0;
     display: flex;
     align-items: center;
@@ -2308,7 +2397,7 @@
       grid-template-columns:
         minmax(0, var(--source-w, 270px))
         var(--source-splitter-w, 6px)
-        minmax(300px, 1fr)
+        minmax(0, 1fr)
         var(--inspector-splitter-w, 6px)
         minmax(0, var(--inspector-w, 260px));
     }

@@ -1,6 +1,6 @@
 [package]
 name = "foxcull-codex"
-version = "0.5.2-nightly.4"
+version = "0.5.2-nightly.5"
 description = "Codex-origin photo/video culling and quick-editing tool"
 authors = ["FoxCull Codex contributors"]
 edition = "2021"

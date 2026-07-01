@@ -73,6 +73,7 @@
   let exportingSegments = $state(false);
   let exportNote = $state<string | null>(null);
   let probe = $state<MediaProbe | null>(null);
+  let clipToolsOpen = $state(false);
 
   // ── filmstrip scrub state ──
   let strip = $state<FilmstripInfo | null>(null);
@@ -83,6 +84,9 @@
   let infoVisible = $state(false);
   let pendingSeek: number | null = null;
   let seekRAF = 0;
+  let resumeAfterScrub = false;
+  let lastSeekAt = 0;
+  const SEEK_THROTTLE_MS = 55;
   const PREVIEW_W = 200;
   let previewH = $derived(
     strip ? Math.round((PREVIEW_W * strip.tile_h) / strip.tile_w) : 0,
@@ -105,6 +109,7 @@
     segments = [];
     exportNote = null;
     probe = null;
+    clipToolsOpen = false;
     strip = null;
     preview = null;
     scrubbing = false;
@@ -236,11 +241,14 @@
     const r = trackEl.getBoundingClientRect();
     return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
   }
-  function applySeek(frac: number) {
+  function applySeek(frac: number, final = false) {
     const d = dur || strip?.duration || 0;
     if (vid && d > 0) {
       const t = frac * d;
       cur = t;
+      const now = performance.now();
+      if (!final && now - lastSeekAt < SEEK_THROTTLE_MS) return;
+      lastSeekAt = now;
       if ("fastSeek" in vid && typeof vid.fastSeek === "function") {
         try {
           vid.fastSeek(t);
@@ -252,7 +260,14 @@
       vid.currentTime = t;
     }
   }
-  function seekTo(frac: number) {
+  function seekTo(frac: number, final = false) {
+    if (final) {
+      if (seekRAF) cancelAnimationFrame(seekRAF);
+      seekRAF = 0;
+      pendingSeek = null;
+      applySeek(frac, true);
+      return;
+    }
     pendingSeek = frac;
     if (seekRAF) return;
     seekRAF = requestAnimationFrame(() => {
@@ -264,6 +279,9 @@
   }
   function onTrackDown(e: PointerEvent) {
     scrubbing = true;
+    resumeAfterScrub = !!vid && !vid.paused;
+    vid?.pause();
+    api.cancelWarm();
     try {
       trackEl?.setPointerCapture(e.pointerId);
     } catch {}
@@ -279,6 +297,11 @@
   function onTrackUp(e: PointerEvent) {
     if (!scrubbing) return;
     scrubbing = false;
+    const f = fracFromEvent(e);
+    preview = f;
+    seekTo(f, true);
+    if (resumeAfterScrub) vid?.play().catch(() => {});
+    resumeAfterScrub = false;
     try {
       trackEl?.releasePointerCapture(e.pointerId);
     } catch {}
@@ -454,6 +477,8 @@
           bind:this={vid}
           src={vsrc}
           autoplay={settings.s.videoAutoplay}
+          preload="auto"
+          playsinline
           onclick={togglePlay}
           onloadedmetadata={onMeta}
           ontimeupdate={onTime}
@@ -495,9 +520,6 @@
             </button>
             <span class="time">{fmt(cur)} <span class="sep">/</span> {fmt(dur)}</span>
             <span class="spacer"></span>
-            <button class="miniToggle" class:on={settings.s.videoAutoplay} onclick={() => settings.set({ videoAutoplay: !settings.s.videoAutoplay })} title="Play videos automatically when focused">
-              Auto {settings.s.videoAutoplay ? "On" : "Off"}
-            </button>
             <button class="miniToggle" class:on={infoVisible} onclick={() => (infoVisible = !infoVisible)} title="Show file information overlay">Info</button>
             <span class="khint">Space play · Shift+← → seek</span>
           </div>
@@ -538,21 +560,30 @@
               </div>
             {/if}
           </div>
-          <div class="ctrls">
-            <button onclick={setIn} title="Set in point to current time">⟤ In {fmt(inS)}</button>
-            <button onclick={setOut} title="Set out point to current time">Out {fmt(outS ?? dur)} ⟥</button>
-            <span class="len">cut {fmt((outS ?? dur) - inS)}</span>
-            <button onclick={addSegment} disabled={!canExport} title="Remember this range as one subclip">+ Segment</button>
-            <span class="spacer"></span>
-            {#if canExport}<button class="reset" onclick={resetTrim}>Reset</button>{/if}
-            <button class="exp" onclick={exportCut} disabled={!canExport || exporting}>
-              {exporting ? "Cutting…" : "✂ Export cut"}
+          <div class="clipToolsBar">
+            <button class="miniToggle" class:on={clipToolsOpen} onclick={() => (clipToolsOpen = !clipToolsOpen)}>
+              Clip tools
             </button>
-            <button class="exp secondary" onclick={exportSegments} disabled={!segments.length || exportingSegments}>
-              {exportingSegments ? "Exporting..." : `Export ${segments.length || ""} subclips`}
-            </button>
+            <span>{fmt(inS)} - {fmt(outS ?? dur)} ({fmt((outS ?? dur) - inS)})</span>
+            {#if segments.length}<span>{segments.length} marked</span>{/if}
           </div>
-          {#if segments.length}
+          {#if clipToolsOpen}
+            <div class="ctrls">
+              <button onclick={setIn} title="Set in point to current time">In {fmt(inS)}</button>
+              <button onclick={setOut} title="Set out point to current time">Out {fmt(outS ?? dur)}</button>
+              <span class="len">range {fmt((outS ?? dur) - inS)}</span>
+              <button onclick={addSegment} disabled={!canExport} title="Remember this range as one subclip">Mark range</button>
+              <span class="spacer"></span>
+              {#if canExport}<button class="reset" onclick={resetTrim}>Reset</button>{/if}
+              <button class="exp" onclick={exportCut} disabled={!canExport || exporting}>
+                {exporting ? "Saving..." : "Save current range"}
+              </button>
+              <button class="exp secondary" onclick={exportSegments} disabled={!segments.length || exportingSegments}>
+                {exportingSegments ? "Saving..." : `Save ${segments.length || ""} marked`}
+              </button>
+            </div>
+          {/if}
+          {#if clipToolsOpen && segments.length}
             <div class="segments">
               {#each segments as segment, i (i)}
                 <button class="segmentPill" onclick={() => useSegment(segment)}>
@@ -741,22 +772,13 @@
   }
   .cursor {
     position: absolute;
-    top: -7px;
+    top: -5px;
     width: 3px;
-    height: 28px;
+    height: 24px;
     background: #fff;
     transform: translateX(-1.5px);
     pointer-events: none;
-  }
-  .cursor::before {
-    content: "";
-    position: absolute;
-    left: 50%;
-    top: -1px;
-    transform: translateX(-50%);
-    border-left: 6px solid transparent;
-    border-right: 6px solid transparent;
-    border-top: 7px solid #fff;
+    border-radius: 2px;
   }
   /* Floating frame preview shown under the scrub cursor (sprite cell). */
   .scrubprev {
@@ -784,10 +806,23 @@
     background: rgba(0, 0, 0, 0.55);
     font-variant-numeric: tabular-nums;
   }
+  .clipToolsBar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    color: var(--text-dim);
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .clipToolsBar span {
+    white-space: nowrap;
+  }
   .ctrls {
     display: flex;
     align-items: center;
     gap: 8px;
+    margin-bottom: 8px;
   }
   .ctrls button {
     padding: 4px 10px;
@@ -869,7 +904,7 @@
     max-width: min(560px, calc(100% - 44px));
     padding: 11px 13px;
     border-radius: 8px;
-    background: rgba(0, 0, 0, 0.58);
+    background: rgba(0, 0, 0, 0.42);
     color: #fff;
     font-size: 14px;
     line-height: 1.45;
