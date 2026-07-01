@@ -1,6 +1,5 @@
-/* FoxCull Codex theming. The fork now has a distinct cool-cyan identity instead
-   of the original warm fox-orange chrome. Components reference the tokens below,
-   so the app-wide identity remains a palette swap. */
+/* FoxCull Codex theming. The editing/culling chrome uses neutral graphite tones
+   so the UI does not tint judgment of photos or video. */
 :root,
 :root[data-theme="light"] {
   --bg: #f4f7fb;
@@ -12,9 +11,9 @@
   --text: #101820;
   --text-dim: #52616d;
   --text-faint: #83919d;
-  --accent: #12a9a3;
-  --accent-dim: #c7f2ee;
-  --accent-on: #041111;
+  --accent: #668fb4;
+  --accent-dim: #d7e5f2;
+  --accent-on: #07111b;
   --reject: #d84b65;
   --pick: #218c62;
   --star: #c98b12;
@@ -31,18 +30,18 @@
 }
 
 :root[data-theme="dark"] {
-  --bg: #101315;
-  --bg-panel: #171c20;
-  --bg-elev: #20272c;
-  --bg-hover: #2a343a;
-  --viewport-bg: #080a0b;
-  --border: #303a42;
-  --text: #eef7f7;
-  --text-dim: #b4c5c7;
-  --text-faint: #74868a;
-  --accent: #25d8c4;
-  --accent-dim: #0b5d58;
-  --accent-on: #041111;
+  --bg: #1f1f1f;
+  --bg-panel: #2a2a2a;
+  --bg-elev: #343434;
+  --bg-hover: #3f3f3f;
+  --viewport-bg: #101010;
+  --border: #454545;
+  --text: #ededed;
+  --text-dim: #c6c6c6;
+  --text-faint: #888888;
+  --accent: #8eb6d9;
+  --accent-dim: #40586c;
+  --accent-on: #111820;
   --reject: #ff5b7a;
   --pick: #63d68a;
   --star: #f2b63c;
@@ -55,32 +54,29 @@
   --label-purple: #a78bfa;
 }
 
-/* Warm keeps a low-blue option for late-night culling, but uses a plum accent
-   so Codex no longer visually collapses back into the original orange app. The
-   photo stage itself stays neutral: a tinted surround would bias color judgment. */
-:root[data-theme="warm"] {
-  --bg: #171217;
-  --bg-panel: #211a23;
-  --bg-elev: #2b2330;
-  --bg-hover: #372d40;
-  --viewport-bg: #0b0a0c;
-  --border: #4a3a50;
-  --text: #f4ecf7;
-  --text-dim: #c8b9d0;
-  --text-faint: #8e7a99;
-  --accent: #c77dff;
-  --accent-dim: #4b2765;
-  --accent-on: #120818;
-  --reject: #f0677f;
-  --pick: #93c96b;
-  --star: #efb94f;
+:root[data-theme="neutral"] {
+  --bg: #2b2b2b;
+  --bg-panel: #333333;
+  --bg-elev: #3d3d3d;
+  --bg-hover: #484848;
+  --viewport-bg: #1f1f1f;
+  --border: #505050;
+  --text: #f0f0f0;
+  --text-dim: #c9c9c9;
+  --text-faint: #909090;
+  --accent: #8eb6d9;
+  --accent-dim: #40586c;
+  --accent-on: #111820;
+  --reject: #e05c68;
+  --pick: #7fb77e;
+  --star: #d5a94a;
   --shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
 
-  --label-red: #f0677f;
-  --label-green: #93c96b;
-  --label-yellow: #efb94f;
-  --label-blue: #7ea7d8;
-  --label-purple: #c77dff;
+  --label-red: #e05c68;
+  --label-green: #7fb77e;
+  --label-yellow: #d5a94a;
+  --label-blue: #8eb6d9;
+  --label-purple: #b0a0c8;
 }
 
 * { box-sizing: border-box; }

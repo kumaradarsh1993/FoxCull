@@ -63,7 +63,7 @@
 
   // ── video trim state ──
   let vid = $state<HTMLVideoElement | null>(null);
-  let paused = $state(false); // mirrors the element (autoplay starts playing)
+  let paused = $state(true); // mirrors the element; default video behavior is paused
   let dur = $state(0);
   let cur = $state(0);
   let inS = $state(0);
@@ -80,6 +80,9 @@
   let preview = $state<number | null>(null); // fraction 0..1 to preview, or null
   let scrubbing = $state(false);
   let trackEl = $state<HTMLDivElement | null>(null);
+  let infoVisible = $state(false);
+  let pendingSeek: number | null = null;
+  let seekRAF = 0;
   const PREVIEW_W = 200;
   let previewH = $derived(
     strip ? Math.round((PREVIEW_W * strip.tile_h) / strip.tile_w) : 0,
@@ -94,7 +97,7 @@
     usingProxy = false;
     converting = false;
     proxyNote = null;
-    paused = false;
+    paused = !settings.s.videoAutoplay;
     dur = 0;
     cur = 0;
     inS = 0;
@@ -197,6 +200,10 @@
     return () => clearTimeout(slow);
   });
 
+  $effect(() => {
+    infoVisible = showInfo;
+  });
+
   function onMeta() {
     if (vid) dur = vid.duration || 0;
   }
@@ -214,6 +221,13 @@
     if (t < 0) t = 0;
     if (max > 0 && t > max) t = max;
     vid.currentTime = t;
+    cur = t;
+  }
+  export function setInPoint() {
+    setIn();
+  }
+  export function setOutPoint() {
+    setOut();
   }
 
   // ── timeline scrub: hover previews a frame, drag seeks the real video ──
@@ -222,9 +236,31 @@
     const r = trackEl.getBoundingClientRect();
     return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
   }
-  function seekTo(frac: number) {
+  function applySeek(frac: number) {
     const d = dur || strip?.duration || 0;
-    if (vid && d > 0) vid.currentTime = frac * d;
+    if (vid && d > 0) {
+      const t = frac * d;
+      cur = t;
+      if ("fastSeek" in vid && typeof vid.fastSeek === "function") {
+        try {
+          vid.fastSeek(t);
+          return;
+        } catch {
+          /* fall back */
+        }
+      }
+      vid.currentTime = t;
+    }
+  }
+  function seekTo(frac: number) {
+    pendingSeek = frac;
+    if (seekRAF) return;
+    seekRAF = requestAnimationFrame(() => {
+      const next = pendingSeek;
+      pendingSeek = null;
+      seekRAF = 0;
+      if (next != null) applySeek(next);
+    });
   }
   function onTrackDown(e: PointerEvent) {
     scrubbing = true;
@@ -417,7 +453,7 @@
         <video
           bind:this={vid}
           src={vsrc}
-          autoplay
+          autoplay={settings.s.videoAutoplay}
           onclick={togglePlay}
           onloadedmetadata={onMeta}
           ontimeupdate={onTime}
@@ -459,6 +495,10 @@
             </button>
             <span class="time">{fmt(cur)} <span class="sep">/</span> {fmt(dur)}</span>
             <span class="spacer"></span>
+            <button class="miniToggle" class:on={settings.s.videoAutoplay} onclick={() => settings.set({ videoAutoplay: !settings.s.videoAutoplay })} title="Play videos automatically when focused">
+              Auto {settings.s.videoAutoplay ? "On" : "Off"}
+            </button>
+            <button class="miniToggle" class:on={infoVisible} onclick={() => (infoVisible = !infoVisible)} title="Show file information overlay">Info</button>
             <span class="khint">Space play · Shift+← → seek</span>
           </div>
           <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -549,7 +589,7 @@
       {/if}
     </div>
   {/if}
-  {#if showInfo && item}
+  {#if infoVisible && item}
     <div class="infoOverlay">
       {#each infoRows as row}
         <div>{row}</div>
@@ -654,9 +694,22 @@
     font-size: 11px;
     color: var(--text-faint);
   }
+  .miniToggle {
+    padding: 3px 7px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-elev);
+    color: var(--text-dim);
+    font-size: 11.5px;
+    white-space: nowrap;
+  }
+  .miniToggle.on {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
   .track {
     position: relative;
-    height: 12px;
+    height: 16px;
     border-radius: 6px;
     background: color-mix(in srgb, var(--text-faint) 30%, transparent);
     margin-bottom: 8px;
@@ -688,12 +741,22 @@
   }
   .cursor {
     position: absolute;
-    top: -2px;
-    width: 2px;
-    height: 16px;
+    top: -7px;
+    width: 3px;
+    height: 28px;
     background: #fff;
-    transform: translateX(-1px);
+    transform: translateX(-1.5px);
     pointer-events: none;
+  }
+  .cursor::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: -1px;
+    transform: translateX(-50%);
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 7px solid #fff;
   }
   /* Floating frame preview shown under the scrub cursor (sprite cell). */
   .scrubprev {

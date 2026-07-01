@@ -3,7 +3,7 @@
 // loads once and writes through to tauri-plugin-store on every change.
 import { Store } from "@tauri-apps/plugin-store";
 
-export type Theme = "light" | "dark" | "warm";
+export type Theme = "light" | "dark" | "neutral";
 export type ViewMode = "grid" | "details" | "loupe";
 export type FilmstripPos = "bottom" | "right" | "hidden";
 export type SortBy = "name" | "date" | "capture" | "type" | "size";
@@ -24,9 +24,11 @@ export interface AppSettings {
   sortDir: SortDir;
   /** Section the grid by real capture date — off, by month, or by week. */
   groupBy: GroupBy;
+  subgroupBy: GroupBy;
   typeFilter: TypeFilter;
   includeSub: boolean;
   liveScrub: boolean;
+  videoAutoplay: boolean;
   relatedMode: RelatedMode;
   relatedStrip: boolean;
   deleteMode: DeleteMode;
@@ -36,7 +38,7 @@ export interface AppSettings {
 }
 
 const DEFAULTS: AppSettings = {
-  theme: "dark",
+  theme: "neutral",
   viewMode: "grid",
   filmstripPos: "bottom",
   treeWidth: 270,
@@ -45,9 +47,11 @@ const DEFAULTS: AppSettings = {
   sortBy: "name",
   sortDir: "asc",
   groupBy: "none",
+  subgroupBy: "none",
   typeFilter: "all",
   includeSub: true,
   liveScrub: false,
+  videoAutoplay: false,
   relatedMode: "expanded",
   relatedStrip: true,
   deleteMode: "folder",
@@ -68,11 +72,15 @@ class Settings {
     if (this.ready) return;
     try {
       this.store = await Store.load(FILE);
-      const loaded = await this.store.get<AppSettings & { groupByMonth?: boolean }>(KEY);
+      const loaded = await this.store.get<Omit<AppSettings, "theme"> & { groupByMonth?: boolean; theme?: Theme | "warm" }>(KEY);
       if (loaded) {
+        const migrated: Partial<AppSettings> = {
+          ...loaded,
+          theme: loaded.theme === "warm" ? "neutral" : (loaded.theme ?? DEFAULTS.theme),
+        };
         // Migrate the old boolean month toggle to the new granularity field.
-        if (loaded.groupBy === undefined && loaded.groupByMonth) loaded.groupBy = "month";
-        this.s = { ...DEFAULTS, ...loaded };
+        if (loaded.groupBy === undefined && loaded.groupByMonth) migrated.groupBy = "month";
+        this.s = { ...DEFAULTS, ...migrated };
       }
     } catch {
       // first run / store unavailable — defaults stand

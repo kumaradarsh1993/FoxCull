@@ -90,8 +90,8 @@
   let countsGen = $state(0);
   let folderRefreshKey = $state(0);
   let gridComp = $state<{ scrollToIndex: (i: number, center?: boolean) => void } | null>(null);
-  let loupeComp = $state<{ togglePlay: () => void; seekBy: (d: number) => void } | null>(null);
-  let editComp = $state<{ setOutputPreview?: (on: boolean) => void | Promise<void> } | null>(null);
+  let loupeComp = $state<{ togglePlay: () => void; seekBy: (d: number) => void; setInPoint?: () => void; setOutPoint?: () => void } | null>(null);
+  let editComp = $state<{ setOutputPreview?: (on: boolean) => void | Promise<void>; setIn?: () => void; setOut?: () => void } | null>(null);
 
   const HOLD_MS = 850;
   let holdMs = $state(0);
@@ -154,6 +154,7 @@
     id: string;
     items: MediaItem[];
     representative: MediaItem;
+    mother: MediaItem;
     badges: RelatedBadge[];
     entries: RelatedEntry[];
   };
@@ -265,22 +266,28 @@
   }
 
   function makeRelatedGroup(id: string, entries: RelatedEntry[], extraBadges: RelatedBadge[] = []): RelatedGroup {
-    const ordered = [...entries].sort((a, b) => a.order - b.order);
-    let representative = ordered[0].item;
-    let best = -Infinity;
-    for (const e of ordered) {
-      const score = relatedScore(e, ordered);
-      if (score > best) {
-        best = score;
-        representative = e.item;
+    const inputOrder = [...entries].sort((a, b) => a.order - b.order);
+    const badges = groupBadges(inputOrder, extraBadges);
+    const rank = (e: RelatedEntry) => {
+      if (e.stem.relation === "original") {
+        if (badges.includes("RAW+JPEG") && e.item.kind === "raw") return 0;
+        if (badges.includes("Motion") && e.item.kind === "image") return 0;
+        return 1;
       }
-    }
+      if (e.stem.relation === "burst") return 2;
+      if (e.item.kind === "image" || e.item.kind === "raw") return 3;
+      if (e.stem.relation === "subclip" || e.stem.relation === "edit") return 5;
+      return 4;
+    };
+    const ordered = [...inputOrder].sort((a, b) => rank(a) - rank(b) || a.order - b.order);
+    const mother = ordered[0].item;
     return {
       id,
       entries: ordered,
       items: ordered.map((e) => e.item),
-      representative,
-      badges: groupBadges(ordered, extraBadges),
+      representative: mother,
+      mother,
+      badges,
     };
   }
 
@@ -394,25 +401,37 @@
   // Section helpers for the grouped grid (folder · type · year · month · week).
   // Dates are UTC to match how capture timestamps are stored. Week = calendar
   // week-of-month (days 1–7 = Week 1, 8–14 = Week 2, …).
-  function sectionKey(it: MediaItem): string {
-    const g = settings.s.groupBy;
+  function sectionPartKey(it: MediaItem, g: typeof settings.s.groupBy): string {
     if (g === "folder") return parentOf(it.path);
     if (g === "type") return it.kind;
+    if (g === "none") return "";
     const d = new Date(captureOf(it) * 1000);
     if (g === "year") return `${d.getUTCFullYear()}`;
     const base = `${d.getUTCFullYear()}-${d.getUTCMonth()}`;
     if (g === "week") return `${base}-${Math.floor((d.getUTCDate() - 1) / 7)}`;
     return base; // month
   }
-  function sectionLabel(it: MediaItem): string {
-    const g = settings.s.groupBy;
+  function sectionPartLabel(it: MediaItem, g: typeof settings.s.groupBy): string {
     if (g === "folder") return parentName(it.path);
     if (g === "type") return TYPE_LABEL[it.kind] ?? it.kind;
+    if (g === "none") return "";
     const d = new Date(captureOf(it) * 1000);
     if (g === "year") return `${d.getUTCFullYear()}`;
     const mon = d.toLocaleString(undefined, { month: "long", year: "numeric", timeZone: "UTC" });
     if (g === "week") return `${mon} · Week ${Math.floor((d.getUTCDate() - 1) / 7) + 1}`;
     return mon;
+  }
+
+  function sectionKey(it: MediaItem): string {
+    const primary = sectionPartKey(it, settings.s.groupBy);
+    const sub = settings.s.subgroupBy !== settings.s.groupBy ? sectionPartKey(it, settings.s.subgroupBy) : "";
+    return [primary, sub].filter(Boolean).join("\0") || "all";
+  }
+
+  function sectionLabel(it: MediaItem): string {
+    const primary = sectionPartLabel(it, settings.s.groupBy);
+    const sub = settings.s.subgroupBy !== settings.s.groupBy ? sectionPartLabel(it, settings.s.subgroupBy) : "";
+    return [primary, sub].filter(Boolean).join(" / ") || "All media";
   }
 
   // type → rating/label/flag/tag filters → sort, in one pass. Grouping by month
@@ -429,17 +448,15 @@
     else if (flagFilter === "unflagged") arr = arr.filter((i) => !i.flag);
 
     const g = settings.s.groupBy;
+    const hasGrouping = settings.s.groupBy !== "none" || settings.s.subgroupBy !== "none";
     const dir = settings.s.sortDir === "asc" ? 1 : -1;
     // Date groupings imply a capture-date order (that's the order their sections
     // need); folder/type keep their groups contiguous via a direction-independent
     // primary key, then order within each group by the chosen sort.
-    const by = DATE_GROUPS.has(g) ? "capture" : settings.s.sortBy;
+    const by = DATE_GROUPS.has(g) || DATE_GROUPS.has(settings.s.subgroupBy) ? "capture" : settings.s.sortBy;
     return [...arr].sort((a, b) => {
-      if (g === "folder") {
-        const p = collator.compare(parentOf(a.path), parentOf(b.path));
-        if (p !== 0) return p;
-      } else if (g === "type") {
-        const p = (TYPE_ORDER[a.kind] ?? 9) - (TYPE_ORDER[b.kind] ?? 9);
+      if (hasGrouping) {
+        const p = collator.compare(sectionKey(a), sectionKey(b));
         if (p !== 0) return p;
       }
       let c = 0;
@@ -489,7 +506,7 @@
     }
     return out;
   });
-  let grouped = $derived(settings.s.groupBy !== "none" && viewMode === "grid");
+  let grouped = $derived((settings.s.groupBy !== "none" || settings.s.subgroupBy !== "none") && viewMode === "grid");
 
   let active = $derived(view.length ? view[Math.min(activeIndex, view.length - 1)] : null);
   let selectedItems = $derived(items.filter((i) => selected.has(i.path)));
@@ -651,7 +668,7 @@
   }
 
   /** Whether the current view depends on real capture dates. */
-  let needCaptures = $derived(DATE_GROUPS.has(settings.s.groupBy) || settings.s.sortBy === "capture" || hasBurstLikeNames(items));
+  let needCaptures = $derived(DATE_GROUPS.has(settings.s.groupBy) || DATE_GROUPS.has(settings.s.subgroupBy) || settings.s.sortBy === "capture" || hasBurstLikeNames(items));
 
   let capturesDir: string | null = null;
   async function fetchCaptures(dir: string, paths: string[]) {
@@ -1341,6 +1358,8 @@
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
     const k = e.key.toLowerCase();
     if (editOpen) {
+      if (e.key === "[") { editComp?.setIn?.(); e.preventDefault(); return; }
+      if (e.key === "]") { editComp?.setOut?.(); e.preventDefault(); return; }
       if (k === "f") {
         const entering = !fullscreen;
         if (entering) await editComp?.setOutputPreview?.(true);
@@ -1376,6 +1395,8 @@
     // Shift+←/→ scrubs the clip. Plain ←/→ still move between items (below).
     if (viewMode === "loupe" && active?.kind === "video" && loupeComp) {
       if (e.key === " " || e.code === "Space") { loupeComp.togglePlay(); e.preventDefault(); return; }
+      if (e.key === "[") { loupeComp.setInPoint?.(); e.preventDefault(); return; }
+      if (e.key === "]") { loupeComp.setOutPoint?.(); e.preventDefault(); return; }
       if (e.shiftKey && e.key === "ArrowRight") { loupeComp.seekBy(5); e.preventDefault(); return; }
       if (e.shiftKey && e.key === "ArrowLeft") { loupeComp.seekBy(-5); e.preventDefault(); return; }
     }
@@ -1604,6 +1625,17 @@
           <option value="week">Week</option>
         </select>
       </div>
+      <div class="tool-group">
+        <span class="ctl-label">Sub</span>
+        <select class="sel" title="Optional second grouping level" bind:value={settings.s.subgroupBy} onchange={() => { settings.set({ subgroupBy: settings.s.subgroupBy }); maybeFetchCaptures(); }}>
+          <option value="none">None</option>
+          <option value="folder">Folder</option>
+          <option value="type">Type</option>
+          <option value="year">Year</option>
+          <option value="month">Month</option>
+          <option value="week">Week</option>
+        </select>
+      </div>
       <div class="tool-group stackTools">
         <span class="ctl-label">Stacks</span>
         <div class="seg" title="Show detected related files as separate items or folded groups">
@@ -1752,8 +1784,14 @@
         <div class="row"><span>Theme</span>
           <div class="seg">
             <button class="chip" class:on={settings.s.theme === "dark"} onclick={() => settings.set({ theme: "dark" })}>Dark</button>
-            <button class="chip" class:on={settings.s.theme === "warm"} onclick={() => settings.set({ theme: "warm" })} title="Low-blue plum chrome for long sessions in a dim room; the photo stage stays neutral">Warm</button>
+            <button class="chip" class:on={settings.s.theme === "neutral"} onclick={() => settings.set({ theme: "neutral" })} title="Lightroom-like neutral graphite chrome; the photo stage stays neutral">Neutral</button>
             <button class="chip" class:on={settings.s.theme === "light"} onclick={() => settings.set({ theme: "light" })}>Light</button>
+          </div>
+        </div>
+        <div class="row"><span>Video autoplay</span>
+          <div class="seg">
+            <button class="chip" class:on={settings.s.videoAutoplay} onclick={() => settings.set({ videoAutoplay: true })}>On</button>
+            <button class="chip" class:on={!settings.s.videoAutoplay} onclick={() => settings.set({ videoAutoplay: false })}>Off</button>
           </div>
         </div>
         <div class="row"><span>Filmstrip</span>
@@ -2134,13 +2172,28 @@
   .cell.selected { border-color: var(--text-faint); }
   .cell.active { border-color: var(--accent); }
   .cell.reject :global(.media) { opacity: 0.35; }
-  .cell.related { background: color-mix(in srgb, var(--accent) 9%, var(--viewport-bg)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent); }
-  .cell.related.rel-start { border-left-color: color-mix(in srgb, var(--accent) 60%, var(--border)); }
-  .cell.related.rel-mid { border-left-color: color-mix(in srgb, var(--accent) 34%, var(--border)); border-right-color: color-mix(in srgb, var(--accent) 34%, var(--border)); }
-  .cell.related.rel-end { border-right-color: color-mix(in srgb, var(--accent) 60%, var(--border)); }
-  .cell.rel-collapsed { border-style: solid; border-color: color-mix(in srgb, var(--accent) 54%, var(--border)); }
-  .cell.rel-collapsed::after { content: ""; position: absolute; inset: 5px; z-index: 2; border: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 4px; pointer-events: none; }
-  .cell.rel-derivative :global(.media) { filter: saturate(0.88); }
+  .cell.related {
+    background: color-mix(in srgb, var(--accent) 17%, var(--viewport-bg));
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent),
+      inset 0 0 0 6px color-mix(in srgb, var(--accent) 9%, transparent);
+  }
+  .cell.related.rel-start { border-left-color: color-mix(in srgb, var(--accent) 82%, var(--border)); }
+  .cell.related.rel-mid { border-left-color: color-mix(in srgb, var(--accent) 54%, var(--border)); border-right-color: color-mix(in srgb, var(--accent) 54%, var(--border)); }
+  .cell.related.rel-end { border-right-color: color-mix(in srgb, var(--accent) 82%, var(--border)); }
+  .cell.rel-mother { border-color: color-mix(in srgb, var(--pick) 68%, var(--accent)); }
+  .cell.rel-mother::before {
+    content: "";
+    position: absolute;
+    inset: 6px;
+    z-index: 2;
+    border: 2px solid color-mix(in srgb, var(--pick) 72%, transparent);
+    border-radius: 4px;
+    pointer-events: none;
+  }
+  .cell.rel-collapsed { border-style: solid; border-color: color-mix(in srgb, var(--accent) 76%, var(--border)); }
+  .cell.rel-collapsed::after { content: ""; position: absolute; inset: 5px; z-index: 2; border: 2px dashed color-mix(in srgb, var(--accent) 70%, transparent); border-radius: 4px; pointer-events: none; }
+  .cell.rel-derivative :global(.media) { filter: saturate(0.84) brightness(0.95); }
   .ov { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
   .lbl-dot { position: absolute; top: 5px; right: 5px; width: 12px; height: 12px; border-radius: 3px; border: 1px solid rgba(0,0,0,0.4); }
   .fl { position: absolute; top: 4px; left: 6px; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
@@ -2165,7 +2218,7 @@
   }
   .rel-badges span { min-width: 0; max-width: 74px; overflow: hidden; text-overflow: ellipsis; padding: 2px 5px; }
   .rel-role { position: absolute; left: 6px; bottom: 21px; padding: 2px 5px; color: color-mix(in srgb, var(--accent) 18%, #fff); }
-  .rel-count { position: absolute; right: 6px; bottom: 21px; min-width: 18px; padding: 2px 5px; text-align: center; }
+  .rel-count { position: absolute; right: 6px; bottom: 21px; min-width: 22px; padding: 3px 6px; text-align: center; font-size: 11px; background: color-mix(in srgb, var(--accent) 72%, #000); }
 
   .scell { position: relative; width: 100%; height: 100%; border: 2px solid transparent; border-radius: 5px; overflow: hidden; padding: 0; background: var(--viewport-bg); }
   .scell.active { border-color: var(--accent); }

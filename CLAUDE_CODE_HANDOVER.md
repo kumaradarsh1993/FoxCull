@@ -376,6 +376,53 @@ Known caveats after v0.5.2-nightly.3:
 - Mobile rotation/display-aspect edge cases should be tested on real S23/iPhone
   vertical clips before treating the export path as final.
 
+## Version 0.5.2-nightly.4: Edit/Library Polish After User QA
+
+Tag: `v0.5.2-nightly.4`
+
+This pass addressed the user's screenshot-based QA notes after trying the edit
+workspace and related stack UI:
+
+- Edit mode:
+  - Collapsing the Look/right panel or bottom timeline now leaves visible restore
+    tabs over the preview, so the panels can be brought back.
+  - The export Options menu is no longer clipped behind the video preview.
+  - Frame capture shows a top-bar confirmation toast after saving.
+  - The Source pane now renders media as compact cards with thumbnail, name,
+    duration, resolution, FPS, codec, capture date/camera when probed, and size
+    chips instead of cramped overlapping columns.
+  - `[` and `]` shortcuts set the current clip's in/out points in Edit mode.
+- Focus/video playback:
+  - Videos default to paused; autoplay is now an explicit visible setting.
+  - The Focus video controls expose Auto and Info buttons.
+  - `[` and `]` shortcuts mark in/out points in Focus video trim mode.
+  - Drag-seeking updates the playhead optimistically, uses `fastSeek` when the
+    webview supports it, and throttles real seeks to animation frames.
+  - The playhead target is larger and easier to grab.
+- Library grouping and stacks:
+  - Related groups choose a stable mother/original first, with RAW preferred for
+    RAW+JPEG and the still image preferred for motion-photo pairs.
+  - Collapsed related groups show the mother item as the representative.
+  - Stack backgrounds, mother borders, collapsed counts, and role badges are more
+    visible in grid/filmstrip views.
+  - Section headers are stronger and show item counts.
+  - Grid grouping supports an optional second grouping level, for example type
+    then month.
+- Details view:
+  - Details mode now has resizable columns and a Columns menu.
+  - Added richer media columns including resolution, FPS, duration, codec,
+    camera, folder, and tags.
+- Theme:
+  - Removed the old plum/purple Warm theme.
+  - Added a neutral graphite Lightroom-like theme and made it the default.
+  - Dark mode also uses neutral graphite tones with a muted blue-gray accent.
+
+Validation run for v0.5.2-nightly.4:
+
+- `npm run check` passed with 0 errors and the existing Node type warning.
+- `npm run build` passed.
+- `cargo check` passed after the version bump to `0.5.2-nightly.4`.
+
 ## Release State
 
 Published releases at handover time:
@@ -384,6 +431,7 @@ Published releases at handover time:
 - `v0.2.0`: `https://github.com/kumaradarsh1993/FoxCullCodex/releases/tag/v0.2.0`
 - `v0.3.0`: `https://github.com/kumaradarsh1993/FoxCullCodex/releases/tag/v0.3.0`
 - `v0.4.0`: `https://github.com/kumaradarsh1993/FoxCullCodex/releases/tag/v0.4.0`
+- `v0.5.2-nightly.3`: `https://github.com/kumaradarsh1993/FoxCullCodex/releases/tag/v0.5.2-nightly.3`
 
 Important v0.4.0 assets:
 

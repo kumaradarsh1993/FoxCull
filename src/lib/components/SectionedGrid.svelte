@@ -35,7 +35,7 @@
   let rowH = $derived(cellW + gap);
 
   type Row =
-    | { type: "header"; key: string; label: string; y: number; h: number }
+    | { type: "header"; key: string; label: string; count: number; y: number; h: number }
     | { type: "cells"; key: string; idxs: number[]; y: number; h: number };
 
   // Flatten the sections into a list of positioned rows (one header row + N cell
@@ -46,7 +46,7 @@
     let gi = 0; // running global item index
     for (let g = 0; g < groups.length; g++) {
       const grp = groups[g];
-      out.push({ type: "header", key: `h${g}`, label: grp.label, y, h: headerH });
+      out.push({ type: "header", key: `h${g}`, label: grp.label, count: grp.count, y, h: headerH });
       y += headerH;
       let remaining = grp.count;
       while (remaining > 0) {
@@ -125,7 +125,8 @@
     {#each visible as r (r.key)}
       {#if r.type === "header"}
         <div class="hdr" style="transform:translateY({r.y}px); height:{r.h}px">
-          {r.label}
+          <strong>{r.label}</strong>
+          <span>{r.count}</span>
         </div>
       {:else}
         {#each r.idxs as gi, c (gi)}
@@ -160,13 +161,24 @@
     right: 0;
     display: flex;
     align-items: center;
-    font-size: 13px;
-    font-weight: 600;
+    gap: 10px;
+    font-size: 15px;
+    font-weight: 700;
     letter-spacing: 0.01em;
-    color: var(--text-dim);
+    color: var(--text);
+    border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
     border-bottom: 1px solid var(--border);
-    background: var(--bg);
-    padding: 0 2px 4px;
+    background: color-mix(in srgb, var(--bg-panel) 88%, var(--bg));
+    padding: 0 10px 4px;
+  }
+  .hdr span {
+    min-width: 24px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: var(--bg-elev);
+    color: var(--text-faint);
+    font-size: 11px;
+    text-align: center;
   }
   .cellpos {
     position: absolute;

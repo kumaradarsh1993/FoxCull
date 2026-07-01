@@ -153,6 +153,7 @@
   let timelineDrag: TimelineDrag | null = null;
   let sourceMenu = $state<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
   let exportOptionsOpen = $state(false);
+  let frameToast = $state<string | null>(null);
   let cropDrag:
     | { x: number; y: number; cropX: number; cropY: number; imgW: number; imgH: number; cropW: number; cropH: number }
     | null = null;
@@ -356,6 +357,16 @@
     const res = p.width && p.height ? `${p.width}x${p.height}` : "";
     const fps = p.fps ? `${Math.round(p.fps)}fps` : "";
     return [fmt(p.duration), res, fps, p.codec ?? src.ext.toUpperCase()].filter(Boolean).join(" · ");
+  }
+
+  function sourceMetaChips(src: EditSourceItem): string[] {
+    const p = probes[src.path];
+    if (src.kind === "audio") return [src.ext.toUpperCase(), fmtSize(src.size), fmtDate(src.mtime)];
+    const res = p?.width && p?.height ? `${p.width}x${p.height}` : "";
+    const fps = p?.fps ? `${Math.round(p.fps)}fps` : "";
+    const codec = p?.codec ? p.codec.toUpperCase() : src.ext.toUpperCase();
+    return [fmt(p?.duration ?? 0), res, fps, codec, p?.camera ?? "", fmtDate(p?.captured ?? src.mtime), fmtSize(src.size)]
+      .filter((v) => v && v !== "0:00" && v !== "-");
   }
 
   function ensureProbe(src: EditSourceItem) {
@@ -565,13 +576,13 @@
     await setOutputPreview(!productionPreview);
   }
 
-  function setIn() {
+  export function setIn() {
     if (!selectedClip) return;
     updateClip(selectedClip.id, { inS: Math.min(currentTime, selectedClip.outS - 0.05) });
     clampTrim();
   }
 
-  function setOut() {
+  export function setOut() {
     if (!selectedClip) return;
     updateClip(selectedClip.id, { outS: Math.max(currentTime, selectedClip.inS + 0.05) });
     clampTrim();
@@ -804,7 +815,12 @@
         basename: `${selectedClip.name.replace(/\.[^.]+$/, "")}_frame`,
       };
       const out = await api.editSnapshot(req);
-      exportNote = `Saved frame ${basename(out)}`;
+      const saved = basename(out);
+      exportNote = `Saved frame ${saved}`;
+      frameToast = `Frame saved: ${saved}`;
+      setTimeout(() => {
+        if (frameToast === `Frame saved: ${saved}`) frameToast = null;
+      }, 2600);
       api.reveal(out);
     } catch (e) {
       exportNote = `Frame failed: ${e}`;
@@ -1158,6 +1174,11 @@
             <span class="sourceName">
               <strong>{item.name}</strong>
               <em>{fmtSpec(item)}</em>
+              <span class="sourceChips">
+                {#each sourceMetaChips(item).slice(0, sourceView === "thumbs" ? 3 : 6) as chip}
+                  <span>{chip}</span>
+                {/each}
+              </span>
             </span>
             {#if sourceView === "details"}
               <span>{probes[item.path]?.camera ?? (item.kind === "audio" ? "Audio" : "-")}</span>
@@ -1198,6 +1219,7 @@
       <button class="miniBtn" onclick={takeSnapshot} disabled={!selectedClip || snapshotting}>
         {snapshotting ? "Saving" : "Frame"}
       </button>
+      {#if frameToast}<span class="topToast" aria-live="polite">{frameToast}</span>{/if}
       <div class="exportOpts">
         <button class="miniBtn" class:on={exportOptionsOpen} onclick={() => (exportOptionsOpen = !exportOptionsOpen)}>
           Options
@@ -1238,6 +1260,12 @@
     </div>
 
     <div class="preview" bind:this={previewBox} onwheel={onCropWheel}>
+      {#if inspectorCollapsed}
+        <button class="restoreTab restoreLook" onclick={() => (inspectorCollapsed = false)} title="Show Look panel">Look</button>
+      {/if}
+      {#if timelineCollapsed}
+        <button class="restoreTab restoreTimeline" onclick={() => (timelineCollapsed = false)} title="Show timeline">Timeline</button>
+      {/if}
       {#if selectedClip}
         {#if productionPreview && productionFrame && productionVideoRect}
           <div
@@ -1647,21 +1675,21 @@
   }
   .sourceItem {
     display: grid;
-    grid-template-columns: 62px minmax(0, 1fr) minmax(54px, 0.55fr) 74px 64px;
-    align-items: center;
-    gap: 8px;
+    grid-template-columns: 72px minmax(0, 1fr);
+    align-items: start;
+    gap: 10px;
     width: 100%;
-    min-height: 62px;
-    padding: 6px;
+    min-height: 76px;
+    padding: 8px;
     border-radius: 8px;
     border: 1px solid transparent;
-    background: transparent;
+    background: color-mix(in srgb, var(--bg-elev) 72%, transparent);
     color: var(--text);
     cursor: grab;
     text-align: left;
   }
   .sourceList.list .sourceItem {
-    grid-template-columns: 54px minmax(0, 1fr);
+    grid-template-columns: 58px minmax(0, 1fr);
   }
   .sourceList.thumbs .sourceItem {
     grid-template-columns: 1fr;
@@ -1669,6 +1697,7 @@
     min-height: 150px;
     align-items: stretch;
   }
+  .sourceItem > span:nth-child(n + 3),
   .sourceList.list .sourceItem > span:nth-child(n + 3),
   .sourceList.thumbs .sourceItem > span:nth-child(n + 3) {
     display: none;
@@ -1679,8 +1708,8 @@
     border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
   }
   .sourceThumb {
-    width: 58px;
-    height: 48px;
+    width: 68px;
+    height: 54px;
     border-radius: 6px;
     overflow: hidden;
     background: var(--viewport-bg);
@@ -1707,7 +1736,7 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 5px;
   }
   .sourceName strong,
   .timelineClip strong {
@@ -1721,6 +1750,26 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .sourceChips {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+    max-height: 36px;
+    overflow: hidden;
+  }
+  .sourceChips span {
+    max-width: 112px;
+    padding: 2px 5px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--viewport-bg) 76%, transparent);
+    color: var(--text-faint);
+    font-size: 10.5px;
+    line-height: 1.1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .workPane {
     grid-column: 3;
@@ -1740,7 +1789,9 @@
     display: none;
   }
   .editTop {
-    overflow: hidden;
+    position: relative;
+    z-index: 80;
+    overflow: visible;
   }
   .timelineCollapsed .workPane {
     grid-template-rows: auto minmax(180px, 1fr) auto 0 0;
@@ -1805,7 +1856,7 @@
     position: absolute;
     right: 0;
     top: 34px;
-    z-index: 40;
+    z-index: 120;
     width: 280px;
     padding: 10px;
     display: flex;
@@ -1815,6 +1866,18 @@
     border: 1px solid var(--border);
     border-radius: 9px;
     box-shadow: var(--shadow);
+  }
+  .topToast {
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 5px 8px;
+    border: 1px solid color-mix(in srgb, var(--pick) 50%, var(--border));
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--pick) 16%, var(--bg-elev));
+    color: var(--text);
+    font-size: 12px;
   }
   .optionHint {
     margin: -4px 0 0;
@@ -1833,6 +1896,29 @@
     justify-content: center;
     background: #050505;
     overflow: hidden;
+  }
+  .restoreTab {
+    position: absolute;
+    z-index: 75;
+    border: 1px solid var(--border);
+    background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
+    color: var(--text);
+    box-shadow: var(--shadow);
+    font-weight: 700;
+    font-size: 12px;
+  }
+  .restoreLook {
+    right: 10px;
+    top: 12px;
+    padding: 7px 10px;
+    border-radius: 8px;
+  }
+  .restoreTimeline {
+    left: 50%;
+    bottom: 12px;
+    transform: translateX(-50%);
+    padding: 7px 12px;
+    border-radius: 999px;
   }
   .preview video {
     width: 100%;
