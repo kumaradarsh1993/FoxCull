@@ -11,7 +11,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::catalog::Catalog;
+use crate::catalog::{Catalog, VideoSegment};
 use crate::media::{self, Kind};
 use crate::{thumbs, video};
 
@@ -1636,6 +1636,118 @@ pub async fn trim_video(
 /// fall back to it instantly on a decode failure without asking the user again.
 // ── quick editor export (timeline/crop/music) ───────────────────────────────
 
+#[derive(Serialize)]
+pub struct SegmentExportOutcome {
+    pub exported: Vec<String>,
+    pub failed: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+fn clean_segments(segments: Vec<VideoSegment>) -> Vec<VideoSegment> {
+    let mut out: Vec<VideoSegment> = segments
+        .into_iter()
+        .filter(|s| s.in_s.is_finite() && s.out_s.is_finite() && s.out_s > s.in_s)
+        .map(|s| VideoSegment {
+            in_s: s.in_s.max(0.0),
+            out_s: s.out_s.max(0.0),
+        })
+        .collect();
+    out.sort_by(|a, b| a.in_s.partial_cmp(&b.in_s).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+fn subclip_output_path(src: &Path, idx: usize) -> PathBuf {
+    let stem = src
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "clip".into());
+    let ext = src
+        .extension()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "mp4".into());
+    uniquify(src.with_file_name(format!("{stem}_sub{idx:02}.{ext}")))
+}
+
+#[tauri::command]
+pub fn get_video_segments(
+    state: State<'_, AppState>,
+    catalog: State<'_, Catalog>,
+    path: String,
+) -> Vec<VideoSegment> {
+    let rel = rel_of(&state.root.lock().clone(), &path);
+    catalog.get_video_segments(&rel)
+}
+
+#[tauri::command]
+pub fn set_video_segments(
+    state: State<'_, AppState>,
+    catalog: State<'_, Catalog>,
+    path: String,
+    segments: Vec<VideoSegment>,
+) -> Result<(), String> {
+    let root = canonical_active_root(&state.root.lock().clone())?;
+    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
+    let src = validate_active_media_file(&root, lib.as_ref(), &path)?;
+    if !matches!(media::classify(&src), Kind::Video) {
+        return Err("not a video file".into());
+    }
+    let rel = rel_under(&root, &src);
+    catalog
+        .set_video_segments(&rel, &clean_segments(segments))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn export_video_segments(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    catalog: State<'_, Catalog>,
+    path: String,
+    segments: Vec<VideoSegment>,
+) -> Result<SegmentExportOutcome, String> {
+    let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg not available")?;
+    let root = canonical_active_root(&state.root.lock().clone())?;
+    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
+    let src = validate_active_media_file(&root, lib.as_ref(), &path)?;
+    if !matches!(media::classify(&src), Kind::Video) {
+        return Err("not a video file".into());
+    }
+    let segments = clean_segments(segments);
+    if segments.is_empty() {
+        return Err("no marked subclips to export".into());
+    }
+    let rel = rel_under(&root, &src);
+    catalog
+        .set_video_segments(&rel, &segments)
+        .map_err(|e| e.to_string())?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let total = segments.len() as u64;
+        let label = format!("Exporting {total} subclip{}", if total == 1 { "" } else { "s" });
+        emit_activity(&app, "subclips", &label, 0, total, "running");
+        let mut out = SegmentExportOutcome {
+            exported: Vec::new(),
+            failed: Vec::new(),
+            errors: Vec::new(),
+        };
+        for (i, segment) in segments.iter().enumerate() {
+            let dest = subclip_output_path(&src, i + 1);
+            match video::trim(&ffmpeg, &src, segment.in_s, segment.out_s, &dest) {
+                Ok(()) => out.exported.push(dest.to_string_lossy().to_string()),
+                Err(e) => {
+                    out.failed.push(src.to_string_lossy().to_string());
+                    out.errors.push(e);
+                }
+            }
+            emit_activity(&app, "subclips", &label, i as u64 + 1, total, "running");
+        }
+        emit_activity(&app, "subclips", &label, total, total, "done");
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[derive(Clone, Deserialize)]
 pub struct EditClip {
     pub path: String,
@@ -2509,6 +2621,9 @@ fn cache_files_for(cache_dir: &Path, src: &str) -> Vec<PathBuf> {
     let strip = video::filmstrip_path(cache_dir, p);
     out.push(strip.with_extension("json"));
     out.push(strip);
+    let scrub = video::scrubstrip_path(cache_dir, p);
+    out.push(scrub.with_extension("json"));
+    out.push(scrub);
     // H.264 playback proxy (HEVC-without-codec machines) — can be sizable.
     out.push(video::proxy_path(cache_dir, p));
     out

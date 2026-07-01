@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { api } from "$lib/api";
   import type {
     EditAdjustments,
@@ -99,6 +100,9 @@
   const VIDEO_LANES = [0, 1, 2];
   const AUDIO_LANES = [0, 1, 2];
   const SNAP = 0.16;
+  const TIMELINE_ZOOM_MIN = 12;
+  const TIMELINE_ZOOM_MAX = 60;
+  const TIMELINE_TRACK_OFFSET = 44;
   const basename = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
   const extOf = (p: string) => (basename(p).match(/\.([^.]+)$/)?.[1] ?? "").toLowerCase();
   const normPath = (p: string) =>
@@ -141,7 +145,6 @@
   let sourceCollapsed = $state(false);
   let inspectorCollapsed = $state(false);
   let timelineCollapsed = $state(false);
-  let lookCollapsed = $state(false);
   let productionPreview = $state(false);
   let dragSourcePath = $state<string | null>(null);
   let seededKey = $state("");
@@ -544,13 +547,22 @@
     }
   }
 
-  function toggleProductionPreview() {
-    if (!selectedClip) return;
-    productionPreview = !productionPreview;
-    exportOptionsOpen = false;
-    if (productionPreview && previewVideo) {
+  async function syncProductionPreviewTime() {
+    await tick();
+    if (productionPreview && previewVideo && selectedClip) {
       previewVideo.currentTime = Math.max(selectedClip.inS, Math.min(currentTime, selectedClip.outS));
     }
+  }
+
+  export async function setOutputPreview(on: boolean) {
+    if (on && !selectedClip) return;
+    productionPreview = on && !!selectedClip;
+    exportOptionsOpen = false;
+    if (productionPreview) await syncProductionPreviewTime();
+  }
+
+  async function toggleProductionPreview() {
+    await setOutputPreview(!productionPreview);
   }
 
   function setIn() {
@@ -595,6 +607,10 @@
 
   function clampPanel(n: number, min: number, max: number) {
     return Math.max(min, Math.min(max, n));
+  }
+
+  function clampTimelineScale(n: number) {
+    return clampPanel(n, TIMELINE_ZOOM_MIN, TIMELINE_ZOOM_MAX);
   }
 
   function startSourceResize(e: PointerEvent) {
@@ -1062,6 +1078,25 @@
     const next = Math.max(1, Math.min(4, selectedClip.zoom + (e.deltaY > 0 ? -0.08 : 0.08)));
     updateClip(selectedClip.id, { zoom: next });
   }
+
+  async function onTimelineWheel(e: WheelEvent) {
+    if (!e.ctrlKey) return;
+    const viewport = e.currentTarget as HTMLDivElement;
+    const wheelDelta = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+    if (wheelDelta === 0) return;
+
+    e.preventDefault();
+    const rect = viewport.getBoundingClientRect();
+    const cursorX = e.clientX - rect.left;
+    const oldScale = timelineScale;
+    const nextScale = clampTimelineScale(timelineScale + (wheelDelta > 0 ? -2 : 2));
+    if (nextScale === oldScale) return;
+
+    const anchorTime = Math.max(0, (viewport.scrollLeft + cursorX - TIMELINE_TRACK_OFFSET) / oldScale);
+    timelineScale = nextScale;
+    await tick();
+    viewport.scrollLeft = Math.max(0, anchorTime * nextScale + TIMELINE_TRACK_OFFSET - cursorX);
+  }
 </script>
 
 <div
@@ -1070,7 +1105,7 @@
   class:inspectorCollapsed
   class:timelineCollapsed
   class:productionPreviewMode={productionPreview}
-  style={`--source-w:${sourceCollapsed ? 0 : sourcePanelW}px; --inspector-w:${inspectorCollapsed ? 0 : inspectorPanelW}px; --timeline-h:${timelineCollapsed ? 0 : timelinePanelH}px;`}
+  style={`--source-w:${sourceCollapsed ? 0 : sourcePanelW}px; --source-splitter-w:${sourceCollapsed ? 0 : 6}px; --inspector-w:${inspectorCollapsed ? 0 : inspectorPanelW}px; --inspector-splitter-w:${inspectorCollapsed ? 0 : 6}px; --timeline-h:${timelineCollapsed ? 0 : timelinePanelH}px;`}
 >
   <aside class="sourcePane">
     <div class="sourceHead">
@@ -1232,7 +1267,7 @@
               value={currentTime}
               oninput={(e) => seek(Number((e.currentTarget as HTMLInputElement).value))}
             />
-            <button class="miniBtn" onclick={() => (productionPreview = false)}>Exit</button>
+            <button class="miniBtn" onclick={() => setOutputPreview(false)}>Exit</button>
           </div>
         {:else}
           <!-- svelte-ignore a11y_media_has_caption -->
@@ -1286,13 +1321,13 @@
       <div class="timelineHead">
         <strong>Timeline</strong>
         <span>{clips.length} video · {audioClips.length} audio · {fmt(timelineSeconds)}</span>
-        <label class="scale">Zoom <input type="range" min="12" max="60" bind:value={timelineScale} /></label>
+        <label class="scale">Zoom <input type="range" min={TIMELINE_ZOOM_MIN} max={TIMELINE_ZOOM_MAX} bind:value={timelineScale} /></label>
         <span class="snap">Snap</span>
         <span class="spacer"></span>
         <button class="ghost" onclick={() => (timelineCollapsed = true)}>Collapse</button>
         <button class="ghost" onclick={() => { clips = []; audioClips = []; }} disabled={!clips.length && !audioClips.length}>Clear</button>
       </div>
-      <div class="timelineViewport">
+      <div class="timelineViewport" onwheel={onTimelineWheel}>
         <div class="timelineCanvas" style="width:{timelineWidth}px">
           <div class="ruler">
             {#each Array(Math.ceil(timelineEnd / 5) + 1) as _, i}
@@ -1381,26 +1416,24 @@
     </div>
 
     <div class="block lookBlock">
-      <button class="blockHead" onclick={() => (lookCollapsed = !lookCollapsed)}>
+      <button class="blockHead" onclick={() => (inspectorCollapsed = true)} title="Collapse look panel">
         <h3>Look</h3>
-        <span>{lookCollapsed ? "Show" : "Hide"}</span>
+        <span>Hide</span>
       </button>
-      {#if !lookCollapsed}
-        <div class="lookPresets">
-          {#each Object.entries(LOOK_PRESETS) as [id, look]}
-            <button class="lookPreset" onclick={() => applyLook(id as LookPresetId)} title={look.hint}>
-              <strong>{look.label}</strong>
-              <span>{look.hint}</span>
-            </button>
-          {/each}
-        </div>
-        <label>Brightness <input type="range" min="-0.25" max="0.25" step="0.005" bind:value={adjustments.brightness} /></label>
-        <label>Contrast <input type="range" min="0.6" max="1.6" step="0.01" bind:value={adjustments.contrast} /></label>
-        <label>Saturation <input type="range" min="0" max="2" step="0.01" bind:value={adjustments.saturation} /></label>
-        <label>Warmth <input type="range" min="-0.2" max="0.2" step="0.005" bind:value={adjustments.warmth} /></label>
-        <label>Sharpen <input type="range" min="0" max="1" step="0.01" bind:value={adjustments.sharpen} /></label>
-        <button class="miniBtn" onclick={resetColor}>Reset</button>
-      {/if}
+      <div class="lookPresets">
+        {#each Object.entries(LOOK_PRESETS) as [id, look]}
+          <button class="lookPreset" onclick={() => applyLook(id as LookPresetId)} title={look.hint}>
+            <strong>{look.label}</strong>
+            <span>{look.hint}</span>
+          </button>
+        {/each}
+      </div>
+      <label>Brightness <input type="range" min="-0.25" max="0.25" step="0.005" bind:value={adjustments.brightness} /></label>
+      <label>Contrast <input type="range" min="0.6" max="1.6" step="0.01" bind:value={adjustments.contrast} /></label>
+      <label>Saturation <input type="range" min="0" max="2" step="0.01" bind:value={adjustments.saturation} /></label>
+      <label>Warmth <input type="range" min="-0.2" max="0.2" step="0.005" bind:value={adjustments.warmth} /></label>
+      <label>Sharpen <input type="range" min="0" max="1" step="0.01" bind:value={adjustments.sharpen} /></label>
+      <button class="miniBtn" onclick={resetColor}>Reset</button>
     </div>
 
     {#if exportNote}<p class="note sideNote">{exportNote}</p>{/if}
@@ -1442,21 +1475,17 @@
     width: 100%;
     height: 100%;
     display: grid;
-    grid-template-columns: var(--source-w, 360px) 6px minmax(420px, 1fr) 6px var(--inspector-w, 320px);
+    grid-template-columns:
+      var(--source-w, 360px)
+      var(--source-splitter-w, 6px)
+      minmax(420px, 1fr)
+      var(--inspector-splitter-w, 6px)
+      var(--inspector-w, 320px);
     background: var(--bg);
     color: var(--text);
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-  }
-  .sourceCollapsed {
-    grid-template-columns: 0 6px minmax(420px, 1fr) 6px var(--inspector-w, 320px);
-  }
-  .inspectorCollapsed {
-    grid-template-columns: var(--source-w, 360px) 6px minmax(420px, 1fr) 6px 0;
-  }
-  .sourceCollapsed.inspectorCollapsed {
-    grid-template-columns: 0 6px minmax(420px, 1fr) 6px 0;
   }
   .productionPreviewMode,
   .productionPreviewMode.sourceCollapsed,
@@ -1467,6 +1496,7 @@
   }
   .sourcePane,
   .inspector {
+    grid-row: 1;
     min-width: 0;
     min-height: 0;
     background: var(--bg-panel);
@@ -1474,7 +1504,11 @@
     display: flex;
     flex-direction: column;
   }
+  .sourcePane {
+    grid-column: 1;
+  }
   .inspector {
+    grid-column: 5;
     border-right: 0;
     border-left: 1px solid var(--border);
     overflow-y: auto;
@@ -1489,10 +1523,21 @@
     display: none;
   }
   .panelSplitter {
+    grid-row: 1;
     min-width: 6px;
     cursor: col-resize;
     background: color-mix(in srgb, var(--border) 35%, transparent);
     transition: background 0.12s ease;
+  }
+  .sourceSplitter {
+    grid-column: 2;
+  }
+  .inspectorSplitter {
+    grid-column: 4;
+  }
+  .sourceCollapsed .sourceSplitter,
+  .inspectorCollapsed .inspectorSplitter {
+    display: none;
   }
   .panelSplitter:hover,
   .panelSplitter:active {
@@ -1678,6 +1723,7 @@
     white-space: nowrap;
   }
   .workPane {
+    grid-column: 3;
     min-width: 0;
     min-height: 0;
     display: grid;
@@ -1697,7 +1743,10 @@
     overflow: hidden;
   }
   .timelineCollapsed .workPane {
-    grid-template-rows: auto minmax(180px, 1fr) auto 6px 0;
+    grid-template-rows: auto minmax(180px, 1fr) auto 0 0;
+  }
+  .timelineCollapsed .timelineResize {
+    display: none;
   }
   .layoutTools {
     display: flex;
@@ -2170,14 +2219,12 @@
   }
   @media (max-width: 1180px) {
     .editShell {
-      grid-template-columns: var(--source-w, 270px) 6px minmax(0, 1fr) 0 0;
-    }
-    .editShell.sourceCollapsed {
-      grid-template-columns: 0 6px minmax(0, 1fr) 0 0;
-    }
-    .inspector,
-    .inspectorSplitter {
-      display: none;
+      grid-template-columns:
+        minmax(0, var(--source-w, 270px))
+        var(--source-splitter-w, 6px)
+        minmax(300px, 1fr)
+        var(--inspector-splitter-w, 6px)
+        minmax(0, var(--inspector-w, 260px));
     }
     .presetGroup button {
       min-width: 64px;

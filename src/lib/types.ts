@@ -37,6 +37,17 @@ export interface MediaProbe {
   captured: number | null;
 }
 
+export interface VideoSegment {
+  in_s: number;
+  out_s: number;
+}
+
+export interface SegmentExportOutcome {
+  exported: string[];
+  failed: string[];
+  errors: string[];
+}
+
 export interface TrashOutcome {
   deleted: number;
   failed: string[];

@@ -20,13 +20,14 @@
   let src = $state<string | null>(null);
   let failed = $state(false);
   let loaded = $state(false); // drives the fade-in once the bitmap is painted
+  let mediaAspect = $state(16 / 9);
   let strip = $state<FilmstripInfo | null>(null);
   let scrub = $state<number | null>(null);
   let scrubTimer: ReturnType<typeof setTimeout> | null = null;
 
   let isVideo = $derived(item.kind === "video");
   let scrubBox = $derived.by(() => {
-    const aspect = strip?.tile_w && strip.tile_h ? strip.tile_w / strip.tile_h : 16 / 9;
+    const aspect = mediaAspect || (strip?.tile_w && strip.tile_h ? strip.tile_w / strip.tile_h : 16 / 9);
     const boxAspect = thumbW / thumbH;
     if (aspect >= boxAspect) return { w: thumbW, h: thumbW / aspect };
     return { w: thumbH * aspect, h: thumbH };
@@ -54,6 +55,7 @@
     src = null;
     failed = false;
     loaded = false;
+    mediaAspect = 16 / 9;
     strip = null;
     scrub = null;
     if (it.kind === "other") return;
@@ -96,7 +98,9 @@
   function updateScrub(e: PointerEvent) {
     if (!isVideo || !settings.s.liveScrub) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    scrub = Math.max(0, Math.min(0.999, (e.clientX - rect.left) / Math.max(1, rect.width)));
+    const visibleW = Math.max(1, scrubBox.w);
+    const visibleLeft = rect.left + (rect.width - visibleW) / 2;
+    scrub = Math.max(0, Math.min(0.999, (e.clientX - visibleLeft) / visibleW));
   }
 
   function enterThumb(e: PointerEvent) {
@@ -119,6 +123,14 @@
       if (item.kind === "video") cancelVideoScrubstrip(item.path);
     }
   }
+
+  function mediaLoaded(e: Event) {
+    loaded = true;
+    const img = e.currentTarget as HTMLImageElement;
+    if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+      mediaAspect = img.naturalWidth / img.naturalHeight;
+    }
+  }
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -131,7 +143,7 @@
       alt={item.name}
       draggable="false"
       decoding="async"
-      onload={() => (loaded = true)}
+      onload={mediaLoaded}
     />
     {#if isVideo && strip && scrub != null}
       {@const cell = framePos(scrub)}

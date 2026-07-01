@@ -11,6 +11,7 @@ export type SortDir = "asc" | "desc";
 export type GroupBy = "none" | "folder" | "type" | "year" | "month" | "week";
 export type TypeFilter = "all" | "image" | "video" | "raw";
 export type DeleteMode = "recycle" | "folder";
+export type RelatedMode = "expanded" | "collapsed";
 
 export interface AppSettings {
   theme: Theme;
@@ -26,6 +27,8 @@ export interface AppSettings {
   typeFilter: TypeFilter;
   includeSub: boolean;
   liveScrub: boolean;
+  relatedMode: RelatedMode;
+  relatedStrip: boolean;
   deleteMode: DeleteMode;
   rejectFolder: string | null;
   lastDir: string | null;
@@ -45,6 +48,8 @@ const DEFAULTS: AppSettings = {
   typeFilter: "all",
   includeSub: true,
   liveScrub: false,
+  relatedMode: "expanded",
+  relatedStrip: true,
   deleteMode: "folder",
   rejectFolder: null,
   lastDir: null,

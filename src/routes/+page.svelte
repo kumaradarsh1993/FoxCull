@@ -78,6 +78,7 @@
   );
 
   let dimLevel = $state(0); // 0 normal · 1 dim panels · 2 lights out
+  let showInfoOverlay = $state(false);
   let settingsOpen = $state(false);
   let filtersOpen = $state(false);
   let libInfo = $state<LibraryInfo | null>(null);
@@ -90,6 +91,7 @@
   let folderRefreshKey = $state(0);
   let gridComp = $state<{ scrollToIndex: (i: number, center?: boolean) => void } | null>(null);
   let loupeComp = $state<{ togglePlay: () => void; seekBy: (d: number) => void } | null>(null);
+  let editComp = $state<{ setOutputPreview?: (on: boolean) => void | Promise<void> } | null>(null);
 
   const HOLD_MS = 850;
   let holdMs = $state(0);
@@ -129,6 +131,266 @@
     return p.length > f.length && p.startsWith(f) && (p[f.length] === "\\" || p[f.length] === "/");
   };
 
+  type RelatedBadge = "RAW+JPEG" | "Subclip" | "Crop/Edit" | "Burst" | "Motion";
+  type RelatedRole = "mother" | "derivative" | "sidecar" | "burst";
+  type StemRelation = "original" | "subclip" | "edit" | "burst";
+
+  type RelatedStem = {
+    parent: string;
+    stem: string;
+    root: string;
+    relation: StemRelation;
+    badges: RelatedBadge[];
+    explicit: boolean;
+  };
+
+  type RelatedEntry = {
+    item: MediaItem;
+    order: number;
+    stem: RelatedStem;
+  };
+
+  type RelatedGroup = {
+    id: string;
+    items: MediaItem[];
+    representative: MediaItem;
+    badges: RelatedBadge[];
+    entries: RelatedEntry[];
+  };
+
+  type RelatedMeta = {
+    group: RelatedGroup;
+    index: number;
+    count: number;
+    role: RelatedRole;
+    relation: StemRelation;
+  };
+
+  type RelatedIndex = {
+    groups: RelatedGroup[];
+    metaByPath: Map<string, RelatedMeta>;
+    groupByPath: Map<string, RelatedGroup>;
+  };
+
+  let expandedRelatedGroups = $state<Set<string>>(new Set());
+
+  function stemOf(it: MediaItem): string {
+    return basename(it.name || it.path).replace(/\.[^.]+$/, "");
+  }
+
+  function addBadge(values: RelatedBadge[], badge: RelatedBadge) {
+    if (!values.includes(badge)) values.push(badge);
+  }
+
+  function relatedStem(it: MediaItem): RelatedStem {
+    const parent = parentOf(it.path).toLowerCase();
+    const stem = stemOf(it);
+    let root = stem;
+    let relation: StemRelation = "original";
+    let explicit = false;
+    const badges: RelatedBadge[] = [];
+
+    for (let guard = 0; guard < 3; guard++) {
+      const before = root;
+      if (/(?:[_\-. ]sub(?:clip)?[_\-. ]?0*\d+)$/i.test(root)) {
+        root = root.replace(/(?:[_\-. ]sub(?:clip)?[_\-. ]?0*\d+)$/i, "");
+        relation = "subclip";
+        explicit = true;
+        addBadge(badges, "Subclip");
+      }
+      if (/(?:[_\-. ](?:cut|reel|crop|cropped|square|landscape|mobile|edit|edited|final|export)(?:[_\-. ]?0*\d+)?)$/i.test(root)) {
+        root = root.replace(/(?:[_\-. ](?:cut|reel|crop|cropped|square|landscape|mobile|edit|edited|final|export)(?:[_\-. ]?0*\d+)?)$/i, "");
+        relation = relation === "subclip" ? relation : "edit";
+        explicit = true;
+        addBadge(badges, "Crop/Edit");
+      }
+      const burst = root.match(/^(.+?)(?:[_\-. ](?:burst|bursts|burstshot)[_\-. ]?0*\d+)$/i);
+      if (burst?.[1]) {
+        root = burst[1];
+        relation = relation === "original" ? "burst" : relation;
+        explicit = true;
+        addBadge(badges, "Burst");
+      }
+      if (root === before) break;
+    }
+
+    return { parent, stem, root: root.toLowerCase(), relation, badges, explicit };
+  }
+
+  function relatedKey(stem: RelatedStem): string {
+    return `${stem.parent}\0${stem.root}`;
+  }
+
+  function hasRawJpeg(entries: RelatedEntry[]): boolean {
+    return entries.some((e) => e.item.kind === "raw") && entries.some((e) => e.item.kind === "image");
+  }
+
+  function hasMotionPair(entries: RelatedEntry[]): boolean {
+    return entries.some((e) => e.item.kind === "image") && entries.some((e) => e.item.kind === "video");
+  }
+
+  function groupBadges(entries: RelatedEntry[], extra: RelatedBadge[] = []): RelatedBadge[] {
+    const badges: RelatedBadge[] = [];
+    if (hasRawJpeg(entries)) addBadge(badges, "RAW+JPEG");
+    if (hasMotionPair(entries)) addBadge(badges, "Motion");
+    for (const e of entries) for (const b of e.stem.badges) addBadge(badges, b);
+    for (const b of extra) addBadge(badges, b);
+    return badges;
+  }
+
+  function shouldKeepRelatedRoot(entries: RelatedEntry[]): boolean {
+    if (entries.length < 2) return false;
+    if (entries.some((e) => e.stem.explicit)) return true;
+    if (hasRawJpeg(entries) || hasMotionPair(entries)) return true;
+    const stems = new Set(entries.map((e) => e.stem.stem.toLowerCase()));
+    const exts = new Set(entries.map((e) => e.item.ext.toLowerCase()));
+    return stems.size === 1 && exts.size > 1;
+  }
+
+  function relatedScore(e: RelatedEntry, entries: RelatedEntry[]): number {
+    const it = e.item;
+    let score = 0;
+    if (it.flag === "pick") score += 1000;
+    if (it.flag === "reject") score -= 800;
+    score += it.rating * 80;
+    if (it.label) score += 10;
+    if (e.stem.relation === "original") score += 35;
+    if (it.kind === "image") score += 24;
+    else if (it.kind === "raw") score += hasRawJpeg(entries) ? 18 : 22;
+    else if (it.kind === "video") score += 14;
+    if (e.stem.relation === "subclip") score -= 12;
+    if (e.stem.relation === "edit") score -= 8;
+    score -= e.order / 100000;
+    return score;
+  }
+
+  function makeRelatedGroup(id: string, entries: RelatedEntry[], extraBadges: RelatedBadge[] = []): RelatedGroup {
+    const ordered = [...entries].sort((a, b) => a.order - b.order);
+    let representative = ordered[0].item;
+    let best = -Infinity;
+    for (const e of ordered) {
+      const score = relatedScore(e, ordered);
+      if (score > best) {
+        best = score;
+        representative = e.item;
+      }
+    }
+    return {
+      id,
+      entries: ordered,
+      items: ordered.map((e) => e.item),
+      representative,
+      badges: groupBadges(ordered, extraBadges),
+    };
+  }
+
+  function burstCandidate(e: RelatedEntry): { key: string; n: number } | null {
+    if (e.stem.explicit || e.item.kind === "video" || e.item.kind === "other") return null;
+    const s = e.stem.stem.toLowerCase();
+    let m = s.match(/^((?:img|pxl|mvimg|dsc|dscf|vid)[_\-. ]?\d{8}[_\-. ]\d{6}[_\-. ])(\d{2,4})$/i);
+    if (m) return { key: `${e.stem.parent}\0${m[1].toLowerCase()}`, n: Number(m[2]) };
+    m = s.match(/^((?:img|pxl|mvimg)[_\-. ])(\d{3,6})$/i);
+    if (m) return { key: `${e.stem.parent}\0${m[1].toLowerCase()}`, n: Number(m[2]) };
+    return null;
+  }
+
+  function looksLikeBurstRun(entries: RelatedEntry[]): boolean {
+    if (entries.length < 3 || entries.length > 24) return false;
+    const times = entries.map((e) => captureOf(e.item)).sort((a, b) => a - b);
+    const span = times[times.length - 1] - times[0];
+    let maxGap = 0;
+    for (let i = 1; i < times.length; i++) maxGap = Math.max(maxGap, times[i] - times[i - 1]);
+    return span <= 8 && maxGap <= 3;
+  }
+
+  function relatedRole(e: RelatedEntry, group: RelatedGroup): RelatedRole {
+    if (e.stem.relation === "subclip" || e.stem.relation === "edit") return "derivative";
+    if (group.badges.includes("Burst")) return "burst";
+    if (hasRawJpeg(group.entries)) return e.item.kind === "raw" ? "mother" : "sidecar";
+    if (group.badges.includes("Motion")) return e.item.kind === "video" ? "sidecar" : "mother";
+    return e.stem.relation === "original" ? "mother" : "derivative";
+  }
+
+  function buildRelatedIndex(source: MediaItem[]): RelatedIndex {
+    const entries: RelatedEntry[] = source.map((item, order) => ({ item, order, stem: relatedStem(item) }));
+    const rootBuckets = new Map<string, RelatedEntry[]>();
+    for (const e of entries) {
+      const key = relatedKey(e.stem);
+      rootBuckets.set(key, [...(rootBuckets.get(key) ?? []), e]);
+    }
+
+    const groups: RelatedGroup[] = [];
+    const used = new Set<string>();
+    for (const [key, bucket] of rootBuckets) {
+      if (!shouldKeepRelatedRoot(bucket)) continue;
+      const group = makeRelatedGroup(`root:${key}`, bucket);
+      groups.push(group);
+      for (const e of bucket) used.add(e.item.path);
+    }
+
+    const burstBuckets = new Map<string, { e: RelatedEntry; n: number }[]>();
+    for (const e of entries) {
+      if (used.has(e.item.path)) continue;
+      const c = burstCandidate(e);
+      if (!c) continue;
+      burstBuckets.set(c.key, [...(burstBuckets.get(c.key) ?? []), { e, n: c.n }]);
+    }
+    for (const [key, bucket] of burstBuckets) {
+      const ordered = [...bucket].sort((a, b) => a.n - b.n);
+      let run: { e: RelatedEntry; n: number }[] = [];
+      const flush = () => {
+        if (looksLikeBurstRun(run.map((r) => r.e))) {
+          const group = makeRelatedGroup(`burst:${key}:${run[0].n}-${run[run.length - 1].n}`, run.map((r) => r.e), ["Burst"]);
+          groups.push(group);
+          for (const r of run) used.add(r.e.item.path);
+        }
+      };
+      for (const b of ordered) {
+        if (run.length && b.n !== run[run.length - 1].n + 1) {
+          flush();
+          run = [];
+        }
+        run.push(b);
+      }
+      flush();
+    }
+
+    const metaByPath = new Map<string, RelatedMeta>();
+    const groupByPath = new Map<string, RelatedGroup>();
+    for (const group of groups) {
+      group.entries.forEach((entry, index) => {
+        const meta = {
+          group,
+          index,
+          count: group.items.length,
+          role: relatedRole(entry, group),
+          relation: entry.stem.relation,
+        };
+        metaByPath.set(entry.item.path, meta);
+        groupByPath.set(entry.item.path, group);
+      });
+    }
+    return { groups, metaByPath, groupByPath };
+  }
+
+  function groupExpanded(group: RelatedGroup): boolean {
+    return settings.s.relatedMode === "expanded" || expandedRelatedGroups.has(group.id);
+  }
+
+  function hasBurstLikeNames(source: MediaItem[]): boolean {
+    const buckets = new Map<string, number>();
+    for (let order = 0; order < source.length; order++) {
+      const item = source[order];
+      if (item.kind !== "image" && item.kind !== "raw") continue;
+      const candidate = burstCandidate({ item, order, stem: relatedStem(item) });
+      if (!candidate) continue;
+      const count = (buckets.get(candidate.key) ?? 0) + 1;
+      if (count >= 3) return true;
+      buckets.set(candidate.key, count);
+    }
+    return false;
+  }
+
   // Section helpers for the grouped grid (folder · type · year · month · week).
   // Dates are UTC to match how capture timestamps are stored. Week = calendar
   // week-of-month (days 1–7 = Week 1, 8–14 = Week 2, …).
@@ -155,7 +417,7 @@
 
   // type → rating/label/flag/tag filters → sort, in one pass. Grouping by month
   // implies sorting by capture date (that's the order the sections need).
-  let view = $derived.by(() => {
+  let baseView = $derived.by(() => {
     let arr = items;
     const tf = settings.s.typeFilter;
     if (tf !== "all") arr = arr.filter((i) => i.kind === tf);
@@ -191,14 +453,36 @@
     });
   });
 
+  let relatedIndex = $derived(buildRelatedIndex(baseView));
+  let relatedGroupCount = $derived(relatedIndex.groups.length);
+
+  let view = $derived.by(() => {
+    const out: MediaItem[] = [];
+    const emitted = new Set<string>();
+    for (const it of baseView) {
+      const group = relatedIndex.groupByPath.get(it.path);
+      if (!group) {
+        out.push(it);
+        continue;
+      }
+      if (emitted.has(group.id)) continue;
+      emitted.add(group.id);
+      if (groupExpanded(group)) out.push(...group.items);
+      else out.push(group.representative);
+    }
+    return out;
+  });
+  let relatedHiddenCount = $derived(Math.max(0, baseView.length - view.length));
+
   // Capture-date sections over the (capture-sorted) view, for the grouped grid.
   let sections = $derived.by(() => {
     const out: { label: string; count: number }[] = [];
     let key = "";
     for (const it of view) {
-      const k = sectionKey(it);
+      const anchor = relatedIndex.groupByPath.get(it.path)?.representative ?? it;
+      const k = sectionKey(anchor);
       if (k !== key) {
-        out.push({ label: sectionLabel(it), count: 0 });
+        out.push({ label: sectionLabel(anchor), count: 0 });
         key = k;
       }
       out[out.length - 1].count++;
@@ -209,6 +493,11 @@
 
   let active = $derived(view.length ? view[Math.min(activeIndex, view.length - 1)] : null);
   let selectedItems = $derived(items.filter((i) => selected.has(i.path)));
+  let activeRelatedItems = $derived.by(() => {
+    if (!active || !settings.s.relatedStrip) return [];
+    return relatedIndex.groupByPath.get(active.path)?.items ?? [];
+  });
+  let activeRelatedIndex = $derived(activeRelatedItems.findIndex((i) => i.path === active?.path));
   let actionTargets = $derived.by(() => {
     if (selected.size > 1) return items.filter((i) => selected.has(i.path));
     return active ? [active] : [];
@@ -333,7 +622,7 @@
     // delete), else the top.
     let idx = 0;
     if (opts.selectPath) {
-      const found = view.findIndex((i) => i.path === opts.selectPath);
+      const found = displayIndexForPath(opts.selectPath);
       if (found >= 0) idx = found;
       else if (opts.selectIndex != null) idx = Math.max(0, Math.min(opts.selectIndex, view.length - 1));
     } else if (opts.selectIndex != null) {
@@ -349,7 +638,7 @@
     // visible cells have had a head start — the on-screen lazy loads grab the
     // disk first, then the warmer trickles the rest in. Guard against a folder
     // switch landing during the delay.
-    const order = view.map((i) => i.path);
+    const order = baseView.map((i) => i.path);
     const tier = gridThumbTier;
     setTimeout(() => {
       if (currentDir === dir) api.warmThumbnails(order, tier);
@@ -362,7 +651,7 @@
   }
 
   /** Whether the current view depends on real capture dates. */
-  let needCaptures = $derived(DATE_GROUPS.has(settings.s.groupBy) || settings.s.sortBy === "capture");
+  let needCaptures = $derived(DATE_GROUPS.has(settings.s.groupBy) || settings.s.sortBy === "capture" || hasBurstLikeNames(items));
 
   let capturesDir: string | null = null;
   async function fetchCaptures(dir: string, paths: string[]) {
@@ -490,6 +779,94 @@
     gridComp?.scrollToIndex(activeIndex);
   }
 
+  function displayIndexForPath(path: string | null | undefined): number {
+    if (!path) return -1;
+    const exact = view.findIndex((i) => i.path === path);
+    if (exact >= 0) return exact;
+    const group = relatedIndex.groupByPath.get(path);
+    if (!group) return -1;
+    return view.findIndex((i) => i.path === group.representative.path);
+  }
+
+  async function refreshAfterMediaOutput(selectPath?: string | null) {
+    if (!currentDir) return;
+    countsGen++;
+    await openFolder(currentDir, { selectPath: selectPath ?? active?.path ?? null, selectIndex: activeIndex });
+  }
+
+  function settleActivePath(path: string | null | undefined) {
+    requestAnimationFrame(() => {
+      const idx = displayIndexForPath(path);
+      if (idx >= 0) setActiveTo(idx);
+      else if (activeIndex >= view.length) setActiveTo(Math.max(0, view.length - 1));
+    });
+  }
+
+  function setRelatedMode(mode: typeof settings.s.relatedMode) {
+    const keep = active?.path ?? null;
+    if (mode === "expanded") expandedRelatedGroups = new Set();
+    settings.set({ relatedMode: mode });
+    settleActivePath(keep);
+  }
+
+  function expandRelatedGroup(group: RelatedGroup, path = active?.path ?? group.representative.path) {
+    expandedRelatedGroups = new Set([...expandedRelatedGroups, group.id]);
+    settleActivePath(path);
+  }
+
+  function collapseRelatedGroup(group: RelatedGroup, path = active?.path ?? group.representative.path) {
+    const next = new Set(expandedRelatedGroups);
+    next.delete(group.id);
+    expandedRelatedGroups = next;
+    if (settings.s.relatedMode === "expanded") settings.set({ relatedMode: "collapsed" });
+    settleActivePath(path);
+  }
+
+  function collapseAllRelated() {
+    const keep = active?.path ?? null;
+    expandedRelatedGroups = new Set();
+    settings.set({ relatedMode: "collapsed" });
+    settleActivePath(keep);
+  }
+
+  function relatedFor(it: MediaItem): RelatedMeta | undefined {
+    return relatedIndex.metaByPath.get(it.path);
+  }
+
+  function relatedCollapsed(meta: RelatedMeta | undefined): boolean {
+    return !!meta && !groupExpanded(meta.group);
+  }
+
+  function isCollapsedRepresentative(it: MediaItem, meta = relatedFor(it)): boolean {
+    return relatedCollapsed(meta) && meta?.group.representative.path === it.path;
+  }
+
+  function relatedRoleLabel(meta: RelatedMeta | undefined): string {
+    if (!meta) return "";
+    if (meta.role === "mother") return "Original";
+    if (meta.relation === "subclip") return "Subclip";
+    if (meta.relation === "edit") return "Edit";
+    if (meta.role === "burst") return "Burst";
+    if (meta.role === "sidecar") return meta.group.badges.includes("RAW+JPEG") ? "Sidecar" : "Motion";
+    return "Related";
+  }
+
+  function relatedTitle(it: MediaItem): string {
+    const meta = relatedFor(it);
+    if (!meta) return it.name;
+    const badges = meta.group.badges.join(", ");
+    const state = isCollapsedRepresentative(it, meta) ? `; showing 1 of ${meta.count}` : "";
+    return `${it.name} - ${relatedRoleLabel(meta)} in ${meta.count}-item group${badges ? ` (${badges})` : ""}${state}`;
+  }
+
+  function shortRelatedBadge(meta: RelatedMeta | undefined): string {
+    const b = meta?.group.badges[0];
+    if (!b) return "";
+    if (b === "RAW+JPEG") return "R+J";
+    if (b === "Crop/Edit") return "Edit";
+    return b;
+  }
+
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   function rememberActive() {
     const a = view[activeIndex];
@@ -564,14 +941,14 @@
   let prepEta = $state("");
   let prepPct = $derived(prepTotal ? Math.round((prepDone / prepTotal) * 100) : 0);
   async function prepareFolder() {
-    if (!currentDir || preparing || !view.length) return;
+    if (!currentDir || preparing || !baseView.length) return;
     preparing = true;
     prepared = false;
     const dir = currentDir;
     // Focus previews are the big (1920px) renders; the small grid thumbs are
     // already warmed on folder-open. We chunk the work so the button can show
     // real progress + a time estimate instead of an opaque spinner.
-    const paths = view.filter((i) => i.kind !== "other").map((i) => i.path);
+    const paths = baseView.filter((i) => i.kind !== "other").map((i) => i.path);
     prepTotal = paths.length;
     prepDone = 0;
     prepEta = "";
@@ -709,10 +1086,30 @@
     const sfx = ts.length > 1 ? ` (${ts.length})` : "";
     const allPick = ts.length > 0 && ts.every((i) => i.flag === "pick");
     const allReject = ts.length > 0 && ts.every((i) => i.flag === "reject");
+    const rel = relatedFor(ctx);
+    const relEntries: MenuEntry[] = rel
+      ? [
+          {
+            label: relatedCollapsed(rel) ? `Expand related group (${rel.count})` : "Collapse related group",
+            icon: relatedCollapsed(rel) ? "⊞" : "⊟",
+            action: () =>
+              relatedCollapsed(rel)
+                ? expandRelatedGroup(rel.group, ctx.path)
+                : collapseRelatedGroup(rel.group, ctx.path),
+          },
+          {
+            label: settings.s.relatedMode === "collapsed" ? "Show all related groups expanded" : "Show related groups collapsed",
+            icon: "▦",
+            action: () => setRelatedMode(settings.s.relatedMode === "collapsed" ? "expanded" : "collapsed"),
+          },
+          { separator: true },
+        ]
+      : [];
     return [
       { label: "Previous", icon: "←", disabled: activeIndex <= 0, action: () => move(-1) },
       { label: "Next", icon: "→", disabled: activeIndex >= view.length - 1, action: () => move(1) },
       { separator: true },
+      ...relEntries,
       {
         label: viewMode === "loupe" ? "Back to grid" : "Open in Focus",
         icon: "▣",
@@ -897,6 +1294,10 @@
     }
     const dest = await api.pickFolder();
     if (!dest) return;
+    const rawCount = ts.filter((i) => i.kind === "raw").length;
+    const imageCount = ts.length - rawCount;
+    const msg = `Export ${ts.length} file${ts.length === 1 ? "" : "s"} to ${dest}?\n\nRAW files will be saved as camera-rendered JPEGs. JPEG/HEIC/photo files will be copied without changing the originals.`;
+    if (!confirm(msg + `\n\nRAW: ${rawCount}  Photos: ${imageCount}`)) return;
     try {
       const r = await api.exportJpegs(ts.map((i) => i.path), dest);
       if (r.failed.length) {
@@ -904,6 +1305,9 @@
           "export-result",
           `Export: ${r.failed.length} of ${ts.length} failed — ${r.errors[0] ?? ""}`,
         );
+      }
+      if (currentDir && (samePath(r.dest, currentDir) || (settings.s.includeSub && isUnder(r.dest, currentDir)))) {
+        await refreshAfterMediaOutput(active?.path ?? null);
       }
       // Show the result where the files are: open the destination folder.
       api.openExternal(r.dest);
@@ -932,12 +1336,19 @@
     trashItems = await api.listTrash();
   }
 
-  function onkeydown(e: KeyboardEvent) {
+  async function onkeydown(e: KeyboardEvent) {
     const t = e.target as HTMLElement;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
     const k = e.key.toLowerCase();
     if (editOpen) {
-      if (k === "f") { toggleFullscreen(); e.preventDefault(); return; }
+      if (k === "f") {
+        const entering = !fullscreen;
+        if (entering) await editComp?.setOutputPreview?.(true);
+        await toggleFullscreen();
+        if (!entering) await editComp?.setOutputPreview?.(false);
+        e.preventDefault();
+        return;
+      }
       if (k === "l") { dimLevel = (dimLevel + 1) % 3; e.preventDefault(); return; }
       if (e.key === "Escape") {
         if (fullscreen) toggleFullscreen();
@@ -953,6 +1364,11 @@
     }
     if ((e.ctrlKey || e.metaKey) && k === "v") {
       pasteCutSelection();
+      e.preventDefault();
+      return;
+    }
+    if (k === "i") {
+      showInfoOverlay = !showInfoOverlay;
       e.preventDefault();
       return;
     }
@@ -1002,20 +1418,40 @@
 <svelte:window {onkeydown} {onmouseup} oncontextmenu={onGlobalContextMenu} />
 
 {#snippet gridCell(item: MediaItem, i: number)}
+  {@const rel = relatedFor(item)}
   <button
     class="cell"
     class:active={i === activeIndex}
     class:selected={selected.has(item.path)}
     class:reject={item.flag === "reject"}
+    class:related={!!rel}
+    class:rel-start={!!rel && rel.index === 0}
+    class:rel-mid={!!rel && rel.index > 0 && rel.index < rel.count - 1}
+    class:rel-end={!!rel && rel.index === rel.count - 1}
+    class:rel-collapsed={isCollapsedRepresentative(item, rel)}
+    class:rel-mother={rel?.role === "mother"}
+    class:rel-derivative={rel?.role === "derivative"}
     onclick={(e) => gridCellClick(e, i)}
     ondblclick={() => { setActiveTo(i); setView("loupe"); }}
     oncontextmenu={(e) => openContextMenu(e, item, i)}
     draggable={true}
     ondragstart={(e) => beginMediaDrag(e, item, i)}
     ondragend={endMediaDrag}
+    title={relatedTitle(item)}
   >
     <Thumb {item} size={gridThumbTier} />
     <span class="ov">
+      {#if rel}
+        <span class="rel-badges">
+          {#each rel.group.badges.slice(0, 2) as b}
+            <span>{b}</span>
+          {/each}
+        </span>
+        <span class="rel-role">{relatedRoleLabel(rel)}</span>
+        {#if isCollapsedRepresentative(item, rel)}
+          <span class="rel-count">{rel.count}</span>
+        {/if}
+      {/if}
       {#if item.label}<span class="lbl-dot" style="background:var({LABEL_VAR[item.label]})"></span>{/if}
       {#if item.flag === "reject"}<span class="fl x">✕</span>{/if}
       {#if item.flag === "pick"}<span class="fl pick">✓</span>{/if}
@@ -1026,20 +1462,61 @@
 {/snippet}
 
 {#snippet stripCellSnip(item: MediaItem, i: number)}
+  {@const rel = settings.s.relatedStrip ? relatedFor(item) : undefined}
   <button
     class="scell"
     class:active={i === activeIndex}
     class:reject={item.flag === "reject"}
+    class:related={!!rel}
+    class:rel-start={!!rel && rel.index === 0}
+    class:rel-mid={!!rel && rel.index > 0 && rel.index < rel.count - 1}
+    class:rel-end={!!rel && rel.index === rel.count - 1}
+    class:rel-collapsed={isCollapsedRepresentative(item, rel)}
     onclick={() => setActiveTo(i)}
     ondblclick={() => { setActiveTo(i); setView("loupe"); }}
     oncontextmenu={(e) => openContextMenu(e, item, i)}
-    title={item.name}
+    title={rel ? relatedTitle(item) : item.name}
   >
     <Thumb {item} size={stripThumbTier} />
+    {#if rel}
+      <span class="s-rel">{shortRelatedBadge(rel)}</span>
+      <span class="s-role">{relatedRoleLabel(rel).slice(0, 1)}</span>
+      {#if isCollapsedRepresentative(item, rel)}<span class="s-count">{rel.count}</span>{/if}
+    {/if}
     {#if item.label}<span class="s-lbl" style="background:var({LABEL_VAR[item.label]})"></span>{/if}
     {#if item.rating > 0}<span class="s-stars">{"★".repeat(item.rating)}</span>{/if}
     {#if item.flag === "reject"}<span class="s-x">✕</span>{/if}
     {#if item.flag === "pick"}<span class="s-pick">✓</span>{/if}
+  </button>
+{/snippet}
+
+{#snippet relatedStripCellSnip(item: MediaItem, i: number)}
+  {@const rel = relatedFor(item)}
+  <button
+    class="scell relatedFamily"
+    class:active={item.path === active?.path}
+    class:reject={item.flag === "reject"}
+    class:related={!!rel}
+    class:rel-mother={rel?.role === "mother"}
+    class:rel-derivative={rel?.role === "derivative"}
+    onclick={() => {
+      const meta = relatedFor(item);
+      if (meta && !groupExpanded(meta.group)) {
+        expandRelatedGroup(meta.group, item.path);
+        return;
+      }
+      const idx = displayIndexForPath(item.path);
+      if (idx >= 0) setActiveTo(idx);
+    }}
+    ondblclick={() => setView("loupe")}
+    oncontextmenu={(e) => openContextMenu(e, item, displayIndexForPath(item.path))}
+    title={relatedTitle(item)}
+  >
+    <Thumb {item} size={stripThumbTier} />
+    {#if rel}
+      <span class="s-rel">{shortRelatedBadge(rel)}</span>
+      <span class="s-role">{relatedRoleLabel(rel).slice(0, 1)}</span>
+    {/if}
   </button>
 {/snippet}
 
@@ -1126,6 +1603,13 @@
           <option value="month">Month</option>
           <option value="week">Week</option>
         </select>
+      </div>
+      <div class="tool-group stackTools">
+        <span class="ctl-label">Stacks</span>
+        <div class="seg" title="Show detected related files as separate items or folded groups">
+          <button class="chip" class:on={settings.s.relatedMode === "expanded"} disabled={relatedGroupCount === 0} onclick={() => setRelatedMode("expanded")}>Open</button>
+          <button class="chip" class:on={settings.s.relatedMode === "collapsed"} disabled={relatedGroupCount === 0} onclick={collapseAllRelated}>Fold{relatedHiddenCount ? ` ${relatedHiddenCount}` : ""}</button>
+        </div>
       </div>
 
       <span class="div"></span>
@@ -1232,7 +1716,7 @@
           class="btn sm prep"
           class:on={preparing || prepared}
           onclick={prepareFolder}
-          disabled={!view.length || preparing}
+          disabled={!baseView.length || preparing}
           title="Pre-render full-size Focus previews for this whole folder, so flipping through it in Focus view has zero loading blur. (Grid thumbnails are already pre-cached when a folder opens.)"
         >
           {#if preparing}<span class="prep-fill" style="width:{prepPct}%"></span>{/if}
@@ -1277,6 +1761,18 @@
             {#each [["bottom", "Bottom"], ["right", "Right"], ["hidden", "Off"]] as [v, l]}
               <button class="chip" class:on={settings.s.filmstripPos === v} onclick={() => settings.set({ filmstripPos: v as typeof settings.s.filmstripPos })}>{l}</button>
             {/each}
+          </div>
+        </div>
+        <div class="row"><span>Related groups</span>
+          <div class="seg">
+            <button class="chip" class:on={settings.s.relatedMode === "expanded"} onclick={() => setRelatedMode("expanded")}>Open</button>
+            <button class="chip" class:on={settings.s.relatedMode === "collapsed"} onclick={collapseAllRelated}>Fold</button>
+          </div>
+        </div>
+        <div class="row"><span>Filmstrip cues</span>
+          <div class="seg">
+            <button class="chip" class:on={settings.s.relatedStrip} onclick={() => settings.set({ relatedStrip: true })}>On</button>
+            <button class="chip" class:on={!settings.s.relatedStrip} onclick={() => settings.set({ relatedStrip: false })}>Off</button>
           </div>
         </div>
         <div class="row"><span>Live Scrub</span>
@@ -1336,11 +1832,11 @@
             <p>Pick a folder on the left to start culling. Browse-in-place — nothing is imported or changed.</p>
           </div>
         {:else if editOpen}
-          <EditStudio {active} {selectedItems} sourceItems={items} currentDir={currentDir} recursive={settings.s.includeSub} refreshKey={folderRefreshKey} />
+          <EditStudio {active} {selectedItems} sourceItems={items} currentDir={currentDir} recursive={settings.s.includeSub} refreshKey={folderRefreshKey} bind:this={editComp} />
         {:else if view.length === 0}
           <div class="welcome"><p>Nothing here matches the current filters.</p></div>
         {:else if viewMode === "loupe"}
-          <Loupe item={active} bind:this={loupeComp} />
+          <Loupe item={active} showInfo={showInfoOverlay} onchanged={refreshAfterMediaOutput} bind:this={loupeComp} />
         {:else if viewMode === "details"}
           <DetailsView
             items={view}
@@ -1408,6 +1904,23 @@
       </div>
     {/if}
 
+    <!-- related family strip -->
+    {#if !editOpen && viewMode === "loupe" && settings.s.relatedStrip && activeRelatedItems.length > 1}
+      <div class="relatedStrip">
+        <div class="relatedStripHead">
+          <strong>Related</strong>
+          <span>{activeRelatedItems.length} files</span>
+        </div>
+        <VirtualStrip
+          items={activeRelatedItems}
+          activeIndex={Math.max(0, activeRelatedIndex)}
+          orientation="h"
+          cellSize={72}
+          cell={relatedStripCellSnip}
+        />
+      </div>
+    {/if}
+
     <!-- bottom filmstrip -->
     {#if !editOpen && settings.s.filmstripPos === "bottom" && view.length}
       <div class="hsplit" role="separator" tabindex="-1" onpointerdown={startStripResize} title="Drag to resize"><span class="grip"></span></div>
@@ -1437,6 +1950,7 @@
   .app.fs .bar,
   .app.fs .banner,
   .app.fs .info,
+  .app.fs .relatedStrip,
   .app.fs .bstrip,
   .app.fs .rstrip,
   .app.fs .pop,
@@ -1589,6 +2103,28 @@
   .viewport { flex: 1; min-width: 0; background: var(--viewport-bg); overflow: hidden; display: flex; flex-direction: column; }
   .viewport.lit { position: relative; z-index: 50; }
   .rstrip { flex: 0 0 auto; border-left: 1px solid var(--border); }
+  .relatedStrip {
+    flex: 0 0 86px;
+    display: grid;
+    grid-template-columns: 74px minmax(0, 1fr);
+    align-items: stretch;
+    border-top: 1px solid var(--border);
+    background: color-mix(in srgb, var(--accent) 6%, var(--bg-panel));
+  }
+  .relatedStripHead {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+    padding: 0 10px;
+    border-right: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+  .relatedStripHead strong { color: var(--text); font-size: 12px; }
+  .relatedStripHead span { color: var(--text-faint); }
+  .relatedFamily.rel-mother { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pick) 55%, transparent); }
+  .relatedFamily.rel-derivative { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
   .bstrip { flex: 0 0 auto; }
 
   .welcome { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--text-dim); text-align: center; padding: 24px; }
@@ -1598,21 +2134,69 @@
   .cell.selected { border-color: var(--text-faint); }
   .cell.active { border-color: var(--accent); }
   .cell.reject :global(.media) { opacity: 0.35; }
-  .ov { position: absolute; inset: 0; pointer-events: none; }
+  .cell.related { background: color-mix(in srgb, var(--accent) 9%, var(--viewport-bg)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent); }
+  .cell.related.rel-start { border-left-color: color-mix(in srgb, var(--accent) 60%, var(--border)); }
+  .cell.related.rel-mid { border-left-color: color-mix(in srgb, var(--accent) 34%, var(--border)); border-right-color: color-mix(in srgb, var(--accent) 34%, var(--border)); }
+  .cell.related.rel-end { border-right-color: color-mix(in srgb, var(--accent) 60%, var(--border)); }
+  .cell.rel-collapsed { border-style: solid; border-color: color-mix(in srgb, var(--accent) 54%, var(--border)); }
+  .cell.rel-collapsed::after { content: ""; position: absolute; inset: 5px; z-index: 2; border: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 4px; pointer-events: none; }
+  .cell.rel-derivative :global(.media) { filter: saturate(0.88); }
+  .ov { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
   .lbl-dot { position: absolute; top: 5px; right: 5px; width: 12px; height: 12px; border-radius: 3px; border: 1px solid rgba(0,0,0,0.4); }
   .fl { position: absolute; top: 4px; left: 6px; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+  .cell.related .fl { top: 25px; }
   .fl.x { color: var(--reject); }
   .fl.pick { color: var(--pick); }
   .stars { position: absolute; bottom: 4px; left: 6px; color: var(--star); font-size: 13px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
   .tagdot { position: absolute; bottom: 4px; right: 6px; font-size: 11px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
+  .rel-badges { position: absolute; top: 5px; left: 5px; right: 24px; display: flex; gap: 3px; overflow: hidden; }
+  .rel-badges span,
+  .rel-role,
+  .rel-count {
+    border: 1px solid rgba(255,255,255,0.18);
+    background: rgba(0,0,0,0.58);
+    color: #fff;
+    text-shadow: none;
+    font-size: 9px;
+    font-weight: 800;
+    line-height: 1.2;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+  .rel-badges span { min-width: 0; max-width: 74px; overflow: hidden; text-overflow: ellipsis; padding: 2px 5px; }
+  .rel-role { position: absolute; left: 6px; bottom: 21px; padding: 2px 5px; color: color-mix(in srgb, var(--accent) 18%, #fff); }
+  .rel-count { position: absolute; right: 6px; bottom: 21px; min-width: 18px; padding: 2px 5px; text-align: center; }
 
   .scell { position: relative; width: 100%; height: 100%; border: 2px solid transparent; border-radius: 5px; overflow: hidden; padding: 0; background: var(--viewport-bg); }
   .scell.active { border-color: var(--accent); }
   .scell.reject { opacity: 0.45; }
+  .scell.related { background: color-mix(in srgb, var(--accent) 10%, var(--viewport-bg)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent); }
+  .scell.related.rel-start { border-left-color: color-mix(in srgb, var(--accent) 58%, var(--border)); }
+  .scell.related.rel-mid { border-left-color: color-mix(in srgb, var(--accent) 32%, var(--border)); border-right-color: color-mix(in srgb, var(--accent) 32%, var(--border)); }
+  .scell.related.rel-end { border-right-color: color-mix(in srgb, var(--accent) 58%, var(--border)); }
+  .scell.rel-collapsed { border-color: color-mix(in srgb, var(--accent) 54%, var(--border)); }
+  .scell.rel-collapsed::after { content: ""; position: absolute; inset: 4px; z-index: 2; border: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 3px; pointer-events: none; }
   .s-lbl { position: absolute; top: 3px; right: 3px; width: 10px; height: 10px; border-radius: 2px; }
   .s-stars { position: absolute; bottom: 2px; left: 3px; font-size: 10px; color: var(--star); text-shadow: 0 1px 2px rgba(0,0,0,0.6); }
   .s-x { position: absolute; top: 2px; left: 4px; color: var(--reject); font-weight: 700; text-shadow: 0 1px 2px rgba(0,0,0,0.6); }
   .s-pick { position: absolute; top: 2px; left: 4px; color: var(--pick); font-weight: 700; text-shadow: 0 1px 2px rgba(0,0,0,0.6); }
+  .scell.related .s-x,
+  .scell.related .s-pick { top: 21px; }
+  .s-rel,
+  .s-role,
+  .s-count {
+    position: absolute;
+    z-index: 3;
+    border-radius: 3px;
+    background: rgba(0,0,0,0.6);
+    color: #fff;
+    font-weight: 800;
+    text-shadow: none;
+    line-height: 1;
+  }
+  .s-rel { top: 3px; left: 3px; max-width: calc(100% - 20px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 4px; font-size: 8.5px; }
+  .s-role { left: 3px; bottom: 16px; width: 14px; height: 14px; display: flex; align-items: center; justify-content: center; font-size: 9px; color: color-mix(in srgb, var(--accent) 18%, #fff); }
+  .s-count { right: 3px; bottom: 3px; min-width: 15px; padding: 2px 3px; font-size: 9px; text-align: center; }
 
   .info { display: flex; align-items: center; gap: 10px; padding: 5px 12px; border-top: 1px solid var(--border); background: var(--bg-panel); }
   .info .name { font-weight: 600; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

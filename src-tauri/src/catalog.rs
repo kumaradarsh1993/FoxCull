@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use rusqlite::{params, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub struct Catalog {
     conn: Mutex<Connection>,
@@ -23,6 +23,12 @@ pub struct Decision {
     pub rating: i64,
     pub label: Option<String>,
     pub flag: Option<String>, // "pick" | "reject" | None
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct VideoSegment {
+    pub in_s: f64,
+    pub out_s: f64,
 }
 
 #[derive(Serialize, Clone)]
@@ -97,6 +103,16 @@ impl Catalog {
                 rel   TEXT PRIMARY KEY,
                 in_s  REAL NOT NULL,
                 out_s REAL NOT NULL
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS video_segments (
+                rel   TEXT NOT NULL,
+                idx   INTEGER NOT NULL,
+                in_s  REAL NOT NULL,
+                out_s REAL NOT NULL,
+                PRIMARY KEY (rel, idx)
             )",
             [],
         )?;
@@ -208,6 +224,41 @@ impl Catalog {
     pub fn clear_trim(&self, rel: &str) {
         let conn = self.conn.lock();
         let _ = conn.execute("DELETE FROM trims WHERE rel = ?1", params![rel]);
+    }
+
+    pub fn get_video_segments(&self, rel: &str) -> Vec<VideoSegment> {
+        let conn = self.conn.lock();
+        let mut stmt = match conn
+            .prepare("SELECT in_s, out_s FROM video_segments WHERE rel = ?1 ORDER BY idx")
+        {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = stmt.query_map(params![rel], |r| {
+            Ok(VideoSegment {
+                in_s: r.get(0)?,
+                out_s: r.get(1)?,
+            })
+        });
+        match rows {
+            Ok(it) => it.flatten().collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    pub fn set_video_segments(&self, rel: &str, segments: &[VideoSegment]) -> rusqlite::Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM video_segments WHERE rel = ?1", params![rel])?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO video_segments(rel, idx, in_s, out_s) VALUES(?1, ?2, ?3, ?4)",
+            )?;
+            for (idx, segment) in segments.iter().enumerate() {
+                stmt.execute(params![rel, idx as i64, segment.in_s, segment.out_s])?;
+            }
+        }
+        tx.commit()
     }
 
     // ── capture-date cache ───────────────────────────────────────────────────
@@ -391,6 +442,7 @@ impl Catalog {
             let _ = conn.execute("DELETE FROM decisions WHERE rel = ?1", params![rel]);
             let _ = conn.execute("DELETE FROM tags WHERE rel = ?1", params![rel]);
             let _ = conn.execute("DELETE FROM trims WHERE rel = ?1", params![rel]);
+            let _ = conn.execute("DELETE FROM video_segments WHERE rel = ?1", params![rel]);
             let _ = conn.execute("DELETE FROM captures WHERE rel = ?1", params![rel]);
         }
     }
@@ -425,6 +477,14 @@ impl Catalog {
                     params![from, to],
                 )?;
                 tx.execute("DELETE FROM trims WHERE rel = ?1", params![from])?;
+
+                tx.execute("DELETE FROM video_segments WHERE rel = ?1", params![to])?;
+                tx.execute(
+                    "INSERT INTO video_segments(rel, idx, in_s, out_s)
+                     SELECT ?2, idx, in_s, out_s FROM video_segments WHERE rel = ?1",
+                    params![from, to],
+                )?;
+                tx.execute("DELETE FROM video_segments WHERE rel = ?1", params![from])?;
 
                 tx.execute("DELETE FROM captures WHERE rel = ?1", params![to])?;
                 tx.execute(

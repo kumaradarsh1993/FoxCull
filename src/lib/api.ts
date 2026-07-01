@@ -14,6 +14,8 @@ import type {
   EditSourceItem,
   MediaProbe,
   EditSnapshotRequest,
+  VideoSegment,
+  SegmentExportOutcome,
 } from "./types";
 
 export const api = {
@@ -67,6 +69,12 @@ export const api = {
   clearTrim: (path: string) => invoke<void>("clear_trim", { path }).catch(() => {}),
   trimVideo: (path: string, inS: number, outS: number) =>
     invoke<string>("trim_video", { path, in_s: inS, out_s: outS }),
+  getVideoSegments: (path: string) =>
+    invoke<VideoSegment[]>("get_video_segments", { path }),
+  setVideoSegments: (path: string, segments: VideoSegment[]) =>
+    invoke<void>("set_video_segments", { path, segments }).catch(() => {}),
+  exportVideoSegments: (path: string, segments: VideoSegment[]) =>
+    invoke<SegmentExportOutcome>("export_video_segments", { path, segments }),
   editExport: (req: EditExportRequest) =>
     invoke<EditExportOutcome>("edit_export", { req }),
   editSnapshot: (req: EditSnapshotRequest) =>

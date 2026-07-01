@@ -305,6 +305,77 @@ Validation run for v0.4:
   validation; push the tag, wait for GitHub Actions, and provide the release
   page after native artifacts are built.
 
+## Version 0.5.2-nightly.3: Culling Subclips, Related Stacks, And Edit Polish
+
+User goals in this round:
+
+- Keep culling as the primary workflow, but add a clean way to extract multiple
+  useful video subclips from long Osmo Pocket / DJI / phone footage without
+  entering a heavy Premiere-style edit session.
+- Show relationships between original files and derived files: RAW+JPEG pairs,
+  motion-photo sidecars, burst groups, subclips, and crop/edit outputs.
+- Add a Lightroom-style `I` overlay in Focus for important file/video metadata.
+- Make Edit mode panels resizable/collapsible, fix the Look panel collapse,
+  improve timeline zoom, and support cropped-output preview in fullscreen.
+- Keep Live Scrub behind a toggle and reduce thumbnail/scrub aspect jumps.
+
+Implemented in this nightly:
+
+- Focus video subclips:
+  - Users can mark multiple in/out ranges on the Focus video timeline.
+  - Ranges are persisted in the per-drive catalog table `video_segments`.
+  - Batch export creates separate stream-copy subclips beside the source video
+    as `_sub01`, `_sub02`, etc., uniquifying names if needed.
+  - Export refreshes the active folder so newly-created subclips appear in the
+    Library/Focus workflow.
+  - Partial export failures are surfaced in the Focus note instead of being
+    hidden behind a generic success message.
+- Related stack UI:
+  - Library derives related groups for RAW+JPEG, `_subNN`, crop/edit suffixes,
+    motion-photo style image/video pairs, and conservative burst-name runs.
+  - Grid and filmstrip show subtle stack treatment, badges, role labels, and
+    folded counts.
+  - Context menus can expand/collapse a related group, and the top toolbar /
+    settings can open or fold all related groups.
+  - Focus view can show a compact related-family strip for the active item.
+- Focus metadata overlay:
+  - Press `I` in Library/Focus to toggle an overlay with filename, kind/format,
+    size, video duration/resolution/FPS/codec/camera when probed, and modified
+    date.
+- RAW/JPEG export:
+  - Library export now confirms RAW count vs photo count before exporting.
+  - If exported into the active folder/subfolder, the current folder refreshes.
+- Edit mode:
+  - Source, Look/right inspector, and timeline panels have resize/collapse
+    behavior that reclaims the underlying space.
+  - Ctrl+mouse-wheel over the edit timeline zooms horizontally around the cursor.
+  - Video and audio tracks are visually separated.
+  - The `Preview` toggle shows cropped-output preview, and pressing `F` from
+    Edit mode now enters that cropped preview before toggling app fullscreen.
+  - The small-screen CSS no longer makes the Look panel impossible to reopen.
+- Live Scrub:
+  - Thumbnail scrub frames preserve the static thumbnail's visible aspect area,
+    and cursor math ignores letterboxed padding.
+  - Scrub sprite cache cleanup is included in per-file cache cleanup.
+
+Validation run for v0.5.2-nightly.3:
+
+- `npm run check` passed with 0 errors and the existing Node type warning.
+- `npm run build` passed.
+- `cargo check` passed after version bump to `0.5.2-nightly.3`.
+- `git diff --check` passed, reporting only normal CRLF line-ending warnings.
+
+Known caveats after v0.5.2-nightly.3:
+
+- Burst grouping is heuristic and intentionally conservative.
+- Related grouping is frontend-derived from filenames/kinds/timestamps; it does
+  not yet store explicit parent-child relationships in the catalog.
+- The quick editor is still intentionally lightweight. It supports timeline
+  clips, crop presets, look presets, audio choice, snapshots, and export, but
+  not crop keyframes or full Premiere/Final Cut feature depth.
+- Mobile rotation/display-aspect edge cases should be tested on real S23/iPhone
+  vertical clips before treating the export path as final.
+
 ## Release State
 
 Published releases at handover time:

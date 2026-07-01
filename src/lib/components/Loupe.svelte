@@ -3,9 +3,17 @@
   import { activity } from "$lib/activity.svelte";
   import { loadThumb } from "$lib/thumbnail-loader";
   import { settings } from "$lib/settings.svelte";
-  import type { MediaItem, FilmstripInfo } from "$lib/types";
+  import type { MediaItem, FilmstripInfo, MediaProbe, VideoSegment } from "$lib/types";
 
-  let { item }: { item: MediaItem | null } = $props();
+  let {
+    item,
+    showInfo = false,
+    onchanged = () => {},
+  }: {
+    item: MediaItem | null;
+    showInfo?: boolean;
+    onchanged?: (selectPath?: string | null) => void;
+  } = $props();
 
   // Image transitions: the PREVIOUS photo stays painted until the next sharp
   // preview is fully decoded, then we swap in one frame — no black gap, and no
@@ -60,8 +68,11 @@
   let cur = $state(0);
   let inS = $state(0);
   let outS = $state<number | null>(null); // null = end
+  let segments = $state<VideoSegment[]>([]);
   let exporting = $state(false);
+  let exportingSegments = $state(false);
   let exportNote = $state<string | null>(null);
+  let probe = $state<MediaProbe | null>(null);
 
   // ── filmstrip scrub state ──
   let strip = $state<FilmstripInfo | null>(null);
@@ -88,7 +99,9 @@
     cur = 0;
     inS = 0;
     outS = null;
+    segments = [];
     exportNote = null;
+    probe = null;
     strip = null;
     preview = null;
     scrubbing = false;
@@ -108,6 +121,12 @@
           outS = t[1];
         }
       });
+      api.getVideoSegments(it.path).then((s) => {
+        if (my === epoch) segments = s;
+      });
+      api.probeMediaInfo(it.path).then((p) => {
+        if (my === epoch) probe = p;
+      }).catch(() => {});
       // Build/fetch the scrub filmstrip only when Live Scrub is enabled. Failure
       // leaves the timeline as a plain seek bar with no frame preview.
       if (liveScrub) {
@@ -267,6 +286,39 @@
   function persist() {
     if (item) api.setTrim(item.path, inS, outS ?? dur);
   }
+
+  function sortedSegments(next = segments) {
+    return [...next]
+      .filter((s) => Number.isFinite(s.in_s) && Number.isFinite(s.out_s) && s.out_s > s.in_s)
+      .sort((a, b) => a.in_s - b.in_s);
+  }
+
+  function persistSegments(next = segments) {
+    if (item) api.setVideoSegments(item.path, sortedSegments(next));
+  }
+
+  function addSegment() {
+    if (!item || !dur || !canExport) return;
+    const end = outS ?? dur;
+    const next = sortedSegments([...segments, { in_s: Math.max(0, inS), out_s: Math.min(dur, end) }]);
+    segments = next;
+    persistSegments(next);
+    exportNote = `Marked ${next.length} subclip${next.length === 1 ? "" : "s"}`;
+  }
+
+  function removeSegment(idx: number) {
+    const next = segments.filter((_, i) => i !== idx);
+    segments = next;
+    persistSegments(next);
+  }
+
+  function useSegment(segment: VideoSegment) {
+    inS = segment.in_s;
+    outS = segment.out_s;
+    if (vid) vid.currentTime = segment.in_s;
+    persist();
+  }
+
   async function exportCut() {
     if (!item || exporting) return;
     const end = outS ?? dur;
@@ -277,10 +329,33 @@
       const out = await api.trimVideo(item.path, inS, end);
       exportNote = `Saved ${out.split(/[\\/]/).pop()}`;
       api.reveal(out);
+      onchanged(out);
     } catch (e) {
       exportNote = `Couldn't cut (${e})`;
     } finally {
       exporting = false;
+    }
+  }
+
+  async function exportSegments() {
+    if (!item || exportingSegments || !segments.length) return;
+    exportingSegments = true;
+    exportNote = "Exporting subclips...";
+    try {
+      const r = await api.exportVideoSegments(item.path, sortedSegments());
+      if (r.exported.length) {
+        exportNote = r.failed.length
+          ? `Saved ${r.exported.length}; ${r.failed.length} failed${r.errors[0] ? ` (${r.errors[0]})` : ""}`
+          : `Saved ${r.exported.length} subclip${r.exported.length === 1 ? "" : "s"}`;
+        api.reveal(r.exported[0]);
+        onchanged(r.exported[0]);
+      } else {
+        exportNote = `No subclips saved${r.errors[0] ? `: ${r.errors[0]}` : ""}`;
+      }
+    } catch (e) {
+      exportNote = `Couldn't export subclips (${e})`;
+    } finally {
+      exportingSegments = false;
     }
   }
 
@@ -290,8 +365,28 @@
     const sec = Math.floor(s % 60);
     return `${m}:${sec.toString().padStart(2, "0")}`;
   }
+  function fmtSize(n: number): string {
+    if (!n) return "-";
+    if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
   let pct = (s: number) => (dur > 0 ? (s / dur) * 100 : 0);
   let canExport = $derived(dur > 0 && (outS ?? dur) > inS && (inS > 0 || (outS ?? dur) < dur));
+  let infoRows = $derived.by(() => {
+    if (!item) return [];
+    const rows = [
+      item.name,
+      `${item.kind.toUpperCase()} · ${item.ext.toUpperCase()} · ${fmtSize(item.size)}`,
+    ];
+    if (item.kind === "video" && probe) {
+      const res = probe.width && probe.height ? `${probe.width}x${probe.height}` : "";
+      const fps = probe.fps ? `${Math.round(probe.fps)}fps` : "";
+      rows.push([fmt(probe.duration), res, fps, probe.codec, probe.camera].filter(Boolean).join(" · "));
+    }
+    rows.push(new Date(item.mtime * 1000).toLocaleString());
+    return rows;
+  });
 </script>
 
 <div class="loupe">
@@ -377,6 +472,18 @@
             onpointerleave={onTrackLeave}
           >
             <div class="range" style="left:{pct(inS)}%; right:{100 - pct(outS ?? dur)}%"></div>
+            {#each segments as segment, i (i)}
+              <button
+                class="segmark"
+                style="left:{pct(segment.in_s)}%; width:{Math.max(0.8, pct(segment.out_s) - pct(segment.in_s))}%"
+                title={`Subclip ${i + 1}: ${fmt(segment.in_s)}-${fmt(segment.out_s)}`}
+                onpointerdown={(e) => e.stopPropagation()}
+                onclick={(e) => {
+                  e.stopPropagation();
+                  useSegment(segment);
+                }}
+              ></button>
+            {/each}
             <div class="cursor" style="left:{pct(cur)}%"></div>
             {#if preview != null && strip && stripSrc}
               {@const c = cellPos(preview)}
@@ -395,12 +502,28 @@
             <button onclick={setIn} title="Set in point to current time">⟤ In {fmt(inS)}</button>
             <button onclick={setOut} title="Set out point to current time">Out {fmt(outS ?? dur)} ⟥</button>
             <span class="len">cut {fmt((outS ?? dur) - inS)}</span>
+            <button onclick={addSegment} disabled={!canExport} title="Remember this range as one subclip">+ Segment</button>
             <span class="spacer"></span>
             {#if canExport}<button class="reset" onclick={resetTrim}>Reset</button>{/if}
             <button class="exp" onclick={exportCut} disabled={!canExport || exporting}>
               {exporting ? "Cutting…" : "✂ Export cut"}
             </button>
+            <button class="exp secondary" onclick={exportSegments} disabled={!segments.length || exportingSegments}>
+              {exportingSegments ? "Exporting..." : `Export ${segments.length || ""} subclips`}
+            </button>
           </div>
+          {#if segments.length}
+            <div class="segments">
+              {#each segments as segment, i (i)}
+                <button class="segmentPill" onclick={() => useSegment(segment)}>
+                  <strong>{i + 1}</strong>
+                  <span>{fmt(segment.in_s)}-{fmt(segment.out_s)}</span>
+                  <em>{fmt(segment.out_s - segment.in_s)}</em>
+                </button>
+                <button class="segRemove" onclick={() => removeSegment(i)} title="Remove subclip">×</button>
+              {/each}
+            </div>
+          {/if}
           {#if exportNote}<div class="note">{exportNote}</div>{/if}
         </div>
       </div>
@@ -426,10 +549,18 @@
       {/if}
     </div>
   {/if}
+  {#if showInfo && item}
+    <div class="infoOverlay">
+      {#each infoRows as row}
+        <div>{row}</div>
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <style>
   .loupe {
+    position: relative;
     width: 100%;
     height: 100%;
     display: flex;
@@ -543,6 +674,18 @@
     border-radius: 6px;
     pointer-events: none;
   }
+  .segmark {
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    min-width: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.75);
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--pick) 56%, transparent);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.28);
+    cursor: pointer;
+    z-index: 3;
+  }
   .cursor {
     position: absolute;
     top: -2px;
@@ -607,13 +750,68 @@
     color: var(--accent-on);
     font-weight: 600;
   }
+  .ctrls .exp.secondary {
+    background: color-mix(in srgb, var(--pick) 22%, var(--bg-elev));
+    border-color: color-mix(in srgb, var(--pick) 55%, var(--border));
+    color: var(--text);
+  }
   .ctrls .exp:disabled {
     opacity: 0.45;
+  }
+  .segments {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+  }
+  .segmentPill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 24px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--pick) 55%, var(--border));
+    background: color-mix(in srgb, var(--pick) 12%, var(--bg-elev));
+    color: var(--text);
+    font-size: 11.5px;
+  }
+  .segmentPill strong {
+    color: var(--pick);
+  }
+  .segmentPill em {
+    color: var(--text-faint);
+    font-style: normal;
+  }
+  .segRemove {
+    width: 22px;
+    height: 22px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--reject) 50%, var(--border));
+    color: var(--reject);
+    background: var(--bg-elev);
+    line-height: 1;
   }
   .note {
     margin-top: 6px;
     font-size: 12px;
     color: var(--text-dim);
+  }
+  .infoOverlay {
+    position: absolute;
+    left: 22px;
+    top: 22px;
+    z-index: 20;
+    max-width: min(560px, calc(100% - 44px));
+    padding: 11px 13px;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.58);
+    color: #fff;
+    font-size: 14px;
+    line-height: 1.45;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+    pointer-events: none;
   }
 
   .vfail {
