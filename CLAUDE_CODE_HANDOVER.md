@@ -4,20 +4,19 @@ This file is intended to give Claude Code or any future coding agent enough
 context to continue FoxCull without accidentally touching the original
 Claude-built `fox-cull` project.
 
-## Current State: Stable FoxCull v0.6.1
+## Current State: Stable FoxCull v0.6.2
 
 - Current main product name: **FoxCull**.
 - Working folder: `D:\Claude Code Projects\FoxCullCodex`.
 - GitHub repository: `https://github.com/kumaradarsh1993/FoxCullCodex`.
-- Stable tag prepared: `v0.6.1`.
-- Stable commit: the commit pointed to by tag `v0.6.1`
-  (`Fix release publishing for FoxCull v0.6.1`).
+- Stable tag prepared: `v0.6.2`.
+- Stable commit: the commit pointed to by tag `v0.6.2`.
 - The earlier `fox-cull` folder is now legacy/reference only.
-- User-facing "Codex" branding has been removed from the product. Remaining
-  `_FoxCullCodex` / `foxcull-codex-*` references are compatibility fallbacks for
-  existing libraries, stores, and portable folders.
+- User-facing "Codex" branding has been removed from the product. Current
+  builds use `_FoxCull` and `foxcull-data` only; old pre-stable library folders
+  are not adopted by the runtime.
 
-Latest v0.6.1 changes:
+Latest v0.6.2 changes:
 
 - Product rename to FoxCull (`productName`, app title, package metadata, docs).
 - Modern abstract icon applied across Tauri icons and favicon; four SVG options
@@ -32,8 +31,9 @@ Latest v0.6.1 changes:
 - Edit mode trim memory persists in-session per source path, so in/out points
   survive panel remounts and re-adding a clip.
 - Prepare/pre-cache behavior formalized in `README.md` and `STORAGE.md`.
-- New-drive library folder is `_FoxCull`; if a drive only has legacy
-  `_FoxCullCodex`, FoxCull keeps using it to avoid hiding old catalog/cache work.
+- The per-drive library folder is `_FoxCull` only. The old compatibility path
+  was removed after a one-time local audit showed no meaningful user metadata in
+  the old folders.
 
 ## Project Lineage
 

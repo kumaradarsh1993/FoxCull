@@ -24,12 +24,8 @@ fn resolve_data_root(app: &tauri::App) -> std::io::Result<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let portable = dir.join("foxcull-data");
-            let legacy_portable = dir.join("foxcull-codex-data");
             if portable.is_dir() {
                 return Ok(portable);
-            }
-            if legacy_portable.is_dir() {
-                return Ok(legacy_portable);
             }
         }
     }

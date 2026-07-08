@@ -4,15 +4,6 @@ let store: Store | null = null;
 async function s(): Promise<Store> {
   if (!store) {
     store = await Store.load("foxcull.json");
-    const root = await store.get<string>("root");
-    if (!root) {
-      const legacy = await Store.load("foxcull-codex.json");
-      const legacyRoot = await legacy.get<string>("root");
-      if (legacyRoot) {
-        await store.set("root", legacyRoot);
-        await store.save();
-      }
-    }
   }
   return store;
 }

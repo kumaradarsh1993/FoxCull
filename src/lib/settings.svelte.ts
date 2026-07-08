@@ -61,7 +61,6 @@ const DEFAULTS: AppSettings = {
 };
 
 const FILE = "foxcull-settings.json";
-const LEGACY_FILE = "foxcull-codex-settings.json";
 const KEY = "settings";
 
 class Settings {
@@ -74,10 +73,6 @@ class Settings {
     try {
       this.store = await Store.load(FILE);
       let loaded = await this.store.get<AppSettings & { groupByMonth?: boolean }>(KEY);
-      if (!loaded) {
-        const legacy = await Store.load(LEGACY_FILE);
-        loaded = await legacy.get<AppSettings & { groupByMonth?: boolean }>(KEY);
-      }
       if (loaded) {
         const migrated: Partial<AppSettings> = {
           ...loaded,

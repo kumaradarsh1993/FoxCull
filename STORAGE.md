@@ -21,15 +21,9 @@ On writable drives, FoxCull creates one library folder at the drive root:
   Live Scrub assets.
 - `recycle/` stores files moved to the in-app Trash.
 
-The app hides `_FoxCull` from its folder tree and media grids.
-
-## Legacy Compatibility
-
-If a drive already contains `_FoxCullCodex` and does not yet contain `_FoxCull`,
-FoxCull keeps using `_FoxCullCodex` for that drive. This preserves the work done
-in earlier Codex-origin builds. New drives use `_FoxCull`.
-
-Both `_FoxCull` and `_FoxCullCodex` are hidden from browsing.
+The app hides `_FoxCull` from its folder tree and media grids. Current builds do
+not adopt old pre-stable library folders; after one-time migration, `_FoxCull`
+is the single source of truth.
 
 ## Read-Only Drives
 
@@ -47,7 +41,7 @@ drive itself cannot be written.
 The Windows portable build keeps app settings and default data beside the EXE
 when a folder named `foxcull-data` sits next to `foxcull.exe`.
 
-Legacy portable folders named `foxcull-codex-data` are still honored if present.
+Older portable data folder names are not adopted by current builds.
 
 ## Prepare And Cache Behavior
 
@@ -73,5 +67,5 @@ With **In-app Trash**, rejected files are moved into:
 <drive>/_FoxCull/recycle/
 ```
 
-or into the legacy/fallback library currently active for that drive. Restore from
-the in-app Trash panel. Emptying/purging Trash permanently deletes those files.
+Restore from the in-app Trash panel. Emptying/purging Trash permanently deletes
+those files.

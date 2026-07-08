@@ -94,7 +94,6 @@ pub fn cache_dir_for(catalog_path: &Path) -> PathBuf {
 /// catalog, thumbnail cache and recycle bin, so everything for a drive travels
 /// with it.
 const LIB_DIRNAME: &str = "_FoxCull";
-const LEGACY_LIB_DIRNAME: &str = "_FoxCullCodex";
 
 struct Library {
     dir: PathBuf,
@@ -136,14 +135,7 @@ fn drive_id(root: &Path) -> String {
 /// on a Mac without Paragon — so rating/culling still works there).
 fn resolve_library(data_root: &Path, root: &Path) -> Library {
     let (dir, on_drive) = if is_writable(root) {
-        let primary = root.join(LIB_DIRNAME);
-        let legacy = root.join(LEGACY_LIB_DIRNAME);
-        let dir = if !primary.exists() && legacy.is_dir() {
-            legacy
-        } else {
-            primary
-        };
-        (dir, true)
+        (root.join(LIB_DIRNAME), true)
     } else {
         (data_root.join("libraries").join(drive_id(root)), false)
     };
@@ -565,7 +557,7 @@ pub fn set_library_root(
 }
 
 /// Immediate subdirectories of `dir` (for the lazy folder tree). Dotfolders and
-/// our own `_FoxCull` / `_FoxCullCodex` library folders are hidden.
+/// our own `_FoxCull` library folder is hidden.
 ///
 /// `has_children` is reported **optimistically** (always true): probing it
 /// eagerly meant an extra `read_dir` PER child, an N+1 stat storm that made
@@ -582,10 +574,7 @@ pub fn list_tree(dir: String) -> Result<Vec<TreeDir>, String> {
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with('.')
-                || name.eq_ignore_ascii_case(LIB_DIRNAME)
-                || name.eq_ignore_ascii_case(LEGACY_LIB_DIRNAME)
-            {
+            if name.starts_with('.') || name.eq_ignore_ascii_case(LIB_DIRNAME) {
                 return None;
             }
             Some(TreeDir {

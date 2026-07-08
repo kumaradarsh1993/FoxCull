@@ -29,12 +29,12 @@ project is treated as the legacy Claude-built variant.
 Latest stable release:
 [FoxCull releases](https://github.com/kumaradarsh1993/FoxCullCodex/releases/latest)
 
-Current stable `v0.6.1` assets:
+Current stable `v0.6.2` assets:
 
-- Windows installer: `FoxCull_0.6.1_x64-setup.exe`
-- Windows portable: `foxcull_0.6.1_x64_portable.zip`
-- macOS Apple Silicon: `FoxCull_0.6.1_aarch64.dmg`
-- Linux: `FoxCull_0.6.1_amd64.AppImage` or `.deb`
+- Windows installer: `FoxCull_0.6.2_x64-setup.exe`
+- Windows portable: `foxcull_0.6.2_x64_portable.zip`
+- macOS Apple Silicon: `FoxCull_0.6.2_aarch64.dmg`
+- Linux: `FoxCull_0.6.2_amd64.AppImage` or `.deb`
 
 Windows and macOS builds are not code-signed/notarized yet, so first launch may
 show SmartScreen or Gatekeeper warnings.
@@ -69,9 +69,8 @@ Each writable drive gets a self-contained `_FoxCull` folder with:
 - `thumbs/` for thumbnails, Focus previews, posters, and scrub assets.
 - `recycle/` for the in-app Trash.
 
-If a drive already has the previous `_FoxCullCodex` library and no `_FoxCull`
-library yet, FoxCull will keep using that legacy folder so existing ratings and
-cache do not disappear. New drives use `_FoxCull`.
+`_FoxCull` is the only per-drive library folder used by current builds. Old
+preview/cache folders from pre-stable builds can be deleted after migration.
 
 Full details are in [STORAGE.md](STORAGE.md).
 
@@ -104,4 +103,4 @@ cd src-tauri
 cargo check
 ```
 
-Stable releases are produced by pushing a tag like `v0.6.1`.
+Stable releases are produced by pushing a tag like `v0.6.2`.
