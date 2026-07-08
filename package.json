@@ -1,6 +1,6 @@
 {
   "name": "foxcull",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Photo/video culling and lightweight editing tool",
   "type": "module",
   "scripts": {

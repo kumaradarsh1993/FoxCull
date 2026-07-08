@@ -29,12 +29,12 @@ project is treated as the legacy Claude-built variant.
 Latest stable release:
 [FoxCull releases](https://github.com/kumaradarsh1993/FoxCullCodex/releases/latest)
 
-Current stable `v0.6.0` assets:
+Current stable `v0.6.1` assets:
 
-- Windows installer: `FoxCull_0.6.0_x64-setup.exe`
-- Windows portable: `foxcull_0.6.0_x64_portable.zip`
-- macOS Apple Silicon: `FoxCull_0.6.0_aarch64.dmg`
-- Linux: `FoxCull_0.6.0_amd64.AppImage` or `.deb`
+- Windows installer: `FoxCull_0.6.1_x64-setup.exe`
+- Windows portable: `foxcull_0.6.1_x64_portable.zip`
+- macOS Apple Silicon: `FoxCull_0.6.1_aarch64.dmg`
+- Linux: `FoxCull_0.6.1_amd64.AppImage` or `.deb`
 
 Windows and macOS builds are not code-signed/notarized yet, so first launch may
 show SmartScreen or Gatekeeper warnings.
@@ -104,4 +104,4 @@ cd src-tauri
 cargo check
 ```
 
-Stable releases are produced by pushing a tag like `v0.6.0`.
+Stable releases are produced by pushing a tag like `v0.6.1`.
