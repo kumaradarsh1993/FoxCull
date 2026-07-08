@@ -1,15 +1,48 @@
-# Claude Code Handover: FoxCull Codex
+# Agent Handover: FoxCull
 
 This file is intended to give Claude Code or any future coding agent enough
-context to continue the Codex fork without accidentally touching the original
-Claude-built FoxCull project.
+context to continue FoxCull without accidentally touching the original
+Claude-built `fox-cull` project.
+
+## Current State: Stable FoxCull v0.6.0
+
+- Current main product name: **FoxCull**.
+- Working folder: `D:\Claude Code Projects\FoxCullCodex`.
+- GitHub repository: `https://github.com/kumaradarsh1993/FoxCullCodex`.
+- Stable tag prepared: `v0.6.0`.
+- Stable commit: `838a19f` (`Prepare FoxCull stable v0.6.0`).
+- The earlier `fox-cull` folder is now legacy/reference only.
+- User-facing "Codex" branding has been removed from the product. Remaining
+  `_FoxCullCodex` / `foxcull-codex-*` references are compatibility fallbacks for
+  existing libraries, stores, and portable folders.
+
+Latest v0.6.0 changes:
+
+- Product rename to FoxCull (`productName`, app title, package metadata, docs).
+- Modern abstract icon applied across Tauri icons and favicon; four SVG options
+  live in `assets/icon-options/` with a preview page at `docs/icon-options.html`.
+- Library toolbar cleanup: Arrange menu owns sort/group/subgroup/stacks; top
+  All and Trash duplicates removed; Prepare icon restored; Library/Edit switch
+  made more prominent.
+- Selection fixes: Shift-click and Shift-arrow range selection, Ctrl/Cmd+A
+  select all, Grid up/down moves by row, Details remains row-by-row.
+- Grouping fixes: Group + Subgroup now render as nested section headers.
+- Warm theme restored for late-night work.
+- Edit mode trim memory persists in-session per source path, so in/out points
+  survive panel remounts and re-adding a clip.
+- Prepare/pre-cache behavior formalized in `README.md` and `STORAGE.md`.
+- New-drive library folder is `_FoxCull`; if a drive only has legacy
+  `_FoxCullCodex`, FoxCull keeps using it to avoid hiding old catalog/cache work.
 
 ## Project Lineage
 
 - Original reference app: `D:\Claude Code Projects\fox-cull`
-- Codex fork: `D:\Claude Code Projects\FoxCullCodex`
+- Current FoxCull app: `D:\Claude Code Projects\FoxCullCodex`
 - GitHub repository: `https://github.com/kumaradarsh1993/FoxCullCodex`
-- Visibility at creation time: private
+- Visibility at creation time: private. A later request asked to make it public,
+  but the tool policy blocked changing repository visibility because that would
+  expose the full private code/history. The user may change visibility manually
+  on GitHub if they decide the history is safe to publish.
 - Default branch: `main`
 - Codex-origin first commit: `b7a256f` / tag `v0.1.0`
 - Codex releases documented here: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`
