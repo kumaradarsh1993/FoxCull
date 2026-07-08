@@ -3,7 +3,7 @@
 // loads once and writes through to tauri-plugin-store on every change.
 import { Store } from "@tauri-apps/plugin-store";
 
-export type Theme = "light" | "dark" | "neutral";
+export type Theme = "light" | "dark" | "neutral" | "warm";
 export type ViewMode = "grid" | "details" | "loupe";
 export type FilmstripPos = "bottom" | "right" | "hidden";
 export type SortBy = "name" | "date" | "capture" | "type" | "size";
@@ -60,7 +60,8 @@ const DEFAULTS: AppSettings = {
   lastActivePath: null,
 };
 
-const FILE = "foxcull-codex-settings.json";
+const FILE = "foxcull-settings.json";
+const LEGACY_FILE = "foxcull-codex-settings.json";
 const KEY = "settings";
 
 class Settings {
@@ -72,11 +73,15 @@ class Settings {
     if (this.ready) return;
     try {
       this.store = await Store.load(FILE);
-      const loaded = await this.store.get<Omit<AppSettings, "theme"> & { groupByMonth?: boolean; theme?: Theme | "warm" }>(KEY);
+      let loaded = await this.store.get<AppSettings & { groupByMonth?: boolean }>(KEY);
+      if (!loaded) {
+        const legacy = await Store.load(LEGACY_FILE);
+        loaded = await legacy.get<AppSettings & { groupByMonth?: boolean }>(KEY);
+      }
       if (loaded) {
         const migrated: Partial<AppSettings> = {
           ...loaded,
-          theme: loaded.theme === "warm" ? "neutral" : (loaded.theme ?? DEFAULTS.theme),
+          theme: loaded.theme ?? DEFAULTS.theme,
         };
         // Migrate the old boolean month toggle to the new granularity field.
         if (loaded.groupBy === undefined && loaded.groupByMonth) migrated.groupBy = "month";

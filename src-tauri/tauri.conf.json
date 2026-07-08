@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "FoxCull Codex",
-  "version": "0.5.2-nightly.5",
-  "identifier": "com.foxcull.codex",
+  "productName": "FoxCull",
+  "version": "0.6.0",
+  "identifier": "com.foxcull.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1460",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "FoxCull Codex",
+        "title": "FoxCull",
         "width": 1280,
         "height": 820,
         "minWidth": 900,
@@ -26,7 +26,7 @@
       "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: blob:; media-src 'self' asset: http://asset.localhost blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost asset: http://asset.localhost",
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/com.foxcull.codex/thumbs/**"]
+        "scope": ["$APPDATA/com.foxcull.app/thumbs/**", "$APPDATA/com.foxcull.codex/thumbs/**"]
       }
     }
   },

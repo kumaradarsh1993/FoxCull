@@ -1,4 +1,4 @@
-/* FoxCull Codex theming. The editing/culling chrome uses neutral graphite tones
+/* FoxCull theming. The editing/culling chrome uses neutral graphite tones
    so the UI does not tint judgment of photos or video. */
 :root,
 :root[data-theme="light"] {
@@ -77,6 +77,31 @@
   --label-yellow: #d5a94a;
   --label-blue: #8eb6d9;
   --label-purple: #b0a0c8;
+}
+
+:root[data-theme="warm"] {
+  --bg: #2f2b26;
+  --bg-panel: #38342f;
+  --bg-elev: #443f38;
+  --bg-hover: #504a42;
+  --viewport-bg: #211f1c;
+  --border: #5a5147;
+  --text: #f1ece3;
+  --text-dim: #d0c5b6;
+  --text-faint: #9b8f80;
+  --accent: #d0a65f;
+  --accent-dim: #5f4d33;
+  --accent-on: #16110a;
+  --reject: #e06970;
+  --pick: #89b87b;
+  --star: #e2b85c;
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+
+  --label-red: #e06970;
+  --label-green: #89b87b;
+  --label-yellow: #e2b85c;
+  --label-blue: #92b7d6;
+  --label-purple: #c2a7d7;
 }
 
 * { box-sizing: border-box; }

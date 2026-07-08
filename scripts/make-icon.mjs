@@ -15,5 +15,5 @@ function render(width, target) {
 }
 
 render(1024, "../assets/icon-1024.png");
-render(512, "../docs/images/foxcull-codex-icon.png");
+render(512, "../docs/images/foxcull-icon.png");
 render(256, "../static/favicon.png");

@@ -57,6 +57,7 @@
 
   let activeIndex = $state(0);
   let selected = $state<Set<string>>(new Set());
+  let selectionAnchor = $state<string | null>(null);
   let draggingPaths = $state<string[]>([]);
   let cutPaths = $state<string[]>([]);
   let movingFiles = $state(false);
@@ -81,6 +82,8 @@
   let showInfoOverlay = $state(false);
   let settingsOpen = $state(false);
   let filtersOpen = $state(false);
+  let arrangeOpen = $state(false);
+  let clearOpen = $state(false);
   let libInfo = $state<LibraryInfo | null>(null);
   let trashOpen = $state(false);
   let trashItems = $state<TrashItem[]>([]);
@@ -89,7 +92,7 @@
   // Bumped by the tree's ↻ button to make expanded folders recount their badges.
   let countsGen = $state(0);
   let folderRefreshKey = $state(0);
-  let gridComp = $state<{ scrollToIndex: (i: number, center?: boolean) => void } | null>(null);
+  let gridComp = $state<{ scrollToIndex: (i: number, center?: boolean) => void; columnCount?: () => number } | null>(null);
   let loupeComp = $state<{ togglePlay: () => void; seekBy: (d: number) => void; setInPoint?: () => void; setOutPoint?: () => void } | null>(null);
   let editComp = $state<{
     setOutputPreview?: (on: boolean) => void | Promise<void>;
@@ -497,18 +500,47 @@
   });
   let relatedHiddenCount = $derived(Math.max(0, baseView.length - view.length));
 
-  // Capture-date sections over the (capture-sorted) view, for the grouped grid.
+  type GridSection = { label: string; count: number; level?: 1 | 2; cellCount?: number };
+
+  // Grouped grid sections over the sorted view. Group + subgroup render as true
+  // nested headers: the parent carries a total count, the child owns the cells.
   let sections = $derived.by(() => {
-    const out: { label: string; count: number }[] = [];
-    let key = "";
+    const out: GridSection[] = [];
+    const primaryBy = settings.s.groupBy !== "none" ? settings.s.groupBy : settings.s.subgroupBy;
+    const subBy =
+      settings.s.groupBy !== "none" && settings.s.subgroupBy !== "none" && settings.s.subgroupBy !== settings.s.groupBy
+        ? settings.s.subgroupBy
+        : "none";
+    let primaryKey = "";
+    let subKey = "";
+    let primary: GridSection | null = null;
+    let leaf: GridSection | null = null;
     for (const it of view) {
       const anchor = relatedIndex.groupByPath.get(it.path)?.representative ?? it;
-      const k = sectionKey(anchor);
-      if (k !== key) {
-        out.push({ label: sectionLabel(anchor), count: 0 });
-        key = k;
+      const pk = sectionPartKey(anchor, primaryBy);
+      if (pk !== primaryKey) {
+        primary = { label: sectionPartLabel(anchor, primaryBy) || "All media", count: 0, level: 1, cellCount: 0 };
+        out.push(primary);
+        primaryKey = pk;
+        subKey = "";
+        leaf = null;
       }
-      out[out.length - 1].count++;
+      if (subBy !== "none") {
+        const sk = sectionPartKey(anchor, subBy);
+        if (sk !== subKey) {
+          leaf = { label: sectionPartLabel(anchor, subBy) || "Other", count: 0, level: 2, cellCount: 0 };
+          out.push(leaf);
+          subKey = sk;
+        }
+        if (primary) primary.count++;
+        if (leaf) {
+          leaf.count++;
+          leaf.cellCount = (leaf.cellCount ?? 0) + 1;
+        }
+      } else if (primary) {
+        primary.count++;
+        primary.cellCount = (primary.cellCount ?? 0) + 1;
+      }
     }
     return out;
   });
@@ -629,6 +661,7 @@
     loading = true;
     resetThumbs();
     selected = new Set();
+    selectionAnchor = null;
     captureMap = {};
     capturesDir = null;
     try {
@@ -652,7 +685,10 @@
       idx = Math.max(0, Math.min(opts.selectIndex, view.length - 1));
     }
     activeIndex = idx;
-    if (view.length) selected = new Set([view[idx].path]);
+    if (view.length) {
+      selected = new Set([view[idx].path]);
+      selectionAnchor = view[idx].path;
+    }
     loading = false;
     settings.set({ lastDir: dir });
     // Let the grid mount, then bring the restored/next photo into view.
@@ -898,16 +934,52 @@
     saveTimer = setTimeout(() => settings.set({ lastActivePath: a.path }), 400);
   }
 
-  function setActiveTo(i: number) {
-    activeIndex = Math.max(0, Math.min(i, view.length - 1));
+  function clampViewIndex(i: number) {
+    return Math.max(0, Math.min(i, view.length - 1));
+  }
+
+  function anchorIndexForSelection() {
+    const idx = displayIndexForPath(selectionAnchor);
+    return idx >= 0 ? idx : activeIndex;
+  }
+
+  function setActiveTo(i: number, opts: { extend?: boolean } = {}) {
+    if (!view.length) {
+      activeIndex = 0;
+      selected = new Set();
+      selectionAnchor = null;
+      return;
+    }
+    const nextIndex = clampViewIndex(i);
+    const anchorIndex = opts.extend ? anchorIndexForSelection() : nextIndex;
+    activeIndex = nextIndex;
     const a = view[activeIndex];
-    if (a) selected = new Set([a.path]);
+    if (opts.extend) {
+      const lo = Math.min(anchorIndex, nextIndex);
+      const hi = Math.max(anchorIndex, nextIndex);
+      selected = new Set(view.slice(lo, hi + 1).map((item) => item.path));
+      selectionAnchor = view[anchorIndex]?.path ?? a?.path ?? null;
+    } else {
+      selected = a ? new Set([a.path]) : new Set();
+      selectionAnchor = a?.path ?? null;
+    }
     scrollActive();
     rememberActive();
   }
 
-  function move(delta: number) {
-    setActiveTo(activeIndex + delta);
+  function move(delta: number, opts: { extend?: boolean } = {}) {
+    setActiveTo(activeIndex + delta, opts);
+  }
+
+  function navDelta(key: string) {
+    if (viewMode === "grid") {
+      const cols = Math.max(1, gridComp?.columnCount?.() ?? 1);
+      if (key === "ArrowDown") return cols;
+      if (key === "ArrowUp") return -cols;
+    }
+    if (key === "ArrowRight" || key === "ArrowDown") return 1;
+    if (key === "ArrowLeft" || key === "ArrowUp") return -1;
+    return 0;
   }
 
   // ── Focus-view preview prefetch ────────────────────────────────────────────
@@ -1049,6 +1121,45 @@
     }
   }
 
+  function clearRatings() {
+    const ts = targets();
+    if (!ts.length) return;
+    for (const it of ts) it.rating = 0;
+    const paths = ts.map((i) => i.path);
+    (ts.length === 1 ? api.setRating(paths[0], 0) : api.setRatingMany(paths, 0)).catch(() => {});
+  }
+
+  function clearLabels() {
+    const ts = targets();
+    if (!ts.length) return;
+    for (const it of ts) it.label = null;
+    const paths = ts.map((i) => i.path);
+    (ts.length === 1 ? api.setLabel(paths[0], null) : api.setLabelMany(paths, null)).catch(() => {});
+  }
+
+  function clearFlags() {
+    const ts = targets();
+    if (!ts.length) return;
+    for (const it of ts) it.flag = null;
+    const paths = ts.map((i) => i.path);
+    (ts.length === 1 ? api.setFlag(paths[0], null) : api.setFlagMany(paths, null)).catch(() => {});
+  }
+
+  async function clearTagsOnTargets() {
+    const ts = targets();
+    if (!ts.length) return;
+    const paths = ts.map((i) => i.path);
+    const tags = [...new Set(ts.flatMap((i) => i.tags))];
+    for (const it of ts) it.tags = [];
+    for (const tag of tags) await api.removeTag(paths, tag).catch(() => {});
+    refreshTags();
+  }
+
+  async function clearAllMarks() {
+    unset();
+    await clearTagsOnTargets();
+  }
+
   // ── tags ──────────────────────────────────────────────────────────────────
   async function addTagToTargets() {
     const tag = tagInput.trim();
@@ -1068,6 +1179,7 @@
 
   function selectAllFiltered() {
     selected = new Set(view.map((i) => i.path));
+    selectionAnchor = view[activeIndex]?.path ?? view[0]?.path ?? null;
   }
   function rejectSelected() {
     const sel = targets();
@@ -1080,12 +1192,17 @@
   function gridCellClick(e: MouseEvent, i: number) {
     const it = view[i];
     if (!it) return;
-    if (e.ctrlKey || e.metaKey) {
+    if (e.shiftKey) {
+      setActiveTo(i, { extend: true });
+    } else if (e.ctrlKey || e.metaKey) {
       const next = new Set(selected);
       if (next.has(it.path)) next.delete(it.path);
       else next.add(it.path);
       selected = next;
       activeIndex = i;
+      selectionAnchor = it.path;
+      scrollActive();
+      rememberActive();
     } else {
       setActiveTo(i);
     }
@@ -1248,7 +1365,7 @@
   async function executeDelete() {
     const paths = await api.listRejected();
     if (!paths.length) return;
-    // "folder" → the active drive's _FoxCullCodex/recycle (recoverable in-app Trash);
+    // "folder" -> the active drive's _FoxCull/recycle (recoverable in-app Trash);
     // "recycle" → the OS Recycle Bin / Trash.
     await api.disposeRejected(paths, settings.s.deleteMode);
     // Stay where we were — after the rejected shots vanish, the same index lands
@@ -1395,6 +1512,11 @@
       e.preventDefault();
       return;
     }
+    if ((e.ctrlKey || e.metaKey) && k === "a") {
+      selectAllFiltered();
+      e.preventDefault();
+      return;
+    }
     if (k === "i") {
       showInfoOverlay = !showInfoOverlay;
       e.preventDefault();
@@ -1409,14 +1531,21 @@
       if (e.shiftKey && e.key === "ArrowRight") { loupeComp.seekBy(5); e.preventDefault(); return; }
       if (e.shiftKey && e.key === "ArrowLeft") { loupeComp.seekBy(-5); e.preventDefault(); return; }
     }
-    if (e.key === "ArrowRight" || e.key === "ArrowDown") { move(1); e.preventDefault(); return; }
-    if (e.key === "ArrowLeft" || e.key === "ArrowUp") { move(-1); e.preventDefault(); return; }
+    const delta = navDelta(e.key);
+    if (delta) {
+      move(delta, { extend: e.shiftKey && viewMode !== "loupe" });
+      e.preventDefault();
+      return;
+    }
     if (e.key === "Enter") { setView(viewMode === "loupe" ? "grid" : "loupe"); e.preventDefault(); return; }
     if (e.key === "Escape") {
       if (fullscreen) toggleFullscreen();
       else if (dimLevel > 0) dimLevel = 0;
       else if (viewMode === "loupe") setView("grid");
-      else selected = active ? new Set([active.path]) : new Set();
+      else {
+        selected = active ? new Set([active.path]) : new Set();
+        selectionAnchor = active?.path ?? null;
+      }
       return;
     }
     if (k === "f") { toggleFullscreen(); return; }
@@ -1609,48 +1738,62 @@
 
       <span class="div"></span>
 
-      <!-- sort + date grouping -->
-      <div class="tool-group">
-        <span class="ctl-label">Sort</span>
-        <select class="sel" title="Sort order" bind:value={settings.s.sortBy} onchange={() => { settings.set({ sortBy: settings.s.sortBy }); maybeFetchCaptures(); }}>
-          <option value="name">Name</option>
-          <option value="date">Modified</option>
-          <option value="capture">Capture date</option>
-          <option value="type">Type</option>
-          <option value="size">Size</option>
-        </select>
-        <button class="ico" title="Sort direction" onclick={() => settings.set({ sortDir: settings.s.sortDir === "asc" ? "desc" : "asc" })}>
-          {settings.s.sortDir === "asc" ? "↑" : "↓"}
+      <!-- sort + grouping + stack display -->
+      <div class="grp arrange">
+        <button
+          class="chip arrangeBtn"
+          class:on={arrangeOpen || settings.s.groupBy !== "none" || settings.s.subgroupBy !== "none" || settings.s.relatedMode === "collapsed"}
+          onclick={() => (arrangeOpen = !arrangeOpen)}
+          title="Sort, group, subgroup and related-stack display"
+        >
+          Arrange
         </button>
-      </div>
-      <div class="tool-group">
-        <span class="ctl-label">Group</span>
-        <select class="sel" title="Split the grid into sections" bind:value={settings.s.groupBy} onchange={() => { settings.set({ groupBy: settings.s.groupBy }); maybeFetchCaptures(); }}>
-          <option value="none">No groups</option>
-          <option value="folder">Folder</option>
-          <option value="type">Type</option>
-          <option value="year">Year</option>
-          <option value="month">Month</option>
-          <option value="week">Week</option>
-        </select>
-      </div>
-      <div class="tool-group">
-        <span class="ctl-label">Sub</span>
-        <select class="sel" title="Optional second grouping level" bind:value={settings.s.subgroupBy} onchange={() => { settings.set({ subgroupBy: settings.s.subgroupBy }); maybeFetchCaptures(); }}>
-          <option value="none">None</option>
-          <option value="folder">Folder</option>
-          <option value="type">Type</option>
-          <option value="year">Year</option>
-          <option value="month">Month</option>
-          <option value="week">Week</option>
-        </select>
-      </div>
-      <div class="tool-group stackTools">
-        <span class="ctl-label">Stacks</span>
-        <div class="seg" title="Show detected related files as separate items or folded groups">
-          <button class="chip" class:on={settings.s.relatedMode === "expanded"} disabled={relatedGroupCount === 0} onclick={() => setRelatedMode("expanded")}>Open</button>
-          <button class="chip" class:on={settings.s.relatedMode === "collapsed"} disabled={relatedGroupCount === 0} onclick={collapseAllRelated}>Fold{relatedHiddenCount ? ` ${relatedHiddenCount}` : ""}</button>
-        </div>
+        {#if arrangeOpen}
+          <div class="arrangeMenu">
+            <div class="fm-row">
+              <span class="fm-lbl">Sort</span>
+              <select class="sel wide" title="Sort order" bind:value={settings.s.sortBy} onchange={() => { settings.set({ sortBy: settings.s.sortBy }); maybeFetchCaptures(); }}>
+                <option value="name">Name</option>
+                <option value="date">Modified</option>
+                <option value="capture">Capture date</option>
+                <option value="type">Type</option>
+                <option value="size">Size</option>
+              </select>
+              <button class="ico" title="Sort direction" onclick={() => settings.set({ sortDir: settings.s.sortDir === "asc" ? "desc" : "asc" })}>
+                {settings.s.sortDir === "asc" ? "↑" : "↓"}
+              </button>
+            </div>
+            <div class="fm-row">
+              <span class="fm-lbl">Group</span>
+              <select class="sel wide" title="Primary grouped section" bind:value={settings.s.groupBy} onchange={() => { settings.set({ groupBy: settings.s.groupBy }); maybeFetchCaptures(); }}>
+                <option value="none">No groups</option>
+                <option value="folder">Folder</option>
+                <option value="type">Type</option>
+                <option value="year">Year</option>
+                <option value="month">Month</option>
+                <option value="week">Week</option>
+              </select>
+            </div>
+            <div class="fm-row">
+              <span class="fm-lbl">Subgroup</span>
+              <select class="sel wide" title="Nested second grouping level" bind:value={settings.s.subgroupBy} onchange={() => { settings.set({ subgroupBy: settings.s.subgroupBy }); maybeFetchCaptures(); }}>
+                <option value="none">None</option>
+                <option value="folder">Folder</option>
+                <option value="type">Type</option>
+                <option value="year">Year</option>
+                <option value="month">Month</option>
+                <option value="week">Week</option>
+              </select>
+            </div>
+            <div class="fm-row">
+              <span class="fm-lbl">Stacks</span>
+              <div class="seg stackSeg" title="Show detected related files as separate items or folded groups">
+                <button class="chip" class:on={settings.s.relatedMode === "expanded"} disabled={relatedGroupCount === 0} onclick={() => setRelatedMode("expanded")}>Open</button>
+                <button class="chip" class:on={settings.s.relatedMode === "collapsed"} disabled={relatedGroupCount === 0} onclick={collapseAllRelated}>Fold{relatedHiddenCount ? ` ${relatedHiddenCount}` : ""}</button>
+              </div>
+            </div>
+          </div>
+        {/if}
       </div>
 
       <span class="div"></span>
@@ -1746,11 +1889,6 @@
         >
           Live Scrub {settings.s.liveScrub ? "On" : "Off"}
         </button>
-        <div class="modeToggle" title="Workspace mode">
-          <button class:on={!editOpen} onclick={() => (editOpen = false)}>Library</button>
-          <button class:on={editOpen} onclick={openEditMode} disabled={!currentDir}>Edit</button>
-        </div>
-
         {#if !editOpen}
         <!-- actions (top-right) -->
         <button
@@ -1762,13 +1900,26 @@
         >
           {#if preparing}<span class="prep-fill" style="width:{prepPct}%"></span>{/if}
           <span class="prep-lbl">
+            <span class="prep-ico" aria-hidden="true">{#if preparing}◌{:else if prepared}✓{:else}↯{/if}</span>
             {#if preparing}{prepPct}%{prepEta ? ` ${prepEta}` : ""}{:else if prepared}Ready{:else}Prepare{/if}
           </span>
         </button>
-        <button class="btn sm" onclick={selectAllFiltered} disabled={!view.length} title="Select all in view">All{view.length ? ` ${view.length}` : ""}</button>
         <button class="btn sm danger" onclick={rejectSelected} disabled={actionTargets.length === 0} title="Toggle rejected on the active item or selection">
           {allTargetsRejected ? "Unreject" : "Reject"}{selected.size > 1 ? ` ${selected.size}` : ""}
         </button>
+        <div class="grp clearWrap">
+          <button class="btn sm" class:on={clearOpen} onclick={() => (clearOpen = !clearOpen)} disabled={actionTargets.length === 0} title="Clear ratings, labels, flags or tags from the active item or selection">Clear</button>
+          {#if clearOpen}
+            <div class="clearMenu">
+              <button onclick={() => { unset(); clearOpen = false; }}>Marks only</button>
+              <button onclick={() => { clearRatings(); clearOpen = false; }}>Stars</button>
+              <button onclick={() => { clearLabels(); clearOpen = false; }}>Color</button>
+              <button onclick={() => { clearFlags(); clearOpen = false; }}>Pick/Reject</button>
+              <button onclick={() => { void clearTagsOnTargets(); clearOpen = false; }}>Tags</button>
+              <button class="dangerText" onclick={() => { void clearAllMarks(); clearOpen = false; }}>All marks and tags</button>
+            </div>
+          {/if}
+        </div>
         <button
           class="btn sm danger hold"
           disabled={!writable || rejectedCount === 0}
@@ -1781,8 +1932,11 @@
           <span class="hold-fill" style="width:{(holdMs / HOLD_MS) * 100}%"></span>
           <span class="hold-lbl">Delete{rejectedCount ? ` ${rejectedCount}` : ""}</span>
         </button>
-        <button class="btn sm" onclick={openTrash} title="View deleted items and restore them">Trash</button>
         {/if}
+        <div class="modeToggle" title="Workspace mode">
+          <button class:on={!editOpen} onclick={() => (editOpen = false)}>Library</button>
+          <button class:on={editOpen} onclick={openEditMode} disabled={!currentDir}>Edit</button>
+        </div>
         <button class="ico gear" class:on={settingsOpen} onclick={() => (settingsOpen = !settingsOpen)} title="Settings">...</button>
       </div>
     </div>
@@ -1794,6 +1948,7 @@
           <div class="seg">
             <button class="chip" class:on={settings.s.theme === "dark"} onclick={() => settings.set({ theme: "dark" })}>Dark</button>
             <button class="chip" class:on={settings.s.theme === "neutral"} onclick={() => settings.set({ theme: "neutral" })} title="Lightroom-like neutral graphite chrome; the photo stage stays neutral">Neutral</button>
+            <button class="chip" class:on={settings.s.theme === "warm"} onclick={() => settings.set({ theme: "warm" })} title="Warm late-night graphite chrome for yellow-lamp work">Warm</button>
             <button class="chip" class:on={settings.s.theme === "light"} onclick={() => settings.set({ theme: "light" })}>Light</button>
           </div>
         </div>
@@ -1830,7 +1985,7 @@
         </div>
         <div class="row"><span>On delete</span>
           <div class="seg">
-            <button class="chip" class:on={settings.s.deleteMode === "folder"} onclick={() => settings.set({ deleteMode: "folder" })} title="Move to this drive's _FoxCullCodex recycle folder — recoverable in the in-app Trash">In-app Trash</button>
+            <button class="chip" class:on={settings.s.deleteMode === "folder"} onclick={() => settings.set({ deleteMode: "folder" })} title="Move to this drive's _FoxCull recycle folder - recoverable in the in-app Trash">In-app Trash</button>
             <button class="chip" class:on={settings.s.deleteMode === "recycle"} onclick={() => settings.set({ deleteMode: "recycle" })} title="Send to the operating system's Recycle Bin / Trash">System Recycle Bin</button>
           </div>
         </div>
@@ -1848,7 +2003,7 @@
             <span class="tag">{libInfo.on_drive ? "on drive" : "app-data (read-only mount)"}</span>
           </div>
         {/if}
-        <div class="row hintrow">Each drive keeps its own catalog, preview cache &amp; recycle in a <code>_FoxCullCodex</code> folder. Press <kbd>F</kbd> full screen · <kbd>L</kbd> dim · <kbd>G</kbd> grid · <kbd>D</kbd> details.</div>
+        <div class="row hintrow">Each drive keeps its own catalog, preview cache &amp; recycle in a <code>_FoxCull</code> folder. Press <kbd>F</kbd> full screen · <kbd>L</kbd> dim · <kbd>G</kbd> grid · <kbd>D</kbd> details.</div>
       </div>
     {/if}
 
@@ -1875,7 +2030,7 @@
           <div class="welcome"><p>Scanning {currentDir ? basename(currentDir) : ""}…</p></div>
         {:else if !currentDir}
           <div class="welcome">
-            <h1>FoxCull Codex</h1>
+            <h1>FoxCull</h1>
             <p>Pick a folder on the left to start culling. Browse-in-place — nothing is imported or changed.</p>
           </div>
         {:else if editOpen}
@@ -2039,6 +2194,7 @@
   .seg.modes { gap: 2px; padding: 2px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; }
   .spacer { flex: 1 1 auto; min-width: 10px; }
   .sel { max-width: 128px; background: var(--bg-elev); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 4px 6px; font-size: 12.5px; }
+  .sel.wide { flex: 1; max-width: none; min-width: 145px; }
   .ico { width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-elev); font-size: 14px; line-height: 1; }
   .ico:hover { background: var(--bg-hover); }
   .ico.on { border-color: var(--accent); color: var(--accent); }
@@ -2101,8 +2257,8 @@
   .zoom { gap: 6px; }
   .zoom .mini { color: var(--text-faint); font-size: 12px; }
   .zoom input { width: 90px; accent-color: var(--accent); }
-  .modeToggle { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-elev); }
-  .modeToggle button { min-width: 58px; padding: 5px 10px; border-radius: 7px; color: var(--text-dim); font-size: 12.5px; font-weight: 700; }
+  .modeToggle { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elev); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bg-hover) 55%, transparent); }
+  .modeToggle button { min-width: 72px; padding: 7px 12px; border-radius: 8px; color: var(--text-dim); font-size: 13px; font-weight: 800; }
   .modeToggle button:hover { background: var(--bg-hover); }
   .modeToggle button.on { background: var(--accent); color: var(--accent-on); }
   .modeToggle button:disabled { opacity: 0.45; cursor: not-allowed; }
@@ -2113,11 +2269,16 @@
   .btn.sm.on { border-color: var(--accent); color: var(--accent); }
   .prep { position: relative; overflow: hidden; min-width: 96px; text-align: center; }
   .prep-fill { position: absolute; left: 0; top: 0; bottom: 0; background: color-mix(in srgb, var(--accent) 30%, transparent); transition: width 0.2s ease; }
-  .prep-lbl { position: relative; z-index: 1; white-space: nowrap; }
+  .prep-lbl { position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px; white-space: nowrap; }
+  .prep-ico { font-size: 13px; line-height: 1; color: var(--accent); }
 
   .div { flex: 0 0 auto; align-self: stretch; width: 1px; margin: 2px 4px; background: var(--border); }
+  .arrange,
   .filterwrap { position: relative; }
+  .arrangeMenu,
   .filtermenu { position: absolute; top: 34px; left: 0; z-index: 30; width: 290px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 11px; display: flex; flex-direction: column; gap: 11px; }
+  .arrangeMenu { width: 315px; }
+  .stackSeg { padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-panel); }
   .fm-row { display: flex; align-items: center; gap: 10px; }
   .fm-row.col { flex-direction: column; align-items: stretch; gap: 5px; }
   .fm-lbl { flex: 0 0 46px; font-size: 12px; color: var(--text-dim); }
@@ -2134,6 +2295,11 @@
   .hold { position: relative; overflow: hidden; }
   .hold-fill { position: absolute; left: 0; top: 0; bottom: 0; background: color-mix(in srgb, var(--reject) 35%, transparent); }
   .hold-lbl { position: relative; z-index: 1; }
+  .clearWrap { position: relative; }
+  .clearMenu { position: absolute; top: 32px; right: 0; z-index: 35; width: 170px; padding: 6px; display: grid; gap: 2px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-elev); box-shadow: var(--shadow); }
+  .clearMenu button { text-align: left; padding: 7px 9px; border-radius: 6px; color: var(--text-dim); font-size: 12px; }
+  .clearMenu button:hover { background: var(--bg-hover); color: var(--text); }
+  .clearMenu .dangerText { color: var(--reject); }
 
   .pop { position: absolute; right: 10px; top: 46px; z-index: 30; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 12px; width: 340px; display: flex; flex-direction: column; gap: 10px; }
   .pop .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; }

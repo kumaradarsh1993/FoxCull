@@ -1,5 +1,5 @@
 //! Tiny file logger for perf diagnosis. Writes timestamped lines to
-//! `%APPDATA%/com.foxcull.codex/foxcull-codex.log` (truncated each launch) AND to
+//! `%APPDATA%/com.foxcull.app/foxcull.log` (truncated each launch) AND to
 //! stderr (the `tauri dev` terminal). Low overhead; only hot paths log.
 
 use std::fs::{File, OpenOptions};
@@ -20,7 +20,7 @@ pub fn init(path: PathBuf) {
         .open(&path)
         .ok();
     let _ = LOGFILE.set(Mutex::new(file));
-    line(&format!("=== FoxCull Codex session start; log at {} ===", path.display()));
+    line(&format!("=== FoxCull session start; log at {} ===", path.display()));
 }
 
 fn now_ms() -> u128 {
@@ -31,7 +31,7 @@ fn now_ms() -> u128 {
 }
 
 pub fn line(msg: &str) {
-    eprintln!("[FoxCull Codex] {msg}");
+    eprintln!("[FoxCull] {msg}");
     if let Some(m) = LOGFILE.get() {
         if let Some(f) = m.lock().as_mut() {
             let _ = writeln!(f, "{} {}", now_ms(), msg);

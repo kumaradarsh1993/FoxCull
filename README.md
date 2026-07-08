@@ -1,182 +1,107 @@
-# FoxCull Codex
+# FoxCull
 
-Codex-origin fork of `fox-cull`, created in `D:\Claude Code Projects\FoxCullCodex`
-for culling plus quick-edit workflows. The source `fox-cull` directory is
-treated as read-only reference material.
+FoxCull is a fast desktop photo and video culling app with a lightweight edit
+lane for practical social/video exports. It is built for browsing media in
+place, marking what matters, moving files between folders, and trimming/cropping
+clips without opening a full NLE unless the job truly needs one.
 
-This fork stores its own per-drive library in `_FoxCullCodex` so it does not
-share the stable app's `_FoxCull` catalog/trash while new editing work evolves.
-The Codex fork also has a distinct cyan/violet app icon and theme so it is
-easy to distinguish from the Claude-built original on the desktop.
+This repository is now the main FoxCull product line. The older `fox-cull`
+project is treated as the legacy Claude-built variant.
 
-## Codex-origin quick edit
+## What It Does
 
-- **Edit mode** is a dedicated Browse/Edit workspace toggle.
-- Opening Edit with an active or selected video now preloads that video into the
-  editor source tray/timeline instead of starting from a dead empty state.
-- Edit mode can also choose video files directly from its source panel, and the
-  source tray shows all videos from the open folder even when Browse filters are
-  hiding them.
-- The edit workspace has a source video tray, preview, transport controls,
-  timeline, segment trims, crop controls, look controls, audio selection, and
-  export controls in one screen.
-- Camera-native clips that WebView cannot preview directly fall back to cached
-  FFmpeg metadata/proxy previews, so HEVC-style DJI/phone footage remains
-  workable.
-- Use 9:16, 1:1, 16:9, or original-output presets.
-- Drag/adjust a per-segment crop frame for portrait exports.
-- Export uses stream-copy trim/concat when no pixel changes are requested.
-- Crop, color tweaks, music, and social presets use ffmpeg H.264/AAC re-encode,
-  with NVIDIA NVENC attempted first when `Auto` is selected.
+- Browse folders and drives in place without importing originals.
+- Cull with Grid, Details, and Focus views.
+- Rate, color-label, pick/reject, tag, filter, sort, group, and subgroup media.
+- Detect related stacks such as RAW+JPEG, edited derivatives, crop/export
+  outputs, burst-like shots, and motion-photo-style companions.
+- Move selected files physically by dragging onto the folder tree or by
+  `Ctrl/Cmd+X` then `Ctrl/Cmd+V`.
+- Use Live Scrub for hover previews when you want it; leave it off to avoid
+  video scrub-strip work.
+- Use Edit mode for timeline trims, crop presets, look presets, audio lanes,
+  screenshots, preview/fullscreen review, and exports.
+- Stream-copy where possible; re-encode only when crop, color, audio, or format
+  conversion requires new pixels/audio.
 
-## Codex-origin organization
+## Download
 
-- Drag selected media from Grid or Details onto a folder in the left tree to
-  physically move those files.
-- Use `Ctrl/Cmd+X` then `Ctrl/Cmd+V` to move selected files into the currently
-  open folder.
-- Moves preserve catalog metadata: ratings, labels, flags, tags, trims, and
-  cached capture dates follow the new file path.
-- Destructive commands now validate backend paths against the active library
-  root and tracked in-app Trash entries before touching disk.
-- The folder tree can collapse to a narrow rail when the editor or grid needs
-  more horizontal room.
+Latest stable release:
+[FoxCull releases](https://github.com/kumaradarsh1993/FoxCullCodex/releases/latest)
 
----
+Current stable `v0.6.0` assets:
 
-**A fast, lightweight photo & video culler for Windows, macOS & Linux.**
-Sort through thousands of photos quickly — keep the good ones, reject the rest —
-without a subscription, without the bloat.
+- Windows installer: `FoxCull_0.6.0_x64-setup.exe`
+- Windows portable: `foxcull_0.6.0_x64_portable.zip`
+- macOS Apple Silicon: `FoxCull_0.6.0_aarch64.dmg`
+- Linux: `FoxCull_0.6.0_amd64.AppImage` or `.deb`
 
-fox-cull is built for the part of photography nobody enjoys: the first pass
-through a huge pile of shots from your phone and camera, deciding what's worth
-keeping. It borrows the workflow you already know from Lightroom — a folder
-list, a big preview, a film-strip along the bottom, star ratings and color
-labels — and does just that one job, fast.
+Windows and macOS builds are not code-signed/notarized yet, so first launch may
+show SmartScreen or Gatekeeper warnings.
 
-> **Your photos are never modified.** fox-cull reads your files where they sit
-> (on your drive or an external SSD) and remembers your ratings in its own
-> database. Nothing is imported, copied, or written next to your originals
-> until *you* choose to delete the rejects — and even then they go to the
-> Recycle Bin / Trash, so they're recoverable.
+## Prepare And Pre-Caching
 
----
+FoxCull has three separate caching layers:
 
-## What it does
+1. Folder open warms grid thumbnails automatically in the background. This is
+   small-preview work for scrolling and poster frames.
+2. Focus view prefetch keeps a few nearby full previews warm around the active
+   item, biased in the direction you are moving.
+3. The **Prepare** button explicitly builds full-size Focus previews and video
+   posters for the current folder/filter set up front.
 
-- **Browse any folder in place** — point it at a drive or folder and it shows
-  the whole tree. Pick a folder and you see every photo inside it *and* its
-  subfolders, all at once.
-- **Three ways to look** — **Grid** (adjustable thumbnail size), **Details**
-  (name / type / size / date list, like a file explorer), and **Focus** (one
-  big photo) — switch any time, top-left.
-- **Rate, flag, and tag at speed** — star ratings (1–5), color labels, a
-  keep/reject flag, and your own free-form **tags** (e.g. "Diwali"), all from
-  the keyboard. Filter by any of them.
-- **Sort & group by real capture date** — order by the date a shot was actually
-  *taken* (from EXIF / video metadata), not the filename, and optionally split
-  the grid into **month** or **week** sections.
-- **Big, clean preview** with a Lightroom-style film-strip (bottom, side, or
-  off — and drag to resize it). New photos fade in sharp from a soft preview —
-  no jarring thumbnail-to-full pop.
-- **Right-click anything** for a contextual menu — open in your file manager or
-  system player, jump to the next/previous shot, pick / reject, copy the path.
-- **Dim / lights-out focus mode** (`L`) darkens everything but the photo.
-- **Photos always upright** — no more sideways portrait shots from your phone.
-- **Fast on huge phone JPEGs** — thumbnails decode at reduced scale and the
-  whole folder pre-loads in the background, so scrolling stays smooth.
-- **Handles RAW** — Nikon `.NEF` and other RAW files preview instantly.
-- **Real video support** — every clip gets a true poster frame, an in-app player
-  with a **scrub timeline** (hover to preview frames), and **lossless trim &
-  export** (set in/out points, cut without re-encoding). HEVC clips (e.g. DJI
-  Osmo Pocket 3) still get posters and scrubbing, and open in your system player
-  in one click if the webview can't decode them. `Space` plays/pauses,
-  `Shift`+`←`/`→` seeks.
-- **Filter, then bulk-reject** — e.g. show everything below 3 stars, select
-  all, reject, then sweep the rejects to the Recycle Bin in one go.
-- **Per-drive & portable** — each drive keeps its own catalog, preview cache and
-  recycle bin together in a `_FoxCull` folder at its root, so your ratings and
-  deletions travel with the drive between machines. The app itself can run
-  portable from a USB stick / SSD too (see below). See
-  [STORAGE.md](STORAGE.md) for exactly what's stored where.
+Prepare is optional. It is useful before a serious culling pass because moving
+through Focus view should then avoid blur/loading waits. It runs in chunks on the
+backend warmer, shows progress/ETA, and abandons itself if you switch folders.
 
-## Download & install
+Live Scrub is separate from Prepare. When Live Scrub is off, videos keep static
+posters and do not generate hover scrub strips. When it is on, scrub previews are
+generated on demand and cached at preview scale.
 
-Grab the latest build from the **[Releases page](../../releases)**:
+All generated cache files live in the active drive library (`_FoxCull/thumbs`) or
+the app-data fallback for read-only drives. Originals are not modified.
 
-- **Windows** — `FoxCull.Codex_*_x64-setup.exe`. On first launch Windows SmartScreen
-  may warn (the app isn't code-signed yet): click **More info → Run anyway**.
-- **macOS (Apple Silicon)** — `FoxCull.Codex_*_aarch64.dmg`. It isn't notarized yet,
-  so on first launch **right-click the app → Open**, then confirm. (If macOS
-  says it's "damaged", open Terminal and run
-  `xattr -dr com.apple.quarantine /Applications/FoxCull\ Codex.app`.)
-- **Linux** — `.AppImage` (portable) or `.deb`.
-- **Windows portable** — `foxcull-codex_*_x64_portable.zip`. Unzip anywhere (e.g.
-  onto your SSD). It contains `foxcull-codex.exe` and a `foxcull-codex-data` folder; keep
-  them together and the app stores its catalog, cache and settings in that
-  folder instead of in Windows AppData — so the whole app travels with you.
-  (Needs the Microsoft WebView2 runtime, which ships with Windows 10/11.)
+## Storage
 
-## How to cull
+Each writable drive gets a self-contained `_FoxCull` folder with:
 
-1. Click **Folder…** (top-left) and choose the folder or drive with your photos.
-2. Click a folder in the tree — the grid fills with everything inside it.
-3. Use the keyboard to fly through:
+- `catalog.sqlite` for ratings, labels, flags, tags, trims, and capture dates.
+- `thumbs/` for thumbnails, Focus previews, posters, and scrub assets.
+- `recycle/` for the in-app Trash.
+
+If a drive already has the previous `_FoxCullCodex` library and no `_FoxCull`
+library yet, FoxCull will keep using that legacy folder so existing ratings and
+cache do not disappear. New drives use `_FoxCull`.
+
+Full details are in [STORAGE.md](STORAGE.md).
+
+## Useful Shortcuts
 
 | Key | Action |
 |---|---|
-| `←` / `→` | Previous / next photo |
-| `Enter` | Toggle big **Focus** view |
-| `G` / `D` | **Grid** / **Details** view |
-| `L` | Dim → lights-out → normal (focus mode) |
-| `Space` | Play / pause the current video |
-| `Shift`+`←` / `Shift`+`→` | Scrub the video back / forward |
-| `1`–`5` | Star rating |
-| `` ` `` | Clear rating |
-| `6` `7` `8` `9` `0` | Color label (blue / purple / red / green / yellow) |
-| `X` | Reject |
-| `P` | Pick (keep) |
-| `U` | Clear everything on this photo |
+| Arrow keys | Move selection; Grid up/down moves by row |
+| Shift + click / Shift + arrows | Select a range |
+| Ctrl/Cmd + A | Select all visible items |
+| Enter | Toggle Focus view |
+| G / D | Grid / Details |
+| F | Full screen |
+| L | Dim / lights-out |
+| Space | Play/pause active video |
+| [ / ] | Set video in/out |
+| 1-5 | Star rating |
+| 6 / 7 / 8 / 9 / 0 | Blue / purple / red / green / yellow label |
+| P / X | Pick / Reject |
+| U | Clear stars, color, and pick/reject |
 
-4. Use the **filter bar** to narrow down (e.g. only rejected, 3+ stars, or a
-   tag), **Select all**, and **Reject** them in bulk. Add a tag to the selected
-   photo(s) by typing in the **+ tag** box in the bottom info bar.
-5. When you're ready, **hold the Delete button** to sweep the rejects. By default
-   they go to the **in-app Trash** (a `_FoxCull/recycle` folder on that drive) —
-   open **♻ Trash** any time to preview them, **restore** one to its original
-   spot, or **delete forever**. Prefer the OS bin? Switch "On delete" to
-   **System Recycle Bin** in Settings (⚙).
+## Build Notes
 
-Tip: **⊞ Subfolders** (in the **Filters** menu, on by default) controls whether
-a folder shows photos from its subfolders too. Use the **Sort** and **Group**
-controls next to the view switcher to order by capture date or split the grid
-into month / week sections.
+FoxCull is Tauri 2 + SvelteKit + Rust. Heavy native builds should run through
+GitHub Actions release tags, not on the local Windows machine. For local sanity:
 
-## Good to know
-
-- **Ratings live in fox-cull only.** They're stored in the app's own catalog (a
-  `_FoxCull` folder on each drive), not written into your photo files, so they
-  won't show up in other apps and won't touch your originals. Because the catalog
-  lives on the drive, it backs up with your photos and follows the drive to
-  another computer. Full details: [STORAGE.md](STORAGE.md).
-- **Read-only drives:** if a drive is mounted read-only (e.g. an NTFS SSD on a
-  Mac without a write driver), culling and rating still work — only the final
-  delete sweep is disabled, with a note explaining why.
-- **Big RAW / very-high-resolution photos** take a moment to preview the first
-  time; after that they're cached and instant.
-
-## Build from source
-
-fox-cull is built with [Tauri 2](https://tauri.app) + SvelteKit + Rust.
-
-```bash
-npm install
-npm run tauri dev      # run locally
+```powershell
+npm.cmd run check
+cd src-tauri
+cargo check
 ```
 
-Tagged releases (`v*`) build Windows, macOS, and Linux installers automatically
-via GitHub Actions.
-
-## License
-
-[MIT](LICENSE) © Kumar Adarsh
+Stable releases are produced by pushing a tag like `v0.6.0`.

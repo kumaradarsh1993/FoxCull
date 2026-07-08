@@ -57,7 +57,7 @@ export interface TrashOutcome {
 export interface LibraryInfo {
   /** Drive/volume root the library belongs to (catalog keys are relative to it). */
   root: string;
-  /** The active library folder: `<drive>/_FoxCullCodex` or an app-data fallback. */
+  /** The active library folder: `<drive>/_FoxCull` or an app-data fallback. */
   dir: string;
   catalog: string;
   recycle: string;

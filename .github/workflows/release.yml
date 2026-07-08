@@ -1,4 +1,4 @@
-# Cross-platform release builds for FoxCull Codex.
+# Cross-platform release builds for FoxCull.
 #
 # Triggers:
 #   - push to a tag matching v* (e.g. `git tag v0.1.0-nightly.1 && git push --tags`)
@@ -49,20 +49,20 @@ jobs:
               `Built from commit ${context.sha}.`,
               '',
               '**Pick your installer:**',
-              '- **Windows:** installer `.exe` or `foxcull-codex_*_x64_portable.zip` (no-install, run off an SSD)',
+              '- **Windows:** installer `.exe` or `foxcull_*_x64_portable.zip` (no-install, run off an SSD)',
               '- **macOS Apple Silicon (M1/M2/M3/M4):** `.dmg`',
               '- **Linux:** `*.AppImage` (portable) or `*.deb`',
               '',
               '## First-time install',
               '**Windows:** click through SmartScreen ("More info" -> "Run anyway") — not code-signed yet.',
               '**macOS:** not notarized — right-click the app -> Open, or run',
-              '`xattr -dr com.apple.quarantine "/Applications/FoxCull Codex.app"`.',
+              '`xattr -dr com.apple.quarantine "/Applications/FoxCull.app"`.',
             ].join('\n');
             const { data } = await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
               tag_name: tag,
-              name: `FoxCull Codex ${tag}`,
+              name: `FoxCull ${tag}`,
               body,
               draft: true,
               prerelease: isPrerelease,
@@ -78,13 +78,13 @@ jobs:
         include:
           - platform: 'macos-latest'   # Apple Silicon (arm64)
             args: '--target aarch64-apple-darwin'
-            artifact_name: 'foxcull-codex-macos-arm64'
+            artifact_name: 'foxcull-macos-arm64'
           - platform: 'ubuntu-22.04'
             args: ''
-            artifact_name: 'foxcull-codex-linux-x64'
+            artifact_name: 'foxcull-linux-x64'
           - platform: 'windows-latest'
             args: ''
-            artifact_name: 'foxcull-codex-windows-x64'
+            artifact_name: 'foxcull-windows-x64'
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -144,9 +144,9 @@ jobs:
           chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin
           ls -la src-tauri/binaries
       # Stamp the build's version from the git tag so every installer/dmg is
-      # named AND embedded as e.g. FoxCull Codex_0.3.0-nightly.10_* instead of the
-      # bare 0.3.0 in the committed config — no more ambiguous downloads. The
-      # committed config keeps the base 0.3.0; this only rewrites it in CI.
+      # named AND embedded as e.g. FoxCull_0.6.0_* instead of the
+      # committed base version in the config — no more ambiguous downloads. The
+      # committed config keeps the current stable base; this only rewrites it in CI.
       # Skipped on manual (non-tag) runs so the version never becomes "main".
       - name: Stamp version from tag
         if: github.ref_type == 'tag'
@@ -173,19 +173,19 @@ jobs:
           if-no-files-found: ignore
 
       # Standalone, no-installer build for running off an SSD / USB stick. The
-      # bare exe + a sibling `foxcull-codex-data` folder = fully portable (the app
+      # bare exe + a sibling `foxcull-data` folder = fully portable (the app
       # roots its catalog/cache/settings in that folder).
       - name: Package portable (Windows)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
           $ver = "${{ github.ref_name }}" -replace '^v',''
-          $dir = "foxcull-codex-portable"
+          $dir = "foxcull-portable"
           New-Item -ItemType Directory -Force $dir | Out-Null
-          Copy-Item src-tauri/target/release/foxcull-codex.exe "$dir/foxcull-codex.exe"
-          New-Item -ItemType Directory -Force "$dir/foxcull-codex-data" | Out-Null
-          "Keep this folder next to foxcull-codex.exe. FoxCull Codex stores its catalog, thumbnail cache and settings here, so the whole app is portable across machines." | Out-File -Encoding utf8 "$dir/foxcull-codex-data/READ-ME.txt"
-          Compress-Archive -Path "$dir/*" -DestinationPath "foxcull-codex_${ver}_x64_portable.zip" -Force
+          Copy-Item src-tauri/target/release/foxcull.exe "$dir/foxcull.exe"
+          New-Item -ItemType Directory -Force "$dir/foxcull-data" | Out-Null
+          "Keep this folder next to foxcull.exe. FoxCull stores its catalog, thumbnail cache and settings here, so the whole app is portable across machines." | Out-File -Encoding utf8 "$dir/foxcull-data/READ-ME.txt"
+          Compress-Archive -Path "$dir/*" -DestinationPath "foxcull_${ver}_x64_portable.zip" -Force
       - name: Upload portable to release (Windows)
         if: matrix.platform == 'windows-latest'
         uses: actions/github-script@v7
@@ -193,7 +193,7 @@ jobs:
           script: |
             const fs = require('fs');
             const ver = '${{ github.ref_name }}'.replace(/^v/, '');
-            const name = `foxcull-codex_${ver}_x64_portable.zip`;
+            const name = `foxcull_${ver}_x64_portable.zip`;
             await github.rest.repos.uploadReleaseAsset({
               owner: context.repo.owner,
               repo: context.repo.repo,

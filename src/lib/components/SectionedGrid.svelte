@@ -1,6 +1,8 @@
 <script lang="ts" generics="T">
   import type { Snippet } from "svelte";
 
+  type GridSection = { label: string; count: number; level?: 1 | 2; cellCount?: number };
+
   // A virtualized grid split into labeled sections (month headers), sharing the
   // same flat `items` array + global index space as VirtualGrid so keyboard
   // navigation and active-cell highlighting stay identical. `groups` gives the
@@ -16,7 +18,7 @@
     cell,
   }: {
     items: T[];
-    groups: { label: string; count: number }[];
+    groups: GridSection[];
     cellMin?: number;
     gap?: number;
     headerH?: number;
@@ -35,7 +37,7 @@
   let rowH = $derived(cellW + gap);
 
   type Row =
-    | { type: "header"; key: string; label: string; count: number; y: number; h: number }
+    | { type: "header"; key: string; label: string; count: number; level: 1 | 2; y: number; h: number }
     | { type: "cells"; key: string; idxs: number[]; y: number; h: number };
 
   // Flatten the sections into a list of positioned rows (one header row + N cell
@@ -46,9 +48,11 @@
     let gi = 0; // running global item index
     for (let g = 0; g < groups.length; g++) {
       const grp = groups[g];
-      out.push({ type: "header", key: `h${g}`, label: grp.label, count: grp.count, y, h: headerH });
-      y += headerH;
-      let remaining = grp.count;
+      const level = grp.level ?? 1;
+      const h = level === 2 ? Math.max(28, headerH - 8) : headerH;
+      out.push({ type: "header", key: `h${g}`, label: grp.label, count: grp.count, level, y, h });
+      y += h;
+      let remaining = grp.cellCount ?? grp.count;
       while (remaining > 0) {
         const n = Math.min(cols, remaining);
         const idxs: number[] = [];
@@ -118,13 +122,17 @@
     if (r.y - headerH < el.scrollTop) el.scrollTop = Math.max(0, r.y - headerH);
     else if (r.y + rowH > el.scrollTop + vpHeight) el.scrollTop = r.y + rowH - vpHeight;
   }
+
+  export function columnCount() {
+    return cols;
+  }
 </script>
 
 <div class="vp" bind:this={viewport} onscroll={onScroll}>
   <div class="canvas" style="height:{totalH}px">
     {#each visible as r (r.key)}
       {#if r.type === "header"}
-        <div class="hdr" style="transform:translateY({r.y}px); height:{r.h}px">
+        <div class="hdr level-{r.level}" style="transform:translateY({r.y}px); height:{r.h}px">
           <strong>{r.label}</strong>
           <span>{r.count}</span>
         </div>
@@ -170,6 +178,16 @@
     border-bottom: 1px solid var(--border);
     background: color-mix(in srgb, var(--bg-panel) 88%, var(--bg));
     padding: 0 10px 4px;
+  }
+  .hdr.level-2 {
+    left: 18px;
+    right: 0;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-dim);
+    border-top-style: dashed;
+    background: color-mix(in srgb, var(--bg-panel) 68%, transparent);
+    padding-left: 12px;
   }
   .hdr span {
     min-width: 24px;

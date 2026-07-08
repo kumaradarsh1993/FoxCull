@@ -16,16 +16,20 @@ use tauri::Manager;
 use crate::catalog::Catalog;
 use crate::commands::AppState;
 
-/// Resolve the app-data root. If a folder named `foxcull-codex-data` sits next to the
+/// Resolve the app-data root. If a folder named `foxcull-data` sits next to the
 /// executable, run **portable** — keep the catalog, cache and config there so the
 /// whole app + its data can live on a USB stick / SSD. Otherwise use the OS
 /// app-data dir.
 fn resolve_data_root(app: &tauri::App) -> std::io::Result<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let portable = dir.join("foxcull-codex-data");
+            let portable = dir.join("foxcull-data");
+            let legacy_portable = dir.join("foxcull-codex-data");
             if portable.is_dir() {
                 return Ok(portable);
+            }
+            if legacy_portable.is_dir() {
+                return Ok(legacy_portable);
             }
         }
     }
@@ -40,7 +44,7 @@ fn resolve_data_root(app: &tauri::App) -> std::io::Result<PathBuf> {
 pub fn run() {
     let mut builder = tauri::Builder::default();
 
-    // Keep a single FoxCull Codex window per machine; focus the existing one if the
+    // Keep a single FoxCull window per machine; focus the existing one if the
     // user launches again.
     #[cfg(desktop)]
     {
@@ -63,7 +67,7 @@ pub fn run() {
             let data_dir = resolve_data_root(app)?;
             std::fs::create_dir_all(&data_dir)?;
 
-            log::init(data_dir.join("foxcull-codex.log"));
+            log::init(data_dir.join("foxcull.log"));
 
             // Startup catalog: honor a legacy relocated catalog if it still
             // EXISTS (used as the migration seed), else the app-data default.
@@ -78,7 +82,7 @@ pub fn run() {
                 .filter(|p| p.is_file())
                 .unwrap_or_else(|| default_catalog.clone());
 
-            // Cache + recycle live beside the catalog (a `_FoxCullCodex` library
+            // Cache + recycle live beside the catalog (a `_FoxCull` library
             // folder once a drive is active; app-data before that).
             let cache_dir = commands::cache_dir_for(&catalog_path);
             std::fs::create_dir_all(&cache_dir)?;

@@ -88,6 +88,10 @@
     if (y < el.scrollTop) el.scrollTop = y;
     else if (y + cellW > el.scrollTop + vpHeight) el.scrollTop = y + cellW - vpHeight;
   }
+
+  export function columnCount() {
+    return cols;
+  }
 </script>
 
 <div class="vp" bind:this={viewport} onscroll={onScroll}>

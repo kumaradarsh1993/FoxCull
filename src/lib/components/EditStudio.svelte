@@ -1,3 +1,8 @@
+<script module lang="ts">
+  type TrimMemory = { inS: number; outS: number };
+  const sessionTrimMemory = new Map<string, TrimMemory>();
+</script>
+
 <script lang="ts">
   import { tick } from "svelte";
   import { api } from "$lib/api";
@@ -111,6 +116,20 @@
       .replace(/\//g, "\\")
       .replace(/\\+$/g, "")
       .toLowerCase();
+
+  function rememberedTrim(path: string, duration: number): TrimMemory {
+    const key = normPath(path);
+    const saved = sessionTrimMemory.get(key);
+    const full = Math.max(0.1, duration || 1);
+    if (!saved) return { inS: 0, outS: full };
+    const inS = Math.max(0, Math.min(saved.inS, Math.max(0, full - 0.05)));
+    const outS = Math.min(full, Math.max(saved.outS, inS + 0.05));
+    return { inS, outS };
+  }
+
+  function rememberTrim(clip: TimelineClip) {
+    sessionTrimMemory.set(normPath(clip.path), { inS: clip.inS, outS: clip.outS });
+  }
 
   let clips = $state<TimelineClip[]>([]);
   let audioClips = $state<AudioClip[]>([]);
@@ -430,14 +449,15 @@
   async function makeClip(src: EditSourceItem, lane = 0, start = nextVideoStart(lane)): Promise<TimelineClip> {
     const duration = await durationFor(src);
     const out = Math.max(0.1, duration || 1);
+    const trim = rememberedTrim(src.path, out);
     const cachedProxy = await api.videoProxyCached(src.path);
     return {
       id: uid(),
       path: src.path,
       name: src.name,
       src: api.fileSrc(cachedProxy ?? src.path),
-      inS: 0,
-      outS: out,
+      inS: trim.inS,
+      outS: trim.outS,
       duration: out,
       start,
       lane,
@@ -502,7 +522,12 @@
   }
 
   function updateClip(id: string, patch: Partial<TimelineClip>) {
-    clips = clips.map((clip) => (clip.id === id ? { ...clip, ...patch } : clip));
+    clips = clips.map((clip) => {
+      if (clip.id !== id) return clip;
+      const next = { ...clip, ...patch };
+      if ("inS" in patch || "outS" in patch) rememberTrim(next);
+      return next;
+    });
   }
 
   function updateSelectedClip(patch: Partial<TimelineClip>) {

@@ -64,11 +64,11 @@ pub struct AppState {
     /// the SSD — never a separate per-computer cache.
     pub cache_dir: Mutex<PathBuf>,
     /// Where app data (config, default catalog, cache) lives — app-data normally,
-    /// or a `foxcull-codex-data` folder next to the exe in portable mode.
+    /// or a `foxcull-data` folder next to the exe in portable mode.
     pub data_root: PathBuf,
     /// Current catalog file path (lives inside the active drive's library dir).
     pub catalog_path: Mutex<PathBuf>,
-    /// The active library folder (`<drive>/_FoxCullCodex`, or an app-data fallback for
+    /// The active library folder (`<drive>/_FoxCull`, or an app-data fallback for
     /// a read-only mount). Holds the catalog, the `thumbs` cache and `recycle`.
     pub lib_dir: Mutex<PathBuf>,
     /// Active per-drive recycle folder (`<libDir>/recycle`) — where folder-mode
@@ -90,10 +90,11 @@ pub fn cache_dir_for(catalog_path: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("thumbs"))
 }
 
-/// Bundled per-drive library folder name: `<drive>/_FoxCullCodex` holds that drive's
+/// Bundled per-drive library folder name: `<drive>/_FoxCull` holds that drive's
 /// catalog, thumbnail cache and recycle bin, so everything for a drive travels
 /// with it.
-const LIB_DIRNAME: &str = "_FoxCullCodex";
+const LIB_DIRNAME: &str = "_FoxCull";
+const LEGACY_LIB_DIRNAME: &str = "_FoxCullCodex";
 
 struct Library {
     dir: PathBuf,
@@ -130,12 +131,19 @@ fn drive_id(root: &Path) -> String {
     }
 }
 
-/// Resolve the library for a drive: on the drive itself (`<drive>/_FoxCullCodex`) when
+/// Resolve the library for a drive: on the drive itself (`<drive>/_FoxCull`) when
 /// writable, else a per-drive folder under app-data (read-only mounts — e.g. NTFS
 /// on a Mac without Paragon — so rating/culling still works there).
 fn resolve_library(data_root: &Path, root: &Path) -> Library {
     let (dir, on_drive) = if is_writable(root) {
-        (root.join(LIB_DIRNAME), true)
+        let primary = root.join(LIB_DIRNAME);
+        let legacy = root.join(LEGACY_LIB_DIRNAME);
+        let dir = if !primary.exists() && legacy.is_dir() {
+            legacy
+        } else {
+            primary
+        };
+        (dir, true)
     } else {
         (data_root.join("libraries").join(drive_id(root)), false)
     };
@@ -457,7 +465,7 @@ fn restore_target(drive: &Path, orig: &str) -> Result<PathBuf, String> {
 pub struct LibraryInfo {
     /// The drive/volume root — the library root that catalog keys are relative to.
     pub root: String,
-    /// The active library folder (`<drive>/_FoxCullCodex` or app-data fallback).
+    /// The active library folder (`<drive>/_FoxCull` or app-data fallback).
     pub dir: String,
     pub catalog: String,
     pub recycle: String,
@@ -469,7 +477,7 @@ pub struct LibraryInfo {
 }
 
 /// Activate the library for the drive that `root` lives on, switching the catalog,
-/// thumbnail cache and recycle folder to that drive's bundled `_FoxCullCodex` folder
+/// thumbnail cache and recycle folder to that drive's bundled `_FoxCull` folder
 /// (auto per-drive). Idempotent — re-activating the same drive is a no-op. Adds
 /// the drive + cache + recycle to the asset-protocol scope so originals and
 /// cached previews can be served to the webview.
@@ -557,7 +565,7 @@ pub fn set_library_root(
 }
 
 /// Immediate subdirectories of `dir` (for the lazy folder tree). Dotfolders and
-/// our own `_FoxCullCodex` library are hidden.
+/// our own `_FoxCull` / `_FoxCullCodex` library folders are hidden.
 ///
 /// `has_children` is reported **optimistically** (always true): probing it
 /// eagerly meant an extra `read_dir` PER child, an N+1 stat storm that made
@@ -574,7 +582,10 @@ pub fn list_tree(dir: String) -> Result<Vec<TreeDir>, String> {
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') || name.eq_ignore_ascii_case(LIB_DIRNAME) {
+            if name.starts_with('.')
+                || name.eq_ignore_ascii_case(LIB_DIRNAME)
+                || name.eq_ignore_ascii_case(LEGACY_LIB_DIRNAME)
+            {
                 return None;
             }
             Some(TreeDir {
@@ -644,7 +655,7 @@ fn collect(dir: &Path, recursive: bool, out: &mut Vec<(PathBuf, i64, u64)>) {
 }
 
 /// Recursively count media files under `dir` (extension classification only — no
-/// metadata reads), skipping dotfolders, our own `_FoxCullCodex` library and Windows
+/// metadata reads), skipping dotfolders, our own `_FoxCull` library and Windows
 /// reparse points, exactly like `collect`. Powers the left-pane folder badges.
 fn count_media(dir: &Path) -> usize {
     let rd = match std::fs::read_dir(dir) {
@@ -1929,7 +1940,7 @@ fn run_ffmpeg(mut cmd: Command) -> Result<(), String> {
 }
 
 fn export_lossless_concat(ffmpeg: &Path, req: &EditExportRequest, dest: &Path) -> Result<(), String> {
-    let list_path = std::env::temp_dir().join(format!("foxcull-codex-concat-{}.txt", now()));
+    let list_path = std::env::temp_dir().join(format!("foxcull-concat-{}.txt", now()));
     let mut f = std::fs::File::create(&list_path).map_err(|e| e.to_string())?;
     for clip in &req.clips {
         clip_duration(clip)?;
@@ -2604,7 +2615,7 @@ pub fn list_rejected(state: State<'_, AppState>, catalog: State<'_, Catalog>) ->
         .collect()
 }
 
-/// Every cache file FoxCull Codex may have generated for `src` (grid thumb, loupe
+/// Every cache file FoxCull may have generated for `src` (grid thumb, loupe
 /// preview, video poster). Computed while the original still exists so the
 /// content-hashed keys resolve, then removed after the file is disposed — so the
 /// cache never accumulates orphaned "ghost" thumbnails.
@@ -2682,7 +2693,7 @@ fn move_into_recycle(root: &Path, recycle: &Path, src: &Path) -> Result<(String,
 }
 
 /// Dispose of rejected files. `mode` = "recycle" (OS Recycle Bin / Trash) or
-/// "folder" (move into the active drive's `_FoxCullCodex/recycle`, tracked by the
+/// "folder" (move into the active drive's `_FoxCull/recycle`, tracked by the
 /// in-app Trash so it can be previewed, restored or purged). Drops catalog
 /// decision rows for disposed files; records folder-mode deletes in `trash`.
 #[tauri::command]
