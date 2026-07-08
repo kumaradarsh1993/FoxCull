@@ -16,23 +16,23 @@ window.PRODUCT_SITE = {
   downloads: [
     {
       label: "Download for Windows",
-      note: "Stable v0.6.2 installer",
-      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.6.2/FoxCull_0.6.2_x64-setup.exe"
+      note: "Stable v0.6.3 installer",
+      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.6.3/FoxCull_0.6.3_x64-setup.exe"
     },
     {
       label: "Download for macOS",
       note: "Apple silicon DMG",
-      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.6.2/FoxCull_0.6.2_aarch64.dmg"
+      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.6.3/FoxCull_0.6.3_aarch64.dmg"
     },
     {
       label: "Download for Linux",
       note: "AppImage",
-      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.6.2/FoxCull_0.6.2_amd64.AppImage"
+      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.6.3/FoxCull_0.6.3_amd64.AppImage"
     },
     {
       label: "Portable Windows",
       note: "Zip build",
-      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.6.2/foxcull_0.6.2_x64_portable.zip"
+      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.6.3/foxcull_0.6.3_x64_portable.zip"
     }
   ],
   secondary: [
@@ -43,7 +43,7 @@ window.PRODUCT_SITE = {
   ],
   stage: {
     title: "Cull-to-edit lane",
-    status: "Stable v0.6.2",
+    status: "Stable v0.6.3",
     rail: [["Cull", "Choose media"], ["Edit", "Crop segments"], ["Export", "Share-ready"]],
     surfaceTitle: "Segment board",
     tiles: ["clip", "crop", "timeline", "preset", "audio", "look", "nvenc", "export", "folder"],
@@ -66,11 +66,11 @@ window.PRODUCT_SITE = {
     }
   ],
   downloadTitle: "Latest stable downloads",
-  downloadIntro: "Use the direct links for v0.6.2, or open the latest release page for the newest published assets.",
+  downloadIntro: "Use the direct links for v0.6.3, or open the latest release page for the newest published assets.",
   panels: [
     {
       title: "Stable",
-      body: "The page points to v0.6.2 stable assets and to the GitHub latest-release page."
+      body: "The page points to v0.6.3 stable assets and to the GitHub latest-release page."
     },
     {
       title: "Main product line",

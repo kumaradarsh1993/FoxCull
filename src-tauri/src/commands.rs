@@ -557,7 +557,7 @@ pub fn set_library_root(
 }
 
 /// Immediate subdirectories of `dir` (for the lazy folder tree). Dotfolders and
-/// our own `_FoxCull` library folder is hidden.
+/// internal FoxCull library/cache folders are hidden.
 ///
 /// `has_children` is reported **optimistically** (always true): probing it
 /// eagerly meant an extra `read_dir` PER child, an N+1 stat storm that made
@@ -574,7 +574,7 @@ pub fn list_tree(dir: String) -> Result<Vec<TreeDir>, String> {
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') || name.eq_ignore_ascii_case(LIB_DIRNAME) {
+            if name.starts_with('.') || name.to_ascii_lowercase().starts_with("_foxcull") {
                 return None;
             }
             Some(TreeDir {
