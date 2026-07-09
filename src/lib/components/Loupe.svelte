@@ -514,59 +514,66 @@
           <span class="proxytag" title="The original couldn't decode in-app; you're watching the cached H.264 conversion. Trim still cuts the original.">converted preview</span>
         {/if}
         <div class="trim">
+          <!-- Compact single-row transport: play, time, inline scrubber, then the
+               Info + Clip tools toggles. Trim/mark/export controls only unfold
+               below when Clip tools is open. -->
           <div class="playrow">
             <button class="pp" onclick={togglePlay} title={paused ? "Play (Space)" : "Pause (Space)"}>
               {paused ? "▶" : "⏸"}
             </button>
             <span class="time">{fmt(cur)} <span class="sep">/</span> {fmt(dur)}</span>
-            <span class="spacer"></span>
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="track"
+              class:scrubbing
+              bind:this={trackEl}
+              title="Space play · Shift+← → seek"
+              onpointerdown={onTrackDown}
+              onpointermove={onTrackMove}
+              onpointerup={onTrackUp}
+              onpointerleave={onTrackLeave}
+            >
+              <div class="range" style="left:{pct(inS)}%; right:{100 - pct(outS ?? dur)}%"></div>
+              {#each segments as segment, i (i)}
+                <button
+                  class="segmark"
+                  style="left:{pct(segment.in_s)}%; width:{Math.max(0.8, pct(segment.out_s) - pct(segment.in_s))}%"
+                  title={`Subclip ${i + 1}: ${fmt(segment.in_s)}-${fmt(segment.out_s)}`}
+                  onpointerdown={(e) => e.stopPropagation()}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    useSegment(segment);
+                  }}
+                ></button>
+              {/each}
+              <div class="cursor" style="left:{pct(cur)}%"></div>
+              {#if preview != null && strip && stripSrc}
+                {@const c = cellPos(preview)}
+                <div
+                  class="scrubprev"
+                  style="left:{preview * 100}%; width:{PREVIEW_W}px; height:{previewH}px;
+                         background-image:url('{stripSrc}');
+                         background-size:{strip.cols * 100}% {strip.rows * 100}%;
+                         background-position:{c.x}% {c.y}%;"
+                >
+                  <span class="ts">{fmt(preview * (dur || strip.duration))}</span>
+                </div>
+              {/if}
+            </div>
             <button class="miniToggle" class:on={infoVisible} onclick={() => (infoVisible = !infoVisible)} title="Show file information overlay">Info</button>
-            <span class="khint">Space play · Shift+← → seek</span>
+            <button
+              class="miniToggle"
+              class:on={clipToolsOpen}
+              onclick={() => (clipToolsOpen = !clipToolsOpen)}
+              title="Trim, mark ranges, and export subclips"
+            >Clip tools{#if !clipToolsOpen && (canExport || segments.length)}<span class="ctdot"></span>{/if}</button>
           </div>
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div
-            class="track"
-            class:scrubbing
-            bind:this={trackEl}
-            onpointerdown={onTrackDown}
-            onpointermove={onTrackMove}
-            onpointerup={onTrackUp}
-            onpointerleave={onTrackLeave}
-          >
-            <div class="range" style="left:{pct(inS)}%; right:{100 - pct(outS ?? dur)}%"></div>
-            {#each segments as segment, i (i)}
-              <button
-                class="segmark"
-                style="left:{pct(segment.in_s)}%; width:{Math.max(0.8, pct(segment.out_s) - pct(segment.in_s))}%"
-                title={`Subclip ${i + 1}: ${fmt(segment.in_s)}-${fmt(segment.out_s)}`}
-                onpointerdown={(e) => e.stopPropagation()}
-                onclick={(e) => {
-                  e.stopPropagation();
-                  useSegment(segment);
-                }}
-              ></button>
-            {/each}
-            <div class="cursor" style="left:{pct(cur)}%"></div>
-            {#if preview != null && strip && stripSrc}
-              {@const c = cellPos(preview)}
-              <div
-                class="scrubprev"
-                style="left:{preview * 100}%; width:{PREVIEW_W}px; height:{previewH}px;
-                       background-image:url('{stripSrc}');
-                       background-size:{strip.cols * 100}% {strip.rows * 100}%;
-                       background-position:{c.x}% {c.y}%;"
-              >
-                <span class="ts">{fmt(preview * (dur || strip.duration))}</span>
-              </div>
-            {/if}
-          </div>
-          <div class="clipToolsBar">
-            <button class="miniToggle" class:on={clipToolsOpen} onclick={() => (clipToolsOpen = !clipToolsOpen)}>
-              Clip tools
-            </button>
-            <span>{fmt(inS)} - {fmt(outS ?? dur)} ({fmt((outS ?? dur) - inS)})</span>
-            {#if segments.length}<span>{segments.length} marked</span>{/if}
-          </div>
+          {#if clipToolsOpen}
+            <div class="cliprange">
+              <span>{fmt(inS)} – {fmt(outS ?? dur)} ({fmt((outS ?? dur) - inS)})</span>
+              {#if segments.length}<span>{segments.length} marked</span>{/if}
+            </div>
+          {/if}
           {#if clipToolsOpen}
             <div class="ctrls">
               <button onclick={setIn} title="Set in point to current time">In {fmt(inS)}</button>
@@ -697,7 +704,7 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    margin-bottom: 7px;
+    margin-bottom: 0;
   }
   .playrow .pp {
     width: 34px;
@@ -716,14 +723,21 @@
     font-size: 12.5px;
     color: var(--text-dim);
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
   .playrow .time .sep {
     color: var(--text-faint);
     margin: 0 1px;
   }
-  .playrow .khint {
-    font-size: 11px;
-    color: var(--text-faint);
+  /* tiny dot on the collapsed Clip tools toggle when a trim/marks exist */
+  .ctdot {
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    margin-left: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+    vertical-align: middle;
   }
   .miniToggle {
     padding: 3px 7px;
@@ -740,10 +754,12 @@
   }
   .track {
     position: relative;
+    flex: 1;
+    min-width: 0;
     height: 16px;
     border-radius: 6px;
     background: color-mix(in srgb, var(--text-faint) 30%, transparent);
-    margin-bottom: 8px;
+    margin-bottom: 0;
     cursor: pointer;
     touch-action: none; /* let pointer-drag scrub instead of scrolling */
   }
@@ -806,23 +822,24 @@
     background: rgba(0, 0, 0, 0.55);
     font-variant-numeric: tabular-nums;
   }
-  .clipToolsBar {
+  .cliprange {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-bottom: 8px;
+    gap: 12px;
+    margin-top: 8px;
     color: var(--text-dim);
     font-size: 12.5px;
     font-variant-numeric: tabular-nums;
   }
-  .clipToolsBar span {
+  .cliprange span {
     white-space: nowrap;
   }
   .ctrls {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-bottom: 8px;
+    margin-top: 8px;
+    margin-bottom: 0;
   }
   .ctrls button {
     padding: 4px 10px;

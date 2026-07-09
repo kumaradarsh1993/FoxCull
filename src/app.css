@@ -14,6 +14,11 @@
   --accent: #668fb4;
   --accent-dim: #d7e5f2;
   --accent-on: #07111b;
+  /* multi-select border (clean light blue, distinct from the active accent) */
+  --select: #3b82c4;
+  /* related-stack line on top of grouped tiles (golden), + brighter hover tone */
+  --stack: #bd8324;
+  --stack-strong: #d99a2e;
   --reject: #d84b65;
   --pick: #218c62;
   --star: #c98b12;
@@ -42,6 +47,9 @@
   --accent: #8eb6d9;
   --accent-dim: #40586c;
   --accent-on: #111820;
+  --select: #6cb2ef;
+  --stack: #d6a54a;
+  --stack-strong: #ecc06a;
   --reject: #ff5b7a;
   --pick: #63d68a;
   --star: #f2b63c;
@@ -67,6 +75,9 @@
   --accent: #8eb6d9;
   --accent-dim: #40586c;
   --accent-on: #111820;
+  --select: #6cb2ef;
+  --stack: #cf9f45;
+  --stack-strong: #e6b85f;
   --reject: #e05c68;
   --pick: #7fb77e;
   --star: #d5a94a;
@@ -92,6 +103,9 @@
   --accent: #d0a65f;
   --accent-dim: #5f4d33;
   --accent-on: #16110a;
+  --select: #6ea9d8;
+  --stack: #c98a3e;
+  --stack-strong: #e0a24f;
   --reject: #e06970;
   --pick: #89b87b;
   --star: #e2b85c;

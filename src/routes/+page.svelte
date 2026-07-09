@@ -548,11 +548,6 @@
 
   let active = $derived(view.length ? view[Math.min(activeIndex, view.length - 1)] : null);
   let selectedItems = $derived(items.filter((i) => selected.has(i.path)));
-  let activeRelatedItems = $derived.by(() => {
-    if (!active || !settings.s.relatedStrip) return [];
-    return relatedIndex.groupByPath.get(active.path)?.items ?? [];
-  });
-  let activeRelatedIndex = $derived(activeRelatedItems.findIndex((i) => i.path === active?.path));
   let actionTargets = $derived.by(() => {
     if (selected.size > 1) return items.filter((i) => selected.has(i.path));
     return active ? [active] : [];
@@ -898,6 +893,17 @@
 
   function isCollapsedRepresentative(it: MediaItem, meta = relatedFor(it)): boolean {
     return relatedCollapsed(meta) && meta?.group.representative.path === it.path;
+  }
+
+  // Clicking the golden stack line on a tile toggles its group between the
+  // single-line (expanded) and double-line (collapsed) states. Stops the click
+  // from also selecting/activating the underlying tile.
+  function toggleStack(e: MouseEvent, meta: RelatedMeta | undefined, path: string) {
+    if (!meta) return;
+    e.stopPropagation();
+    e.preventDefault();
+    if (relatedCollapsed(meta)) expandRelatedGroup(meta.group, path);
+    else collapseRelatedGroup(meta.group, path);
   }
 
   function relatedRoleLabel(meta: RelatedMeta | undefined): string {
@@ -1598,6 +1604,18 @@
     ondragend={endMediaDrag}
     title={relatedTitle(item)}
   >
+    {#if rel}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <span
+        class="stackline"
+        class:dbl={relatedCollapsed(rel)}
+        role="button"
+        tabindex="-1"
+        title={relatedCollapsed(rel) ? `Expand stack (${rel.count})` : "Collapse stack"}
+        onclick={(e) => toggleStack(e, rel, item.path)}
+      ></span>
+    {/if}
     <Thumb {item} size={gridThumbTier} />
     <span class="ov">
       {#if rel}
@@ -1621,21 +1639,31 @@
 {/snippet}
 
 {#snippet stripCellSnip(item: MediaItem, i: number)}
-  {@const rel = settings.s.relatedStrip ? relatedFor(item) : undefined}
+  {@const rel = relatedFor(item)}
   <button
     class="scell"
     class:active={i === activeIndex}
+    class:selected={selected.has(item.path)}
     class:reject={item.flag === "reject"}
     class:related={!!rel}
-    class:rel-start={!!rel && rel.index === 0}
-    class:rel-mid={!!rel && rel.index > 0 && rel.index < rel.count - 1}
-    class:rel-end={!!rel && rel.index === rel.count - 1}
     class:rel-collapsed={isCollapsedRepresentative(item, rel)}
-    onclick={() => setActiveTo(i)}
+    onclick={(e) => gridCellClick(e, i)}
     ondblclick={() => { setActiveTo(i); setView("loupe"); }}
     oncontextmenu={(e) => openContextMenu(e, item, i)}
     title={rel ? relatedTitle(item) : item.name}
   >
+    {#if rel}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <span
+        class="stackline"
+        class:dbl={relatedCollapsed(rel)}
+        role="button"
+        tabindex="-1"
+        title={relatedCollapsed(rel) ? `Expand stack (${rel.count})` : "Collapse stack"}
+        onclick={(e) => toggleStack(e, rel, item.path)}
+      ></span>
+    {/if}
     <Thumb {item} size={stripThumbTier} />
     {#if rel}
       <span class="s-rel">{shortRelatedBadge(rel)}</span>
@@ -1646,36 +1674,6 @@
     {#if item.rating > 0}<span class="s-stars">{"★".repeat(item.rating)}</span>{/if}
     {#if item.flag === "reject"}<span class="s-x">✕</span>{/if}
     {#if item.flag === "pick"}<span class="s-pick">✓</span>{/if}
-  </button>
-{/snippet}
-
-{#snippet relatedStripCellSnip(item: MediaItem, i: number)}
-  {@const rel = relatedFor(item)}
-  <button
-    class="scell relatedFamily"
-    class:active={item.path === active?.path}
-    class:reject={item.flag === "reject"}
-    class:related={!!rel}
-    class:rel-mother={rel?.role === "mother"}
-    class:rel-derivative={rel?.role === "derivative"}
-    onclick={() => {
-      const meta = relatedFor(item);
-      if (meta && !groupExpanded(meta.group)) {
-        expandRelatedGroup(meta.group, item.path);
-        return;
-      }
-      const idx = displayIndexForPath(item.path);
-      if (idx >= 0) setActiveTo(idx);
-    }}
-    ondblclick={() => setView("loupe")}
-    oncontextmenu={(e) => openContextMenu(e, item, displayIndexForPath(item.path))}
-    title={relatedTitle(item)}
-  >
-    <Thumb {item} size={stripThumbTier} />
-    {#if rel}
-      <span class="s-rel">{shortRelatedBadge(rel)}</span>
-      <span class="s-role">{relatedRoleLabel(rel).slice(0, 1)}</span>
-    {/if}
   </button>
 {/snippet}
 
@@ -1971,12 +1969,6 @@
             <button class="chip" class:on={settings.s.relatedMode === "collapsed"} onclick={collapseAllRelated}>Fold</button>
           </div>
         </div>
-        <div class="row"><span>Filmstrip cues</span>
-          <div class="seg">
-            <button class="chip" class:on={settings.s.relatedStrip} onclick={() => settings.set({ relatedStrip: true })}>On</button>
-            <button class="chip" class:on={!settings.s.relatedStrip} onclick={() => settings.set({ relatedStrip: false })}>Off</button>
-          </div>
-        </div>
         <div class="row"><span>Live Scrub</span>
           <div class="seg">
             <button class="chip" class:on={settings.s.liveScrub} onclick={() => settings.set({ liveScrub: true })}>On</button>
@@ -2106,23 +2098,6 @@
       </div>
     {/if}
 
-    <!-- related family strip -->
-    {#if !editOpen && viewMode === "loupe" && settings.s.relatedStrip && activeRelatedItems.length > 1}
-      <div class="relatedStrip">
-        <div class="relatedStripHead">
-          <strong>Related</strong>
-          <span>{activeRelatedItems.length} files</span>
-        </div>
-        <VirtualStrip
-          items={activeRelatedItems}
-          activeIndex={Math.max(0, activeRelatedIndex)}
-          orientation="h"
-          cellSize={72}
-          cell={relatedStripCellSnip}
-        />
-      </div>
-    {/if}
-
     <!-- bottom filmstrip -->
     {#if !editOpen && settings.s.filmstripPos === "bottom" && view.length}
       <div class="hsplit" role="separator" tabindex="-1" onpointerdown={startStripResize} title="Drag to resize"><span class="grip"></span></div>
@@ -2152,7 +2127,6 @@
   .app.fs .bar,
   .app.fs .banner,
   .app.fs .info,
-  .app.fs .relatedStrip,
   .app.fs .bstrip,
   .app.fs .rstrip,
   .app.fs .pop,
@@ -2316,60 +2290,56 @@
   .viewport { flex: 1; min-width: 0; background: var(--viewport-bg); overflow: hidden; display: flex; flex-direction: column; }
   .viewport.lit { position: relative; z-index: 50; }
   .rstrip { flex: 0 0 auto; border-left: 1px solid var(--border); }
-  .relatedStrip {
-    flex: 0 0 86px;
-    display: grid;
-    grid-template-columns: 74px minmax(0, 1fr);
-    align-items: stretch;
-    border-top: 1px solid var(--border);
-    background: color-mix(in srgb, var(--accent) 6%, var(--bg-panel));
-  }
-  .relatedStripHead {
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    gap: 3px;
-    padding: 0 10px;
-    border-right: 1px solid var(--border);
-    color: var(--text-dim);
-    font-size: 11px;
-  }
-  .relatedStripHead strong { color: var(--text); font-size: 12px; }
-  .relatedStripHead span { color: var(--text-faint); }
-  .relatedFamily.rel-mother { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pick) 55%, transparent); }
-  .relatedFamily.rel-derivative { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
   .bstrip { flex: 0 0 auto; }
 
   .welcome { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--text-dim); text-align: center; padding: 24px; }
   .welcome h1 { font-size: 28px; margin: 0; }
 
-  .cell { position: relative; width: 100%; height: 100%; border: 2px solid transparent; border-radius: 6px; overflow: hidden; padding: 0; background: var(--viewport-bg); }
-  .cell.selected { border-color: var(--text-faint); }
+  /* Every tile reserves a thin top band so the golden stack line (when present)
+     sits above the thumbnail without shrinking it unevenly across a row. */
+  .cell { position: relative; width: 100%; height: 100%; border: 2px solid transparent; border-radius: 6px; overflow: hidden; padding: 8px 0 0; background: var(--viewport-bg); }
+  .cell.selected { border-color: var(--select); }
   .cell.active { border-color: var(--accent); }
   .cell.reject :global(.media) { opacity: 0.35; }
-  .cell.related {
-    background: color-mix(in srgb, var(--accent) 17%, var(--viewport-bg));
-    box-shadow:
-      inset 0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent),
-      inset 0 0 0 6px color-mix(in srgb, var(--accent) 9%, transparent);
+
+  /* Related/stack tiles: a single golden line on top for an expanded stack,
+     a double line for a collapsed stack. The band is the click target (toggles
+     expand/collapse) and shows a subtle hover wash. */
+  .stackline {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 8px;
+    z-index: 5;
+    cursor: pointer;
+    background: transparent;
+    transition: background 0.12s ease;
   }
-  .cell.related.rel-start { border-left-color: color-mix(in srgb, var(--accent) 82%, var(--border)); }
-  .cell.related.rel-mid { border-left-color: color-mix(in srgb, var(--accent) 54%, var(--border)); border-right-color: color-mix(in srgb, var(--accent) 54%, var(--border)); }
-  .cell.related.rel-end { border-right-color: color-mix(in srgb, var(--accent) 82%, var(--border)); }
-  .cell.rel-mother { border-color: color-mix(in srgb, var(--pick) 68%, var(--accent)); }
-  .cell.rel-mother::before {
+  .stackline::before {
     content: "";
     position: absolute;
-    inset: 6px;
-    z-index: 2;
-    border: 2px solid color-mix(in srgb, var(--pick) 72%, transparent);
-    border-radius: 4px;
-    pointer-events: none;
+    left: 3px; right: 3px;
+    top: 2.5px;
+    height: 2.5px;
+    border-radius: 2px;
+    background: var(--stack);
+    transition: background 0.12s ease, top 0.12s ease;
   }
-  .cell.rel-collapsed { border-style: solid; border-color: color-mix(in srgb, var(--accent) 76%, var(--border)); }
-  .cell.rel-collapsed::after { content: ""; position: absolute; inset: 5px; z-index: 2; border: 2px dashed color-mix(in srgb, var(--accent) 70%, transparent); border-radius: 4px; pointer-events: none; }
-  .cell.rel-derivative :global(.media) { filter: saturate(0.84) brightness(0.95); }
-  .ov { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+  .stackline.dbl::before { top: 1px; }
+  .stackline.dbl::after {
+    content: "";
+    position: absolute;
+    left: 3px; right: 3px;
+    top: 4.5px;
+    height: 2.5px;
+    border-radius: 2px;
+    background: var(--stack);
+    transition: background 0.12s ease;
+  }
+  .stackline:hover { background: color-mix(in srgb, var(--stack) 16%, transparent); }
+  .stackline:hover::before,
+  .stackline:hover::after { background: var(--stack-strong); }
+
+  .ov { position: absolute; top: 8px; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none; }
   .lbl-dot { position: absolute; top: 5px; right: 5px; width: 12px; height: 12px; border-radius: 3px; border: 1px solid rgba(0,0,0,0.4); }
   .fl { position: absolute; top: 4px; left: 6px; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
   .cell.related .fl { top: 25px; }
@@ -2396,14 +2366,16 @@
   .rel-count { position: absolute; right: 6px; bottom: 21px; min-width: 22px; padding: 3px 6px; text-align: center; font-size: 11px; background: color-mix(in srgb, var(--accent) 72%, #000); }
 
   .scell { position: relative; width: 100%; height: 100%; border: 2px solid transparent; border-radius: 5px; overflow: hidden; padding: 0; background: var(--viewport-bg); }
+  .scell.selected { border-color: var(--select); }
   .scell.active { border-color: var(--accent); }
   .scell.reject { opacity: 0.45; }
-  .scell.related { background: color-mix(in srgb, var(--accent) 10%, var(--viewport-bg)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent); }
-  .scell.related.rel-start { border-left-color: color-mix(in srgb, var(--accent) 58%, var(--border)); }
-  .scell.related.rel-mid { border-left-color: color-mix(in srgb, var(--accent) 32%, var(--border)); border-right-color: color-mix(in srgb, var(--accent) 32%, var(--border)); }
-  .scell.related.rel-end { border-right-color: color-mix(in srgb, var(--accent) 58%, var(--border)); }
-  .scell.rel-collapsed { border-color: color-mix(in srgb, var(--accent) 54%, var(--border)); }
-  .scell.rel-collapsed::after { content: ""; position: absolute; inset: 4px; z-index: 2; border: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 3px; pointer-events: none; }
+  /* Strip tiles: same golden stack line, sized down and drawn over the top edge
+     (no reserved band) so strip layout stays compact. */
+  .scell .stackline { height: 6px; }
+  .scell .stackline::before { top: 1.5px; height: 2px; }
+  .scell .stackline.dbl::before { top: 0.5px; }
+  .scell .stackline.dbl::after { top: 3px; height: 2px; }
+  .scell.related .s-rel { top: 8px; }
   .s-lbl { position: absolute; top: 3px; right: 3px; width: 10px; height: 10px; border-radius: 2px; }
   .s-stars { position: absolute; bottom: 2px; left: 3px; font-size: 10px; color: var(--star); text-shadow: 0 1px 2px rgba(0,0,0,0.6); }
   .s-x { position: absolute; top: 2px; left: 4px; color: var(--reject); font-weight: 700; text-shadow: 0 1px 2px rgba(0,0,0,0.6); }

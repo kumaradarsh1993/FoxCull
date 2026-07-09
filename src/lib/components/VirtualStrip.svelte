@@ -69,13 +69,27 @@
     };
   });
 
-  // Keep the active cell centered as the user arrows through.
+  // Lightroom-style: only scroll when the active cell isn't comfortably in view,
+  // and then just enough to bring it to the near edge — never a hard recenter.
+  // Clicking an already-visible tile leaves the strip exactly where it is; the
+  // user can also scroll freely without the active cell being yanked back
+  // (we key on activeIndex and read the live DOM scroll, NOT the reactive
+  // scrollPos, so manual scrolling doesn't re-trigger this).
   $effect(() => {
+    const i = activeIndex; // the intended reactive trigger
     const el = viewport;
-    const i = activeIndex;
     if (!el || !vpMain) return;
-    const target = i * step - vpMain / 2 + cellSize / 2;
-    const v = Math.max(0, Math.min(target, Math.max(0, total - vpMain)));
+    void step; // re-run on layout changes (cell size / item count / resize)
+    void total;
+    const cur = orientation === "h" ? el.scrollLeft : el.scrollTop;
+    const cellStart = i * step;
+    const cellEnd = cellStart + cellSize;
+    const margin = Math.min(step, vpMain / 4); // keep a little context at the edge
+    let v = cur;
+    if (cellStart < cur + margin) v = cellStart - margin;
+    else if (cellEnd > cur + vpMain - margin) v = cellEnd + margin - vpMain;
+    v = Math.max(0, Math.min(v, Math.max(0, total - vpMain)));
+    if (Math.abs(v - cur) < 1) return; // already in view — don't move
     if (orientation === "h") el.scrollLeft = v;
     else el.scrollTop = v;
   });

@@ -161,7 +161,6 @@
     <span class="chev-spacer"></span>
   {/if}
   <button class="tname" title={node.path} onclick={() => onselect(node.path)}>
-    <span class="ico">{open ? "📂" : "📁"}</span>
     <span class="label">{node.name}</span>
     {#if count != null}<span class="cnt">{count.toLocaleString()}</span>{/if}
   </button>
@@ -183,47 +182,47 @@
 {/if}
 
 <style>
+  /* Lightroom-style tree: quiet monochrome rows, a subtle neutral highlight on
+     the selected folder (no loud accent fill), small disclosure triangles, and
+     right-aligned muted counts. */
   .trow {
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: 1px;
     width: 100%;
-    border-radius: 6px;
+    border-radius: 4px;
   }
   .trow.active {
-    background: color-mix(in srgb, var(--accent) 20%, transparent);
-    box-shadow: inset 2px 0 0 var(--accent);
+    background: color-mix(in srgb, var(--text-faint) 20%, transparent);
   }
   .trow.drophot {
-    background: color-mix(in srgb, var(--accent) 28%, transparent);
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
     outline: 1px solid var(--accent);
     outline-offset: -1px;
   }
   .trow.active .label {
-    color: var(--accent);
+    color: var(--text);
     font-weight: 600;
   }
 
-  /* Bigger, obvious expand/collapse target — clearly separate from the row's
-     select action, with a filled triangle that flips on state. */
+  /* Compact disclosure triangle, clearly separate from the row's select action. */
   .chev {
     flex: 0 0 auto;
-    width: 24px;
-    height: 26px;
+    width: 18px;
+    height: 24px;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 12px;
+    font-size: 9px;
     color: var(--text-faint);
-    border-radius: 5px;
+    border-radius: 4px;
   }
   .chev:hover {
-    background: var(--bg-hover);
-    color: var(--accent);
+    color: var(--text);
   }
   .chev-spacer {
     flex: 0 0 auto;
-    width: 24px;
+    width: 18px;
   }
 
   .tname {
@@ -231,22 +230,16 @@
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: 7px;
-    padding: 5px 6px;
+    gap: 6px;
+    padding: 4px 6px;
     text-align: left;
-    border-radius: 5px;
+    border-radius: 4px;
     color: var(--text-dim);
-    font-size: 13px;
+    font-size: 12.5px;
     line-height: 1.2;
   }
   .tname:hover {
-    background: var(--bg-hover);
     color: var(--text);
-  }
-  .ico {
-    font-size: 13px;
-    flex: 0 0 auto;
-    opacity: 0.85;
   }
   .label {
     overflow: hidden;
@@ -261,8 +254,5 @@
     font-size: 11px;
     font-variant-numeric: tabular-nums;
     color: var(--text-faint);
-  }
-  .trow.active .cnt {
-    color: color-mix(in srgb, var(--accent) 70%, var(--text-faint));
   }
 </style>
