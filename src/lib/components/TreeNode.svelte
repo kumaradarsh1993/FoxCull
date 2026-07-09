@@ -205,24 +205,27 @@
     font-weight: 600;
   }
 
-  /* Compact disclosure triangle, clearly separate from the row's select action. */
+  /* Disclosure triangle, clearly separate from the row's select action. Quiet
+     Lightroom look but with a comfortable click target (small glyph, big hit
+     area) so it is easy to hit on a dense tree. */
   .chev {
     flex: 0 0 auto;
-    width: 18px;
-    height: 24px;
+    width: 24px;
+    height: 26px;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 9px;
+    font-size: 12px;
     color: var(--text-faint);
     border-radius: 4px;
   }
   .chev:hover {
     color: var(--text);
+    background: color-mix(in srgb, var(--text-faint) 16%, transparent);
   }
   .chev-spacer {
     flex: 0 0 auto;
-    width: 18px;
+    width: 24px;
   }
 
   .tname {

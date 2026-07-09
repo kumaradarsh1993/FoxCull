@@ -527,7 +527,7 @@
               class="track"
               class:scrubbing
               bind:this={trackEl}
-              title="Space play · Shift+← → seek"
+              title="Drag to scrub · Space play · , . step 5s"
               onpointerdown={onTrackDown}
               onpointermove={onTrackMove}
               onpointerup={onTrackUp}
@@ -569,37 +569,40 @@
             >Clip tools{#if !clipToolsOpen && (canExport || segments.length)}<span class="ctdot"></span>{/if}</button>
           </div>
           {#if clipToolsOpen}
-            <div class="cliprange">
-              <span>{fmt(inS)} – {fmt(outS ?? dur)} ({fmt((outS ?? dur) - inS)})</span>
-              {#if segments.length}<span>{segments.length} marked</span>{/if}
-            </div>
-          {/if}
-          {#if clipToolsOpen}
-            <div class="ctrls">
-              <button onclick={setIn} title="Set in point to current time">In {fmt(inS)}</button>
-              <button onclick={setOut} title="Set out point to current time">Out {fmt(outS ?? dur)}</button>
-              <span class="len">range {fmt((outS ?? dur) - inS)}</span>
-              <button onclick={addSegment} disabled={!canExport} title="Remember this range as one subclip">Mark range</button>
-              <span class="spacer"></span>
-              {#if canExport}<button class="reset" onclick={resetTrim}>Reset</button>{/if}
-              <button class="exp" onclick={exportCut} disabled={!canExport || exporting}>
-                {exporting ? "Saving..." : "Save current range"}
-              </button>
-              <button class="exp secondary" onclick={exportSegments} disabled={!segments.length || exportingSegments}>
-                {exportingSegments ? "Saving..." : `Save ${segments.length || ""} marked`}
-              </button>
-            </div>
-          {/if}
-          {#if clipToolsOpen && segments.length}
-            <div class="segments">
-              {#each segments as segment, i (i)}
-                <button class="segmentPill" onclick={() => useSegment(segment)}>
-                  <strong>{i + 1}</strong>
-                  <span>{fmt(segment.in_s)}-{fmt(segment.out_s)}</span>
-                  <em>{fmt(segment.out_s - segment.in_s)}</em>
+            <!-- Clip tools live in their own bordered panel, visually separated
+                 from the scrubber/timeline above so the in/out/range/save
+                 controls read as one grouped tool rather than loose buttons. -->
+            <div class="clippanel">
+              <div class="cliprange">
+                <span>{fmt(inS)} – {fmt(outS ?? dur)} ({fmt((outS ?? dur) - inS)})</span>
+                {#if segments.length}<span>{segments.length} marked</span>{/if}
+              </div>
+              <div class="ctrls">
+                <button onclick={setIn} title="Set in point to current time">In {fmt(inS)}</button>
+                <button onclick={setOut} title="Set out point to current time">Out {fmt(outS ?? dur)}</button>
+                <span class="len">range {fmt((outS ?? dur) - inS)}</span>
+                <button onclick={addSegment} disabled={!canExport} title="Remember this range as one subclip">Mark range</button>
+                <span class="spacer"></span>
+                {#if canExport}<button class="reset" onclick={resetTrim}>Reset</button>{/if}
+                <button class="exp" onclick={exportCut} disabled={!canExport || exporting}>
+                  {exporting ? "Saving..." : "Save current range"}
                 </button>
-                <button class="segRemove" onclick={() => removeSegment(i)} title="Remove subclip">×</button>
-              {/each}
+                <button class="exp secondary" onclick={exportSegments} disabled={!segments.length || exportingSegments}>
+                  {exportingSegments ? "Saving..." : `Save ${segments.length || ""} marked`}
+                </button>
+              </div>
+              {#if segments.length}
+                <div class="segments">
+                  {#each segments as segment, i (i)}
+                    <button class="segmentPill" onclick={() => useSegment(segment)}>
+                      <strong>{i + 1}</strong>
+                      <span>{fmt(segment.in_s)}-{fmt(segment.out_s)}</span>
+                      <em>{fmt(segment.out_s - segment.in_s)}</em>
+                    </button>
+                    <button class="segRemove" onclick={() => removeSegment(i)} title="Remove subclip">×</button>
+                  {/each}
+                </div>
+              {/if}
             </div>
           {/if}
           {#if exportNote}<div class="note">{exportNote}</div>{/if}
@@ -822,11 +825,19 @@
     background: rgba(0, 0, 0, 0.55);
     font-variant-numeric: tabular-nums;
   }
+  /* Grouped clip-tools panel: a quiet bordered card that sets the trim/mark/save
+     controls apart from the scrubber above them. */
+  .clippanel {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--bg-elev) 60%, transparent);
+  }
   .cliprange {
     display: flex;
     align-items: center;
     gap: 12px;
-    margin-top: 8px;
     color: var(--text-dim);
     font-size: 12.5px;
     font-variant-numeric: tabular-nums;

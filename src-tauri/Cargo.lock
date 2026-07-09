@@ -1261,7 +1261,7 @@ dependencies = [
 
 [[package]]
 name = "foxcull"
-version = "0.7.0-nightly.1"
+version = "0.7.0-nightly.2"
 dependencies = [
  "filetime",
  "image",

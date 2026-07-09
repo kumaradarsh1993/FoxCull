@@ -1529,17 +1529,20 @@
       return;
     }
     // Video playback keys (Focus mode, active clip): Space toggles play/pause,
-    // Shift+←/→ scrubs the clip. Plain ←/→ still move between items (below).
+    // and , / . scrub the clip (Shift+←/→ is reserved for extending the item
+    // selection, just like the grid, so the filmstrip behaves like Lightroom).
     if (viewMode === "loupe" && active?.kind === "video" && loupeComp) {
       if (e.key === " " || e.code === "Space") { loupeComp.togglePlay(); e.preventDefault(); return; }
       if (e.key === "[") { loupeComp.setInPoint?.(); e.preventDefault(); return; }
       if (e.key === "]") { loupeComp.setOutPoint?.(); e.preventDefault(); return; }
-      if (e.shiftKey && e.key === "ArrowRight") { loupeComp.seekBy(5); e.preventDefault(); return; }
-      if (e.shiftKey && e.key === "ArrowLeft") { loupeComp.seekBy(-5); e.preventDefault(); return; }
+      if (e.key === "," || e.key === "<") { loupeComp.seekBy(-5); e.preventDefault(); return; }
+      if (e.key === "." || e.key === ">") { loupeComp.seekBy(5); e.preventDefault(); return; }
     }
     const delta = navDelta(e.key);
     if (delta) {
-      move(delta, { extend: e.shiftKey && viewMode !== "loupe" });
+      // Shift+←/→ extends the selection to the neighbouring item everywhere —
+      // grid, details AND the Focus filmstrip (previously it scrubbed video).
+      move(delta, { extend: e.shiftKey });
       e.preventDefault();
       return;
     }
@@ -1646,6 +1649,9 @@
     class:selected={selected.has(item.path)}
     class:reject={item.flag === "reject"}
     class:related={!!rel}
+    class:rel-start={!!rel && rel.index === 0}
+    class:rel-mid={!!rel && rel.index > 0 && rel.index < rel.count - 1}
+    class:rel-end={!!rel && rel.index === rel.count - 1}
     class:rel-collapsed={isCollapsedRepresentative(item, rel)}
     onclick={(e) => gridCellClick(e, i)}
     ondblclick={() => { setActiveTo(i); setView("loupe"); }}
@@ -1894,11 +1900,13 @@
           class:on={preparing || prepared}
           onclick={prepareFolder}
           disabled={!baseView.length || preparing}
-          title="Pre-render full-size Focus previews for this whole folder, so flipping through it in Focus view has zero loading blur. (Grid thumbnails are already pre-cached when a folder opens.)"
+          title={"Prepare · full-quality Focus previews for this whole folder.\n\nWhat it does: decodes and caches every shot's large preview up front.\nWhen to use it: before reviewing a folder in Focus view, so flipping shot-to-shot is instant with no loading blur.\nHow: click once — it runs in the background (progress shown here) and only needs doing once per folder. Grid thumbnails are already cached when a folder opens; this is the extra step for the big Focus previews."}
         >
           {#if preparing}<span class="prep-fill" style="width:{prepPct}%"></span>{/if}
           <span class="prep-lbl">
-            <span class="prep-ico" aria-hidden="true">{#if preparing}◌{:else if prepared}✓{:else}↯{/if}</span>
+            <span class="prep-ico" aria-hidden="true">
+              {#if preparing}◌{:else if prepared}✓{:else}<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M13 2 4.5 13.2c-.4.5 0 1.3.7 1.3H11l-1.4 8.2c-.1.7.8 1.1 1.2.5L19.5 12c.4-.5 0-1.3-.7-1.3H12.9L14.2 2.6c.1-.7-.8-1.1-1.2-.6Z"/></svg>{/if}
+            </span>
             {#if preparing}{prepPct}%{prepEta ? ` ${prepEta}` : ""}{:else if prepared}Ready{:else}Prepare{/if}
           </span>
         </button>
@@ -2244,7 +2252,8 @@
   .prep { position: relative; overflow: hidden; min-width: 96px; text-align: center; }
   .prep-fill { position: absolute; left: 0; top: 0; bottom: 0; background: color-mix(in srgb, var(--accent) 30%, transparent); transition: width 0.2s ease; }
   .prep-lbl { position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px; white-space: nowrap; }
-  .prep-ico { font-size: 13px; line-height: 1; color: var(--accent); }
+  .prep-ico { font-size: 13px; line-height: 1; color: var(--accent); display: inline-flex; align-items: center; }
+  .prep-ico svg { display: block; }
 
   .div { flex: 0 0 auto; align-self: stretch; width: 1px; margin: 2px 4px; background: var(--border); }
   .arrange,
@@ -2314,13 +2323,16 @@
     background: transparent;
     transition: background 0.12s ease;
   }
+  /* The bar runs full-bleed by default so adjacent tiles of the SAME stack join
+     into one continuous golden line. Only the group's outer ends get a rounded
+     cap — which both closes off a lone/collapsed stack and leaves a clear break
+     between two neighbouring stacks. */
   .stackline::before {
     content: "";
     position: absolute;
-    left: 3px; right: 3px;
+    left: 0; right: 0;
     top: 2.5px;
     height: 2.5px;
-    border-radius: 2px;
     background: var(--stack);
     transition: background 0.12s ease, top 0.12s ease;
   }
@@ -2328,13 +2340,20 @@
   .stackline.dbl::after {
     content: "";
     position: absolute;
-    left: 3px; right: 3px;
+    left: 0; right: 0;
     top: 4.5px;
     height: 2.5px;
-    border-radius: 2px;
     background: var(--stack);
     transition: background 0.12s ease;
   }
+  /* Rounded cap at the true start / end of a stack (and both, when a stack is
+     collapsed to a single representative tile). */
+  .rel-start .stackline::before,
+  .rel-start .stackline.dbl::after { left: 3px; border-top-left-radius: 2px; border-bottom-left-radius: 2px; }
+  .rel-end .stackline::before,
+  .rel-end .stackline.dbl::after { right: 3px; border-top-right-radius: 2px; border-bottom-right-radius: 2px; }
+  .rel-collapsed .stackline::before,
+  .rel-collapsed .stackline.dbl::after { left: 3px; right: 3px; border-radius: 2px; }
   .stackline:hover { background: color-mix(in srgb, var(--stack) 16%, transparent); }
   .stackline:hover::before,
   .stackline:hover::after { background: var(--stack-strong); }

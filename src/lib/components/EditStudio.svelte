@@ -172,6 +172,7 @@
   let timelineDrag: TimelineDrag | null = null;
   let sourceMenu = $state<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
   let exportOptionsOpen = $state(false);
+  let exportMenuOpen = $state(false);
   let frameToast = $state<string | null>(null);
   let pendingPreviewSeek = $state<number | null>(null);
   let previewSeekRAF = 0;
@@ -664,8 +665,16 @@
     clampTrim();
   }
 
+  const NEUTRAL_ADJ: EditAdjustments = { brightness: 0, contrast: 1, saturation: 1, warmth: 0, sharpen: 0 };
+
   function resetColor() {
-    adjustments = { brightness: 0, contrast: 1, saturation: 1, warmth: 0, sharpen: 0 };
+    adjustments = { ...NEUTRAL_ADJ };
+  }
+
+  // Lightroom habit: double-click a slider to snap that one control back to its
+  // neutral value.
+  function resetAdj(field: keyof EditAdjustments) {
+    adjustments = { ...adjustments, [field]: NEUTRAL_ADJ[field] };
   }
 
   function applyLook(id: LookPresetId) {
@@ -837,8 +846,19 @@
     };
   }
 
+  // One-tap export presets from the Export ▾ menu: pick a target (which sets the
+  // aspect preset + quality), then run the same export pipeline. "Instagram"
+  // maps to the 1080-wide social presets; "lossless" keeps the original.
+  async function quickExport(target: ExportTarget) {
+    exportMenuOpen = false;
+    exportOptionsOpen = false;
+    applyExportTarget(target);
+    await exportTimeline();
+  }
+
   async function exportTimeline() {
     if (!orderedClips.length || exporting) return;
+    exportMenuOpen = false;
     exporting = true;
     exportNote = "Exporting";
     try {
@@ -1307,9 +1327,37 @@
       </button>
       {#if frameToast}<span class="topToast" aria-live="polite">{frameToast}</span>{/if}
       <div class="exportOpts">
-        <button class="miniBtn" class:on={exportOptionsOpen} onclick={() => (exportOptionsOpen = !exportOptionsOpen)}>
-          Options
-        </button>
+        <div class="exportGroup">
+          <button class="exportBtn main" onclick={exportTimeline} disabled={!clips.length || exporting} title="Export with the current aspect ratio and settings">
+            {exporting ? "Exporting…" : "Export"}
+          </button>
+          <button
+            class="exportBtn caret"
+            class:on={exportMenuOpen}
+            onclick={() => { exportMenuOpen = !exportMenuOpen; exportOptionsOpen = false; }}
+            disabled={!clips.length || exporting}
+            aria-label="Export options"
+            title="More export options"
+          >▾</button>
+        </div>
+        {#if exportMenuOpen}
+          <div class="exportMenu choices">
+            <button class="exportChoice" onclick={() => quickExport("instagram_reels")} disabled={!clips.length}>
+              <strong>Export to Instagram</strong>
+              <span>Reels / Stories · 1080×1920 H.264</span>
+            </button>
+            <button class="exportChoice" onclick={() => quickExport("instagram_square")} disabled={!clips.length}>
+              <strong>Export to Instagram</strong>
+              <span>Square 1:1 · 1080×1080 H.264</span>
+            </button>
+            <button class="exportChoice" onclick={() => quickExport("archive")} disabled={!clips.length}>
+              <strong>Export lossless</strong>
+              <span>Original quality · trims and crops only, no re-compression when possible</span>
+            </button>
+            <div class="menuSep"></div>
+            <button class="exportChoice sub" onclick={() => { exportMenuOpen = false; exportOptionsOpen = true; }}>Export settings…</button>
+          </div>
+        {/if}
         {#if exportOptionsOpen}
           <div class="exportMenu">
             <label>Target
@@ -1336,13 +1384,13 @@
               </select>
             </label>
             <label class="check"><input type="checkbox" bind:checked={preserveSourceAudio} disabled={audioClips.length > 0 || orderedClips.length !== 1} /> Keep source audio</label>
-            <button class="miniBtn" onclick={() => { exportOptionsOpen = false; void pickAudio(); }}>Choose audio</button>
+            <div class="menuRow">
+              <button class="miniBtn" onclick={() => { exportOptionsOpen = false; void pickAudio(); }}>Choose audio</button>
+              <button class="miniBtn ghost" onclick={() => (exportOptionsOpen = false)}>Done</button>
+            </div>
           </div>
         {/if}
       </div>
-      <button class="exportBtn" onclick={exportTimeline} disabled={!clips.length || exporting}>
-        {exporting ? "Exporting" : "Export"}
-      </button>
     </div>
 
     <div class="preview" bind:this={previewBox} onwheel={onCropWheel}>
@@ -1538,6 +1586,7 @@
         <h3>Look</h3>
         <span>Hide</span>
       </button>
+      <p class="groupLabel">Presets</p>
       <div class="lookPresets">
         {#each Object.entries(LOOK_PRESETS) as [id, look]}
           <button class="lookPreset" onclick={() => applyLook(id as LookPresetId)} title={look.hint}>
@@ -1546,12 +1595,16 @@
           </button>
         {/each}
       </div>
-      <label>Brightness <input type="range" min="-0.25" max="0.25" step="0.005" bind:value={adjustments.brightness} /></label>
-      <label>Contrast <input type="range" min="0.6" max="1.6" step="0.01" bind:value={adjustments.contrast} /></label>
-      <label>Saturation <input type="range" min="0" max="2" step="0.01" bind:value={adjustments.saturation} /></label>
-      <label>Warmth <input type="range" min="-0.2" max="0.2" step="0.005" bind:value={adjustments.warmth} /></label>
-      <label>Sharpen <input type="range" min="0" max="1" step="0.01" bind:value={adjustments.sharpen} /></label>
-      <button class="miniBtn" onclick={resetColor}>Reset</button>
+      <div class="groupDivider">
+        <span class="groupLabel">Adjust</span>
+        <button class="miniBtn ghost" onclick={resetColor} title="Reset all adjustments">Reset all</button>
+      </div>
+      <p class="adjHint">Double-click a slider to reset just that control.</p>
+      <label>Brightness <input type="range" min="-0.25" max="0.25" step="0.005" bind:value={adjustments.brightness} ondblclick={() => resetAdj("brightness")} /></label>
+      <label>Contrast <input type="range" min="0.6" max="1.6" step="0.01" bind:value={adjustments.contrast} ondblclick={() => resetAdj("contrast")} /></label>
+      <label>Saturation <input type="range" min="0" max="2" step="0.01" bind:value={adjustments.saturation} ondblclick={() => resetAdj("saturation")} /></label>
+      <label>Warmth <input type="range" min="-0.2" max="0.2" step="0.005" bind:value={adjustments.warmth} ondblclick={() => resetAdj("warmth")} /></label>
+      <label>Sharpen <input type="range" min="0" max="1" step="0.01" bind:value={adjustments.sharpen} ondblclick={() => resetAdj("sharpen")} /></label>
     </div>
 
     {#if exportNote}<p class="note sideNote">{exportNote}</p>{/if}
@@ -2168,6 +2221,10 @@
     color: var(--reject);
     border-color: color-mix(in srgb, var(--reject) 55%, var(--border));
   }
+  .exportGroup {
+    display: inline-flex;
+    align-items: stretch;
+  }
   .exportBtn {
     padding: 7px 12px;
     border-radius: 8px;
@@ -2175,6 +2232,64 @@
     color: var(--accent-on);
     font-weight: 700;
     white-space: nowrap;
+  }
+  /* Split button: main Export + a caret that opens the presets menu. */
+  .exportBtn.main {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+  .exportBtn.caret {
+    padding: 7px 8px;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-left: 1px solid color-mix(in srgb, var(--accent-on) 28%, var(--accent));
+    font-weight: 700;
+  }
+  .exportBtn.caret.on {
+    background: color-mix(in srgb, var(--accent) 82%, #000);
+  }
+  .exportMenu.choices {
+    width: 260px;
+    gap: 4px;
+    padding: 6px;
+  }
+  .exportChoice {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    width: 100%;
+    text-align: left;
+    padding: 7px 9px;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text);
+  }
+  .exportChoice:hover {
+    background: var(--bg-hover);
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  }
+  .exportChoice strong {
+    font-size: 12.5px;
+    font-weight: 700;
+  }
+  .exportChoice span {
+    font-size: 11px;
+    color: var(--text-faint);
+  }
+  .exportChoice.sub {
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+  .menuSep {
+    height: 1px;
+    margin: 3px 2px;
+    background: var(--border);
+  }
+  .menuRow {
+    display: flex;
+    gap: 7px;
+    align-items: center;
   }
   button:disabled {
     opacity: 0.42;
@@ -2371,6 +2486,39 @@
   .lookPreset span {
     color: var(--text-faint);
     font-size: 11px;
+  }
+  /* Section labels + divider that separate the one-tap Presets from the manual
+     Adjust sliders (Lightroom-style demarcation). */
+  .groupLabel {
+    margin: 0;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+  .groupDivider {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 2px;
+    padding-top: 9px;
+    border-top: 1px solid var(--border);
+  }
+  .adjHint {
+    margin: -4px 0 0;
+    font-size: 10.5px;
+    color: var(--text-faint);
+  }
+  .miniBtn.ghost {
+    background: transparent;
+    border-color: transparent;
+    color: var(--text-faint);
+  }
+  .miniBtn.ghost:hover {
+    color: var(--text);
+    background: var(--bg-hover);
   }
   .row {
     display: grid;
