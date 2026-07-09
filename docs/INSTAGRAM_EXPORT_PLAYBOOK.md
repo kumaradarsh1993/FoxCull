@@ -297,6 +297,49 @@ master from the gallery as a Reel or Story over Wi-Fi. That's the whole game.
 
 ---
 
+---
+
+## Addendum (July 2026): HDR nuance + the crop-quality question
+
+**Does Instagram support HDR? Yes — but SDR is still the safer default.**
+Instagram added HLG to Reels in 2023 and **Dolby Vision on iOS** in a late-2025/2026
+update, so HDR *can* be preserved. Two caveats keep SDR as the sane default:
+- It ingests **HLG, not PQ/HDR10**. The **Osmo Pocket 3 (HLG)** can pass through;
+  the **S23 "HDR10+" is PQ**, which IG converts regardless — so tone-mapping that
+  one yourself beats IG's pipeline.
+- Not everyone sees HDR (old phones, low battery, bright sun, SDR monitors) and
+  **IG's automatic HDR→SDR fallback is currently broken → washed-out**. The SDR
+  version a big chunk of your audience sees is what matters, and a tone-map *we*
+  control beats IG's. Also: don't upload HDR from an iPhone.
+- **FoxCull's answer:** the Instagram export defaults to **tone-mapped SDR**, with
+  a **"Keep HDR (HLG)"** toggle (10-bit HEVC passthrough) for when the source is
+  HLG and you're happy targeting HDR phones.
+
+**Cropping landscape → portrait: quality depends entirely on source resolution.**
+- **Osmo 4K → 9:16 crop ≈ 1215×2160 → downscales to 1080×1920 = crisp.** No fix
+  needed — crop away.
+- **1080p (Mavic/S23 FHD) → 9:16 crop ≈ 607×1080 → upscales to 1080 = soft**,
+  because the pixels aren't there. This is inherent to a vertical slice of 1080p.
+
+**Is upscaling worth it? No — not for Instagram.** AI upscalers (Topaz Video AI /
+Astra) are the best quality but heavy, slow, and artifact-prone — and **Instagram
+re-encodes everything to 1080p anyway**, so an upscaled-to-4K upload gets
+downscaled + compressed right back; the realistic uptick after IG's compression is
+small. The pragmatic wins instead:
+- **Shoot higher-res when you'll crop** — Mavic **2.7K** (crop ≈ 860px, much
+  closer to 1080), Osmo 4K.
+- **FoxCull's answer:** on exactly the crops that had to upscale, it applies a
+  **mild automatic sharpen** (cheap, no artifacts) to recover perceived crispness,
+  and **warns you in the export dialog** when a crop will be soft. No AI upscaling.
+
+_Sources (addendum): [Meta HDR-in-Reels](https://engineering.fb.com/2023/07/17/video-engineering/hdr-video-reels-meta/),
+[Greg Benz on IG HDR/SDR](https://gregbenzphotography.com/hdr-photos/how-to-share-hdr-photos-on-instagram-or-threads/),
+[Dolby Vision update](https://www.croma.com/unboxed/instagram-hdr-reels-dolby-vision-support-iphone),
+[4K-crop math](https://www.quora.com/How-much-can-you-crop-high-quality-4K-video-to-and-still-get-high-quality-HD-1080P-video),
+[upscaling vs IG compression](https://www.stayabundant.com/blog/best-instagram-reels-export-settings). Verified July 2026._
+
+---
+
 _Sources: Instagram Help (Reel size & aspect ratios); Meta Engineering "Bringing
 HDR video to Reels" (2023); StayAbundant, Mallary, Taja, SocialPilot, Sendcove
 2026 spec guides; TechWiser & Semiocast quality/blur guides; DEV Community

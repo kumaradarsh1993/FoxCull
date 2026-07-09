@@ -166,6 +166,9 @@
     mother: MediaItem;
     badges: RelatedBadge[];
     entries: RelatedEntry[];
+    /** True when every member is an edit/export and the original source is gone
+     *  — so there's no true mother to tag; we show a "no original" marker. */
+    orphaned: boolean;
   };
 
   type RelatedMeta = {
@@ -208,8 +211,12 @@
         explicit = true;
         addBadge(badges, "Subclip");
       }
-      if (/(?:[_\-. ](?:cut|reel|crop|cropped|square|landscape|mobile|edit|edited|final|export)(?:[_\-. ]?0*\d+)?)$/i.test(root)) {
-        root = root.replace(/(?:[_\-. ](?:cut|reel|crop|cropped|square|landscape|mobile|edit|edited|final|export)(?:[_\-. ]?0*\d+)?)$/i, "");
+      // Edit/derivative suffixes — includes FoxCull's own export tags (ig, reel,
+      // sq, wide, crop, trim, mobile) so an Instagram/lossless export nests under
+      // its original. NOTE: "mix" is deliberately absent — a composite of two
+      // sources is its own third state, not part of either parent's stack.
+      if (/(?:[_\-. ](?:cut|reel|crop|cropped|square|sq|wide|landscape|mobile|edit|edited|final|export|ig|trim)(?:[_\-. ]?0*\d+)?)$/i.test(root)) {
+        root = root.replace(/(?:[_\-. ](?:cut|reel|crop|cropped|square|sq|wide|landscape|mobile|edit|edited|final|export|ig|trim)(?:[_\-. ]?0*\d+)?)$/i, "");
         relation = relation === "subclip" ? relation : "edit";
         explicit = true;
         addBadge(badges, "Crop/Edit");
@@ -290,6 +297,8 @@
     };
     const ordered = [...inputOrder].sort((a, b) => rank(a) - rank(b) || a.order - b.order);
     const mother = ordered[0].item;
+    const orphaned =
+      inputOrder.some((e) => e.stem.explicit) && !inputOrder.some((e) => e.stem.relation === "original");
     return {
       id,
       entries: ordered,
@@ -297,6 +306,7 @@
       representative: mother,
       mother,
       badges,
+      orphaned,
     };
   }
 
@@ -1581,6 +1591,19 @@
       if (viewMode !== "loupe" && active) { setView("loupe"); e.preventDefault(); }
     }
   }
+
+  // A derivative's history reads off its filename suffix (see EditStudio's
+  // exportName): show a tiny corner badge in the grid/strip so exports are
+  // recognisable at a glance. Instagram/composite/crop/trim in priority order.
+  function derivativeBadge(name: string): string | null {
+    const stem = name.replace(/\.[^.]+$/, "").toLowerCase();
+    if (/(^|_)mix($|_)/.test(stem)) return "MIX";
+    if (/(^|_)ig($|_)|(^|_)reel($|_)|(^|_)sq($|_)|(^|_)wide($|_)/.test(stem)) return "IG";
+    if (/(^|_)mobile($|_)/.test(stem)) return "MOB";
+    if (/(^|_)crop($|_)/.test(stem)) return "CROP";
+    if (/(^|_)trim($|_)/.test(stem)) return "TRIM";
+    return null;
+  }
 </script>
 
 <svelte:window {onkeydown} {onmouseup} oncontextmenu={onGlobalContextMenu} />
@@ -1628,6 +1651,9 @@
           {/each}
         </span>
         <span class="rel-role">{relatedRoleLabel(rel)}</span>
+        {#if rel.group.orphaned && rel.index === 0}
+          <span class="rel-orphan" title="Original source is no longer present — these are its edits/exports">no orig</span>
+        {/if}
         {#if isCollapsedRepresentative(item, rel)}
           <span class="rel-count">{rel.count}</span>
         {/if}
@@ -1637,6 +1663,7 @@
       {#if item.flag === "pick"}<span class="fl pick">✓</span>{/if}
       {#if item.rating > 0}<span class="stars">{"★".repeat(item.rating)}</span>{/if}
       {#if item.tags.length}<span class="tagdot" title={item.tags.join(", ")}>🏷</span>{/if}
+      {#if derivativeBadge(item.name)}<span class="deriv-badge" title="Exported by FoxCull ({derivativeBadge(item.name)})">{derivativeBadge(item.name)}</span>{/if}
     </span>
   </button>
 {/snippet}
@@ -1680,6 +1707,7 @@
     {#if item.rating > 0}<span class="s-stars">{"★".repeat(item.rating)}</span>{/if}
     {#if item.flag === "reject"}<span class="s-x">✕</span>{/if}
     {#if item.flag === "pick"}<span class="s-pick">✓</span>{/if}
+    {#if derivativeBadge(item.name)}<span class="s-deriv">{derivativeBadge(item.name)}</span>{/if}
   </button>
 {/snippet}
 
@@ -2366,6 +2394,19 @@
   .fl.pick { color: var(--pick); }
   .stars { position: absolute; bottom: 4px; left: 6px; color: var(--star); font-size: 13px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
   .tagdot { position: absolute; bottom: 4px; right: 6px; font-size: 11px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
+  /* Derivative badge (FoxCull export): a small accent pill, top-right under the
+     colour-label dot, marking IG / MIX / CROP / TRIM exports. */
+  .deriv-badge {
+    position: absolute; top: 22px; right: 5px;
+    padding: 1px 5px;
+    font-size: 9px; font-weight: 800; letter-spacing: 0.03em;
+    color: var(--accent-on);
+    background: color-mix(in srgb, var(--accent) 88%, #000);
+    border-radius: 4px;
+    text-shadow: none;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.5);
+  }
+  .cell.related .deriv-badge { top: 22px; }
   .rel-badges { position: absolute; top: 5px; left: 5px; right: 24px; display: flex; gap: 3px; overflow: hidden; }
   .rel-badges span,
   .rel-role,
@@ -2382,6 +2423,13 @@
   }
   .rel-badges span { min-width: 0; max-width: 74px; overflow: hidden; text-overflow: ellipsis; padding: 2px 5px; }
   .rel-role { position: absolute; left: 6px; bottom: 21px; padding: 2px 5px; color: color-mix(in srgb, var(--accent) 18%, #fff); }
+  .rel-orphan {
+    position: absolute; left: 6px; bottom: 40px;
+    padding: 2px 5px; border-radius: 4px;
+    font-size: 9px; font-weight: 800;
+    color: #fff; background: rgba(150, 90, 20, 0.85);
+    border: 1px solid rgba(255,255,255,0.18);
+  }
   .rel-count { position: absolute; right: 6px; bottom: 21px; min-width: 22px; padding: 3px 6px; text-align: center; font-size: 11px; background: color-mix(in srgb, var(--accent) 72%, #000); }
 
   .scell { position: relative; width: 100%; height: 100%; border: 2px solid transparent; border-radius: 5px; overflow: hidden; padding: 0; background: var(--viewport-bg); }
@@ -2396,6 +2444,14 @@
   .scell .stackline.dbl::after { top: 3px; height: 2px; }
   .scell.related .s-rel { top: 8px; }
   .s-lbl { position: absolute; top: 3px; right: 3px; width: 10px; height: 10px; border-radius: 2px; }
+  .s-deriv {
+    position: absolute; bottom: 2px; right: 3px;
+    padding: 0 3px;
+    font-size: 8px; font-weight: 800;
+    color: var(--accent-on);
+    background: color-mix(in srgb, var(--accent) 88%, #000);
+    border-radius: 3px;
+  }
   .s-stars { position: absolute; bottom: 2px; left: 3px; font-size: 10px; color: var(--star); text-shadow: 0 1px 2px rgba(0,0,0,0.6); }
   .s-x { position: absolute; top: 2px; left: 4px; color: var(--reject); font-weight: 700; text-shadow: 0 1px 2px rgba(0,0,0,0.6); }
   .s-pick { position: absolute; top: 2px; left: 4px; color: var(--pick); font-weight: 700; text-shadow: 0 1px 2px rgba(0,0,0,0.6); }

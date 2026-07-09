@@ -171,8 +171,12 @@
   let lastPreviewClipId = "";
   let timelineDrag: TimelineDrag | null = null;
   let sourceMenu = $state<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
-  let exportOptionsOpen = $state(false);
   let exportMenuOpen = $state(false);
+  type DlgMode = "instagram" | "lossless" | "custom";
+  let exportDlg = $state(false);
+  let dlgMode = $state<DlgMode>("instagram");
+  let dlgAspect = $state<"reels" | "square">("reels");
+  let keepHdr = $state(false);
   let frameToast = $state<string | null>(null);
   let pendingPreviewSeek = $state<number | null>(null);
   let previewSeekRAF = 0;
@@ -205,6 +209,50 @@
   let previewFilter = $derived(
     `brightness(${Math.max(0, 1 + adjustments.brightness)}) contrast(${adjustments.contrast}) saturate(${adjustments.saturation})`,
   );
+  // Dialog data: the source clip we're about to optimise, its probe, and a rough
+  // export-time estimate (HDR tone-mapping is slower than a plain re-encode).
+  let igSourceClip = $derived(selectedClip ?? orderedClips[0] ?? null);
+  let igSourceProbe = $derived(igSourceClip ? probes[igSourceClip.path] ?? null : null);
+  let igEstimateSecs = $derived.by(() => {
+    const secs = timelineSeconds || (igSourceClip ? igSourceClip.outS - igSourceClip.inS : 0);
+    const hdrHeavy = igSourceProbe?.hdr && dlgMode === "instagram";
+    const factor = hdrHeavy ? 1.5 : dlgMode === "lossless" && outPreset.fit === "original" ? 0.05 : 0.7;
+    return Math.max(dlgMode === "lossless" && outPreset.fit === "original" ? 1 : 4, Math.round(secs * factor));
+  });
+  let neutralLook = $derived(
+    Math.abs(adjustments.brightness) < 0.001 &&
+      Math.abs(adjustments.contrast - 1) < 0.001 &&
+      Math.abs(adjustments.saturation - 1) < 0.001 &&
+      Math.abs(adjustments.warmth) < 0.001 &&
+      adjustments.sharpen < 0.001,
+  );
+  // Will a vertical crop of this source have to upscale (→ soft)? True when the
+  // crop's pixel width is below the output width (e.g. a 1080p landscape → 9:16).
+  let softCrop = $derived.by(() => {
+    if (outPreset.fit === "original") return false;
+    const p = igSourceProbe;
+    if (!p?.width || !p?.height) return false;
+    const cropW = Math.min(p.width, p.height * (outPreset.w / outPreset.h));
+    return cropW < outPreset.w - 1;
+  });
+  // Rule-based breakdown of what drives the export time (shown under the estimate).
+  let exportSteps = $derived.by(() => {
+    const steps: { label: string; note: string }[] = [];
+    const p = igSourceProbe;
+    if (dlgMode === "lossless" && outPreset.fit === "original" && neutralLook) {
+      steps.push({ label: "Trim (stream copy)", note: "instant — no re-encode" });
+      return steps;
+    }
+    if (p?.hdr && dlgMode === "instagram" && keepHdr) steps.push({ label: "Keep HDR (10-bit HEVC)", note: "heavy" });
+    else if (p?.hdr && dlgMode === "instagram") steps.push({ label: "HDR → SDR tone-map", note: "heaviest step" });
+    if (p?.width && outPreset.fit !== "original" && p.width > outPreset.w)
+      steps.push({ label: `Downscale ${p.width}→${outPreset.w}px`, note: "moderate" });
+    if (softCrop) steps.push({ label: "Sharpen soft crop", note: "light" });
+    if (p?.fps && p.fps > 31 && dlgMode === "instagram") steps.push({ label: `${Math.round(p.fps)}→30 fps`, note: "light" });
+    if (!neutralLook) steps.push({ label: "Look adjustments", note: "light" });
+    steps.push({ label: keepHdr && dlgMode === "instagram" ? "HEVC encode" : "H.264 encode", note: "scales with clip length" });
+    return steps;
+  });
   let needsRender = $derived(
     outPreset.fit !== "original" ||
       audioClips.length > 0 ||
@@ -309,7 +357,7 @@
     if (!key || clips.length || seeding || seededKey === key) return;
     seededKey = key;
     seeding = true;
-    void addVideos(initialVideos.map(mediaToSource)).finally(() => {
+    void seedInitial(initialVideos.map(mediaToSource)).finally(() => {
       seeding = false;
     });
   });
@@ -483,6 +531,67 @@
     exportNote = null;
   }
 
+  // Seed the timeline from the library selection, carrying over any in/out marks
+  // made in Focus/Loupe (persisted per-path in the catalog): marked subclips seed
+  // one timeline clip each; otherwise the saved trim (or the full clip) is used.
+  async function seedInitial(items: EditSourceItem[]) {
+    const made: TimelineClip[] = [];
+    let cursor = nextVideoStart(0);
+    for (const item of items.filter((s) => s.kind === "video")) {
+      const duration = await durationFor(item);
+      const full = Math.max(0.1, duration || 1);
+      let ranges: { inS: number; outS: number }[] = [];
+      try {
+        const segs = await api.getVideoSegments(item.path);
+        if (segs?.length) {
+          ranges = segs.map((s) => ({
+            inS: Math.max(0, Math.min(s.in_s, full - 0.05)),
+            outS: Math.min(full, Math.max(s.out_s, Math.max(0, s.in_s) + 0.05)),
+          }));
+        }
+      } catch {
+        /* no segments — fall through to trim */
+      }
+      if (!ranges.length) {
+        let t = rememberedTrim(item.path, full);
+        try {
+          const bt = await api.getTrim(item.path);
+          if (bt) {
+            const inS = Math.max(0, Math.min(bt[0], full - 0.05));
+            t = { inS, outS: Math.min(full, Math.max(bt[1], inS + 0.05)) };
+          }
+        } catch {
+          /* no saved trim — keep session/default */
+        }
+        ranges = [t];
+      }
+      const cachedProxy = await api.videoProxyCached(item.path);
+      const src = api.fileSrc(cachedProxy ?? item.path);
+      for (const r of ranges) {
+        made.push({
+          id: uid(),
+          path: item.path,
+          name: item.name,
+          src,
+          inS: r.inS,
+          outS: r.outS,
+          duration: full,
+          start: cursor,
+          lane: 0,
+          cropX: 0.5,
+          cropY: 0.5,
+          zoom: 1,
+        });
+        cursor += Math.max(0.1, r.outS - r.inS);
+      }
+    }
+    if (!made.length) return;
+    clips = [...clips, ...made];
+    selectedId = made[made.length - 1].id;
+    selectedAudioId = null;
+    exportNote = null;
+  }
+
   async function addAudio(src: EditSourceItem, lane = 0, start = nextAudioStart(lane)) {
     if (src.kind !== "audio") return;
     const duration = await durationFor(src);
@@ -645,7 +754,8 @@
   export async function setOutputPreview(on: boolean) {
     if (on && !selectedClip) return;
     productionPreview = on && !!selectedClip;
-    exportOptionsOpen = false;
+    exportMenuOpen = false;
+    exportDlg = false;
     if (productionPreview) await syncProductionPreviewTime();
   }
 
@@ -679,6 +789,13 @@
 
   function applyLook(id: LookPresetId) {
     adjustments = { ...LOOK_PRESETS[id].values };
+  }
+
+  // A live CSS-filter preview of a look, used for the preset swatches so they
+  // show what they do instead of being flat text tiles.
+  function lookFilter(v: EditAdjustments): string {
+    const warm = Math.max(0, v.warmth) * 3;
+    return `brightness(${(1 + v.brightness).toFixed(3)}) contrast(${v.contrast}) saturate(${v.saturation}) sepia(${warm.toFixed(3)})`;
   }
 
   function applyExportTarget(target: ExportTarget) {
@@ -757,15 +874,38 @@
     window.addEventListener("pointerup", up);
   }
 
+  // Traceable derivative names: the thumbnail badges (in the library grid) are
+  // parsed straight from these suffixes, so a file's history reads off its name.
+  //   DJI_0674_IG_reel   — Instagram export
+  //   DJI_0674_trim_crop — lossless trim + crop
+  //   A+B_mix            — composite of two sources
   function exportName() {
-    const first = orderedClips[0]?.name ?? "clip";
+    const clips = orderedClips;
+    const first = clips[0]?.name ?? "clip";
     const stem = first.replace(/\.[^.]+$/, "");
-    if (exportTarget === "instagram_reels") return `${stem}_reel`;
-    if (exportTarget === "instagram_square") return `${stem}_square`;
-    if (exportTarget === "instagram_landscape") return `${stem}_landscape`;
-    if (exportTarget === "whatsapp") return `${stem}_mobile`;
-    if (exportTarget === "archive") return `${stem}_edit`;
-    return `${stem}_${preset}`;
+    const distinct = new Set(clips.map((c) => c.path));
+    if (distinct.size > 1) {
+      const other = clips.find((c) => c.path !== clips[0].path)?.name ?? "";
+      const otherStem = other.replace(/\.[^.]+$/, "");
+      return `${stem}+${otherStem || distinct.size - 1}_mix`;
+    }
+    const c = clips[0];
+    const trimmed = !!c && (c.inS > 0.05 || c.outS < c.duration - 0.05);
+    const cropped = outPreset.fit !== "original";
+    const parts = [stem];
+    if (exportTarget.startsWith("instagram")) {
+      parts.push("IG");
+      if (preset === "reels") parts.push("reel");
+      else if (preset === "square") parts.push("sq");
+      else if (preset === "landscape") parts.push("wide");
+    } else if (exportTarget === "whatsapp") {
+      parts.push("mobile");
+    } else {
+      if (trimmed) parts.push("trim");
+      if (cropped) parts.push("crop");
+      if (parts.length === 1) parts.push("edit");
+    }
+    return parts.join("_");
   }
 
   async function pickAudio() {
@@ -846,17 +986,42 @@
     };
   }
 
-  // One-tap export presets from the Export ▾ menu: pick a target (which sets the
-  // aspect preset + quality), then run the same export pipeline. "Instagram"
-  // maps to the 1080-wide social presets; "lossless" keeps the original.
-  async function quickExport(target: ExportTarget) {
-    exportMenuOpen = false;
-    exportOptionsOpen = false;
-    applyExportTarget(target);
-    await exportTimeline();
+  // Unified export dialog. Every path — the main Export button and the ▾ quick
+  // items — opens the SAME dialog; the quick items just preselect the mode.
+  function setDlgAspect(a: "reels" | "square") {
+    dlgAspect = a;
+    applyExportTarget(a === "square" ? "instagram_square" : "instagram_reels");
   }
 
-  async function exportTimeline() {
+  function applyDlgMode(mode: DlgMode) {
+    dlgMode = mode;
+    if (mode === "instagram") setDlgAspect(dlgAspect);
+    // lossless/custom keep whatever aspect preset the user already has.
+  }
+
+  function openExport(mode: DlgMode, target?: ExportTarget) {
+    exportMenuOpen = false;
+    if (mode === "instagram") dlgAspect = target === "instagram_square" ? "square" : "reels";
+    applyDlgMode(mode);
+    exportDlg = true;
+  }
+
+  async function runDialogExport() {
+    exportDlg = false;
+    if (dlgMode === "instagram") {
+      await exportTimeline(true, keepHdr);
+    } else if (dlgMode === "lossless") {
+      // Keep the current aspect/crop; just max quality (stream-copies with no
+      // crop/adjust, re-encodes at best quality when a crop is set).
+      exportTarget = "archive";
+      quality = "best";
+      await exportTimeline(false, false);
+    } else {
+      await exportTimeline(false, false);
+    }
+  }
+
+  async function exportTimeline(normalize = false, keep_hdr = false) {
     if (!orderedClips.length || exporting) return;
     exportMenuOpen = false;
     exporting = true;
@@ -882,6 +1047,8 @@
         preserve_source_audio: preserveSourceAudio && !music && orderedClips.length === 1,
         destination: null,
         basename: exportName(),
+        normalize,
+        keep_hdr,
       };
       const out = await api.editExport(req);
       exportNote = `Saved ${basename(out.path)} (${out.reencoded ? out.mode : "stream copy"})`;
@@ -1328,66 +1495,34 @@
       {#if frameToast}<span class="topToast" aria-live="polite">{frameToast}</span>{/if}
       <div class="exportOpts">
         <div class="exportGroup">
-          <button class="exportBtn main" onclick={exportTimeline} disabled={!clips.length || exporting} title="Export with the current aspect ratio and settings">
+          <button class="exportBtn main" onclick={() => openExport("custom")} disabled={!clips.length || exporting} title="Open the export dialog (all settings)">
             {exporting ? "Exporting…" : "Export"}
           </button>
           <button
             class="exportBtn caret"
             class:on={exportMenuOpen}
-            onclick={() => { exportMenuOpen = !exportMenuOpen; exportOptionsOpen = false; }}
+            onclick={() => (exportMenuOpen = !exportMenuOpen)}
             disabled={!clips.length || exporting}
             aria-label="Export options"
-            title="More export options"
+            title="Quick export"
           >▾</button>
         </div>
         {#if exportMenuOpen}
           <div class="exportMenu choices">
-            <button class="exportChoice" onclick={() => quickExport("instagram_reels")} disabled={!clips.length}>
+            <button class="exportChoice" onclick={() => openExport("instagram", "instagram_reels")} disabled={!clips.length}>
               <strong>Export to Instagram</strong>
-              <span>Reels / Stories · 1080×1920 H.264</span>
+              <span>Reels / Stories · 1080×1920</span>
             </button>
-            <button class="exportChoice" onclick={() => quickExport("instagram_square")} disabled={!clips.length}>
+            <button class="exportChoice" onclick={() => openExport("instagram", "instagram_square")} disabled={!clips.length}>
               <strong>Export to Instagram</strong>
-              <span>Square 1:1 · 1080×1080 H.264</span>
+              <span>Square 1:1 · 1080×1080</span>
             </button>
-            <button class="exportChoice" onclick={() => quickExport("archive")} disabled={!clips.length}>
+            <button class="exportChoice" onclick={() => openExport("lossless")} disabled={!clips.length}>
               <strong>Export lossless</strong>
-              <span>Original quality · trims and crops only, no re-compression when possible</span>
+              <span>Original quality · keeps your aspect/crop</span>
             </button>
             <div class="menuSep"></div>
-            <button class="exportChoice sub" onclick={() => { exportMenuOpen = false; exportOptionsOpen = true; }}>Export settings…</button>
-          </div>
-        {/if}
-        {#if exportOptionsOpen}
-          <div class="exportMenu">
-            <label>Target
-              <select bind:value={exportTarget} onchange={() => applyExportTarget(exportTarget)}>
-                {#each Object.entries(EXPORT_TARGETS) as [id, target]}
-                  <option value={id}>{target.label}</option>
-                {/each}
-              </select>
-            </label>
-            <p class="optionHint">{EXPORT_TARGETS[exportTarget].detail}</p>
-            <label>Encoder
-              <select bind:value={encoder}>
-                <option value="auto">Auto</option>
-                <option value="x264">x264</option>
-                <option value="nvenc">NVIDIA</option>
-              </select>
-            </label>
-            <label>Quality
-              <select bind:value={quality}>
-                <option value="best">Best</option>
-                <option value="high">High</option>
-                <option value="standard">Standard</option>
-                <option value="small">Small</option>
-              </select>
-            </label>
-            <label class="check"><input type="checkbox" bind:checked={preserveSourceAudio} disabled={audioClips.length > 0 || orderedClips.length !== 1} /> Keep source audio</label>
-            <div class="menuRow">
-              <button class="miniBtn" onclick={() => { exportOptionsOpen = false; void pickAudio(); }}>Choose audio</button>
-              <button class="miniBtn ghost" onclick={() => (exportOptionsOpen = false)}>Done</button>
-            </div>
+            <button class="exportChoice sub" onclick={() => openExport("custom")}>All export settings…</button>
           </div>
         {/if}
       </div>
@@ -1590,8 +1725,11 @@
       <div class="lookPresets">
         {#each Object.entries(LOOK_PRESETS) as [id, look]}
           <button class="lookPreset" onclick={() => applyLook(id as LookPresetId)} title={look.hint}>
-            <strong>{look.label}</strong>
-            <span>{look.hint}</span>
+            <span class="swatch" style="filter:{lookFilter(look.values)}"></span>
+            <span class="lpText">
+              <strong>{look.label}</strong>
+              <span>{look.hint}</span>
+            </span>
           </button>
         {/each}
       </div>
@@ -1606,6 +1744,19 @@
       <label>Warmth <input type="range" min="-0.2" max="0.2" step="0.005" bind:value={adjustments.warmth} ondblclick={() => resetAdj("warmth")} /></label>
       <label>Sharpen <input type="range" min="0" max="1" step="0.01" bind:value={adjustments.sharpen} ondblclick={() => resetAdj("sharpen")} /></label>
     </div>
+
+    {#if selectedClip}
+      <div class="block clipInfo">
+        <p class="groupLabel">Source → Output</p>
+        <dl>
+          <div><dt>Resolution</dt><dd>{probes[selectedClip.path]?.width ?? "–"}×{probes[selectedClip.path]?.height ?? "–"}</dd></div>
+          <div><dt>Frame rate</dt><dd>{probes[selectedClip.path]?.fps ? `${Math.round(probes[selectedClip.path]?.fps ?? 0)} fps` : "–"}</dd></div>
+          <div><dt>Codec</dt><dd>{probes[selectedClip.path]?.codec ?? "–"}{probes[selectedClip.path]?.hdr ? " · HDR" : ""}</dd></div>
+          <div><dt>Trim</dt><dd>{fmt(selectedClip.outS - selectedClip.inS)} of {fmt(selectedClip.duration)}</dd></div>
+          <div><dt>Output</dt><dd>{outPreset.fit === "original" ? "Original" : `${outPreset.w}×${outPreset.h}`}</dd></div>
+        </dl>
+      </div>
+    {/if}
 
     {#if exportNote}<p class="note sideNote">{exportNote}</p>{/if}
 
@@ -1638,6 +1789,109 @@
   </aside>
   {#if sourceMenu}
     <ContextMenu x={sourceMenu.x} y={sourceMenu.y} entries={sourceMenu.entries} onclose={() => (sourceMenu = null)} />
+  {/if}
+
+  {#if exportDlg}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="igBackdrop" onclick={() => (exportDlg = false)}>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="igDialog" onclick={(e) => e.stopPropagation()}>
+        <h2>Export</h2>
+        <div class="dlgModes">
+          <button class:on={dlgMode === "instagram"} onclick={() => applyDlgMode("instagram")}>Instagram</button>
+          <button class:on={dlgMode === "lossless"} onclick={() => applyDlgMode("lossless")}>Lossless</button>
+          <button class:on={dlgMode === "custom"} onclick={() => applyDlgMode("custom")}>Custom</button>
+        </div>
+
+        {#if dlgMode === "instagram"}
+          <div class="dlgAspect">
+            <button class:on={dlgAspect === "reels"} onclick={() => setDlgAspect("reels")}>Reels / Stories · 9:16</button>
+            <button class:on={dlgAspect === "square"} onclick={() => setDlgAspect("square")}>Square · 1:1</button>
+          </div>
+          <p class="igDisclaim">FoxCull auto-applies the best Instagram settings for what it detected in your clip. It's good to go by default — tweak below only if you want to.</p>
+          <div class="igCompare">
+            <div class="igCol">
+              <span class="igColHead">Your clip</span>
+              <ul>
+                <li>{igSourceProbe?.width ?? "?"}×{igSourceProbe?.height ?? "?"}</li>
+                <li>{igSourceProbe?.fps ? `${Math.round(igSourceProbe?.fps ?? 0)} fps` : "source fps"}</li>
+                <li>{igSourceProbe?.codec ?? "source codec"}</li>
+                <li class:warn={igSourceProbe?.hdr}>{igSourceProbe?.hdr ? "HDR (HLG/PQ)" : "SDR"}</li>
+              </ul>
+            </div>
+            <div class="igArrow">→</div>
+            <div class="igCol optimised">
+              <span class="igColHead">Optimised</span>
+              <ul>
+                <li>{outPreset.w}×{outPreset.h}{#if (igSourceProbe?.width ?? 0) > outPreset.w}<em> (downscaled)</em>{/if}</li>
+                <li>30 fps{#if (igSourceProbe?.fps ?? 0) > 31}<em> (from {Math.round(igSourceProbe?.fps ?? 0)})</em>{/if}</li>
+                <li>{keepHdr && igSourceProbe?.hdr ? "HEVC 10-bit · MP4" : "H.264 · MP4 · faststart"}</li>
+                <li>{igSourceProbe?.hdr ? (keepHdr ? "HDR (HLG kept)" : "SDR Rec.709 (tone-mapped)") : "SDR Rec.709"}</li>
+              </ul>
+            </div>
+          </div>
+          {#if igSourceProbe?.hdr}
+            <div class="dlgHdr">
+              <span class="igColHead">HDR handling</span>
+              <label><input type="radio" name="hdr" checked={!keepHdr} onchange={() => (keepHdr = false)} /> Convert to SDR <em>— recommended, looks consistent on every device</em></label>
+              <label><input type="radio" name="hdr" checked={keepHdr} onchange={() => (keepHdr = true)} /> Keep HDR (HLG) <em>— punchier on modern phones; the SDR fallback others see may look flat</em></label>
+            </div>
+          {/if}
+          {#if softCrop}
+            <p class="dlgWarn">⚠ Cropping this {igSourceProbe?.width}×{igSourceProbe?.height} clip to vertical upscales past its pixels, so it'll be slightly soft. FoxCull adds a light sharpen; for crisp crops shoot higher-res (2.7K/4K) when you plan to crop.</p>
+          {/if}
+        {:else if dlgMode === "lossless"}
+          <p class="igDisclaim">
+            Keeps your current aspect{outPreset.fit === "original" ? "" : " and crop"} at original quality.
+            {#if outPreset.fit === "original" && neutralLook}Trim only — stream-copied, no re-encode, no quality loss.{:else}A crop/adjustment needs a render, so this re-encodes at best quality.{/if}
+          </p>
+        {:else}
+          <label class="dlgField">Aspect
+            <select value={preset} onchange={(e) => setPreset((e.currentTarget as HTMLSelectElement).value as PresetId)}>
+              {#each Object.entries(PRESETS) as [id, p]}
+                <option value={id}>{p.label} · {p.detail}</option>
+              {/each}
+            </select>
+          </label>
+          <label class="dlgField">Encoder
+            <select bind:value={encoder}>
+              <option value="auto">Auto</option>
+              <option value="x264">x264</option>
+              <option value="nvenc">NVIDIA</option>
+            </select>
+          </label>
+          <label class="dlgField">Quality
+            <select bind:value={quality}>
+              <option value="best">Best</option>
+              <option value="high">High</option>
+              <option value="standard">Standard</option>
+              <option value="small">Small</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" bind:checked={preserveSourceAudio} disabled={audioClips.length > 0 || orderedClips.length !== 1} /> Keep source audio</label>
+          <button class="miniBtn" onclick={() => void pickAudio()}>Choose audio…</button>
+        {/if}
+
+        <div class="dlgTime">
+          <div class="dlgTimeHead">
+            <strong>Estimated time ~{fmt(igEstimateSecs)}</strong>
+            <span class="dlgInfo" title="Rule-of-thumb breakdown of what drives the time">ⓘ what drives this</span>
+          </div>
+          <ul class="dlgSteps">
+            {#each exportSteps as s}
+              <li><span>{s.label}</span><em>{s.note}</em></li>
+            {/each}
+          </ul>
+        </div>
+        <p class="dlgLoc">Saves next to the source as <strong>{exportName()}.mp4</strong></p>
+
+        <div class="igActions">
+          <button class="miniBtn" onclick={() => (exportDlg = false)}>Cancel</button>
+          <button class="exportBtn" onclick={runDialogExport} disabled={exporting || !clips.length}>{exporting ? "Exporting…" : "Export"}</button>
+        </div>
+      </div>
+    </div>
   {/if}
 </div>
 
@@ -2010,9 +2264,38 @@
     background: color-mix(in srgb, var(--accent) 20%, transparent);
     color: var(--accent);
   }
+  /* Keep the top bar (and its export dropdowns) stacked above the inspector /
+     preview so an open Export menu or the "Exporting…" state never slides behind
+     the Look panel. */
+  .editTop {
+    position: relative;
+    z-index: 6;
+  }
   .exportOpts {
     position: relative;
     flex: 0 0 auto;
+  }
+  /* Source→Output facts card — fills the inspector space below the sliders. */
+  .clipInfo dl {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .clipInfo dl > div {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12px;
+  }
+  .clipInfo dt {
+    color: var(--text-faint);
+  }
+  .clipInfo dd {
+    margin: 0;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
   }
   .miniBtn.on {
     border-color: var(--accent);
@@ -2044,11 +2327,6 @@
     background: color-mix(in srgb, var(--pick) 16%, var(--bg-elev));
     color: var(--text);
     font-size: 12px;
-  }
-  .optionHint {
-    margin: -4px 0 0;
-    color: var(--text-faint);
-    font-size: 11.5px;
   }
   .spacer {
     flex: 1 1 auto;
@@ -2286,10 +2564,204 @@
     margin: 3px 2px;
     background: var(--border);
   }
-  .menuRow {
+  /* Export dialog */
+  .igBackdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 400;
     display: flex;
-    gap: 7px;
     align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.55);
+    padding: 20px;
+  }
+  .igDialog {
+    width: min(520px, 100%);
+    max-height: 90vh;
+    overflow-y: auto;
+    padding: 18px 20px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--bg-panel);
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .igDialog h2 {
+    margin: 0;
+    font-size: 16px;
+  }
+  .igDisclaim {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-dim);
+    line-height: 1.45;
+  }
+  .igCompare {
+    display: flex;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .igCol {
+    flex: 1;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg-elev);
+  }
+  .igCol.optimised {
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+    background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev));
+  }
+  .igColHead {
+    display: block;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-bottom: 6px;
+  }
+  .igCol ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .igCol li em {
+    color: var(--text-faint);
+    font-style: normal;
+    font-size: 11px;
+  }
+  .igCol li.warn {
+    color: var(--accent);
+  }
+  .igArrow {
+    align-self: center;
+    color: var(--text-faint);
+    font-size: 18px;
+  }
+  /* Mode segmented control + IG aspect toggle */
+  .dlgModes,
+  .dlgAspect {
+    display: flex;
+    gap: 4px;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--bg-elev);
+  }
+  .dlgModes button,
+  .dlgAspect button {
+    flex: 1;
+    padding: 6px 8px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .dlgModes button.on,
+  .dlgAspect button.on {
+    background: var(--accent);
+    color: var(--accent-on);
+  }
+  .dlgHdr {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg-elev);
+  }
+  .dlgHdr label {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    font-size: 12.5px;
+    color: var(--text);
+  }
+  .dlgHdr label em {
+    color: var(--text-faint);
+    font-style: normal;
+    font-size: 11px;
+  }
+  .dlgWarn {
+    margin: 0;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev));
+    font-size: 11.5px;
+    line-height: 1.4;
+    color: var(--text);
+  }
+  .dlgField {
+    display: grid;
+    grid-template-columns: 88px 1fr;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+  }
+  .dlgTime {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg-elev);
+  }
+  .dlgTimeHead {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .dlgTimeHead strong {
+    font-size: 13px;
+  }
+  .dlgInfo {
+    font-size: 10.5px;
+    color: var(--text-faint);
+  }
+  .dlgSteps {
+    margin: 8px 0 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .dlgSteps li {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 11.5px;
+    color: var(--text-dim);
+  }
+  .dlgSteps li em {
+    font-style: normal;
+    color: var(--text-faint);
+  }
+  .dlgLoc {
+    margin: 0;
+    font-size: 11.5px;
+    color: var(--text-dim);
+  }
+  .dlgLoc strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .igActions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 2px;
   }
   button:disabled {
     opacity: 0.42;
@@ -2468,24 +2940,37 @@
     gap: 6px;
   }
   .lookPreset {
-    min-height: 48px;
-    padding: 7px 8px;
+    padding: 0;
     border: 1px solid var(--border);
-    border-radius: 7px;
+    border-radius: 8px;
     background: var(--bg-elev);
     color: var(--text);
     text-align: left;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 0;
+    overflow: hidden;
   }
   .lookPreset:hover {
-    background: var(--bg-hover);
-    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
   }
-  .lookPreset span {
+  .lookPreset .swatch {
+    height: 26px;
+    width: 100%;
+    background: linear-gradient(120deg, #2b6cb0 0%, #38a169 45%, #dd9b34 100%);
+  }
+  .lpText {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 6px 8px;
+  }
+  .lpText strong {
+    font-size: 12px;
+  }
+  .lpText span {
     color: var(--text-faint);
-    font-size: 11px;
+    font-size: 10.5px;
   }
   /* Section labels + divider that separate the one-tap Presets from the manual
      Adjust sliders (Lightroom-style demarcation). */

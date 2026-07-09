@@ -253,6 +253,9 @@ pub struct MediaProbe {
     pub codec: Option<String>,
     pub camera: Option<String>,
     pub captured: Option<i64>,
+    /// True when the clip carries an HDR transfer (PQ/smpte2084 or HLG/arib-std-b67)
+    /// — the signal the Instagram export uses to tone-map down to SDR.
+    pub hdr: bool,
 }
 
 #[derive(Serialize)]
@@ -951,16 +954,21 @@ fn parse_banner_creation(err: &str) -> Option<i64> {
     None
 }
 
-fn parse_video_stream(err: &str) -> (u32, u32, f64, Option<String>) {
+fn parse_video_stream(err: &str) -> (u32, u32, f64, Option<String>, bool) {
     let mut width = 0u32;
     let mut height = 0u32;
     let mut fps = 0.0f64;
     let mut codec = None;
+    let mut hdr = false;
     for line in err.lines() {
         if !line.contains("Video:") {
             continue;
         }
         if let Some(after) = line.split("Video:").nth(1) {
+            // HDR transfer characteristics show up in the stream's colour block,
+            // e.g. `yuv420p10le(tv, bt2020nc/bt2020/arib-std-b67)`.
+            let low = after.to_ascii_lowercase();
+            hdr = low.contains("smpte2084") || low.contains("arib-std-b67");
             codec = after
                 .trim()
                 .split(|c: char| c == ',' || c.is_whitespace())
@@ -988,7 +996,32 @@ fn parse_video_stream(err: &str) -> (u32, u32, f64, Option<String>) {
             break;
         }
     }
-    (width, height, fps, codec)
+    (width, height, fps, codec, hdr)
+}
+
+/// Best-effort probe of a single clip's source dimensions + HDR flag (used at
+/// export time to decide tone-mapping and soft-crop sharpening). Reads ffmpeg's
+/// `-i` banner; zeros/false on any error.
+fn clip_probe(ffmpeg: &Path, src: &Path) -> (u32, u32, bool) {
+    let mut cmd = Command::new(ffmpeg);
+    cmd.arg("-i")
+        .arg(src)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    match cmd.output() {
+        Ok(out) => {
+            let (w, h, _, _, hdr) = parse_video_stream(&String::from_utf8_lossy(&out.stderr));
+            (w, h, hdr)
+        }
+        Err(_) => (0, 0, false),
+    }
 }
 
 fn guess_camera(path: &Path, err: &str) -> Option<String> {
@@ -1038,7 +1071,7 @@ pub async fn probe_media_info(
         }
         let out = cmd.output().map_err(|e| e.to_string())?;
         let err = String::from_utf8_lossy(&out.stderr);
-        let (width, height, fps, codec) = parse_video_stream(&err);
+        let (width, height, fps, codec, hdr) = parse_video_stream(&err);
         Ok(MediaProbe {
             duration: parse_banner_duration(&err),
             width,
@@ -1047,6 +1080,7 @@ pub async fn probe_media_info(
             codec,
             camera: guess_camera(&src, &err),
             captured: parse_banner_creation(&err),
+            hdr,
         })
     })
     .await
@@ -1792,6 +1826,14 @@ pub struct EditExportRequest {
     pub preserve_source_audio: bool,
     pub destination: Option<String>,
     pub basename: Option<String>,
+    /// Instagram/social normalisation: force 30 fps and tone-map HDR sources down
+    /// to SDR Rec.709 (the resolution downscale is already handled by output_w/h).
+    #[serde(default)]
+    pub normalize: bool,
+    /// When normalising, preserve HDR (HLG) instead of tone-mapping to SDR —
+    /// outputs 10-bit HEVC with HLG tags. Falls back to SDR if that encode fails.
+    #[serde(default)]
+    pub keep_hdr: bool,
 }
 
 #[derive(Deserialize)]
@@ -1843,7 +1885,8 @@ fn neutral_adjustments(a: &EditAdjustments) -> bool {
 }
 
 fn edit_requires_reencode(req: &EditExportRequest) -> bool {
-    req.fit != "original"
+    req.normalize
+        || req.fit != "original"
         || req.output_w > 0
         || req.output_h > 0
         || !neutral_adjustments(&req.adjustments)
@@ -1994,7 +2037,36 @@ fn quality_args(encoder: &str, quality: &str) -> Vec<String> {
     }
 }
 
-fn build_video_filter(req: &EditExportRequest) -> Result<String, String> {
+/// HDR-passthrough encoder: 10-bit HEVC tagged HLG (BT.2020). `hvc1` tag keeps it
+/// playable in QuickTime/Instagram. Used when the user chooses "Keep HDR".
+fn hdr_encoder_args() -> Vec<String> {
+    [
+        "-c:v", "libx265", "-preset", "medium", "-crf", "20",
+        "-pix_fmt", "yuv420p10le", "-tag:v", "hvc1",
+        "-color_primaries", "bt2020", "-color_trc", "arib-std-b67", "-colorspace", "bt2020nc",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// The CPU tone-map chain (PQ/HLG → SDR Rec.709, filmic `hable`). Standard zscale
+/// path; if the bundled ffmpeg lacks zscale the caller falls back to no tone-map.
+const TONEMAP_CHAIN: &[&str] = &[
+    "zscale=transfer=linear:npl=100",
+    "format=gbrpf32le",
+    "zscale=primaries=bt709",
+    "tonemap=tonemap=hable:desat=0",
+    "zscale=transfer=bt709:matrix=bt709:range=tv",
+    "format=yuv420p",
+];
+
+fn build_video_filter(
+    req: &EditExportRequest,
+    hdr_flags: &[bool],
+    src_dims: &[(u32, u32)],
+    pix10: bool,
+) -> Result<String, String> {
     let mut chains = Vec::new();
     let mut labels = Vec::new();
     let crop = req.fit != "original" && req.output_w > 0 && req.output_h > 0;
@@ -2006,6 +2078,13 @@ fn build_video_filter(req: &EditExportRequest) -> Result<String, String> {
     for (i, clip) in req.clips.iter().enumerate() {
         clip_duration(clip)?;
         let mut filters = Vec::new();
+        // HDR → SDR first, before any spatial/colour work, so the rest of the
+        // chain operates on Rec.709.
+        if req.normalize && hdr_flags.get(i).copied().unwrap_or(false) {
+            for f in TONEMAP_CHAIN {
+                filters.push((*f).to_string());
+            }
+        }
         if crop {
             let x = clip.crop_x.clamp(0.0, 1.0);
             let y = clip.crop_y.clamp(0.0, 1.0);
@@ -2014,6 +2093,18 @@ fn build_video_filter(req: &EditExportRequest) -> Result<String, String> {
                 "crop=w='trunc(min(iw,ih*{aspect:.8})/{zoom:.6}/2)*2':h='trunc(min(ih,iw/{aspect:.8})/{zoom:.6}/2)*2':x='min(max((iw-ow)*{x:.6},0),iw-ow)':y='min(max((ih-oh)*{y:.6},0),ih-oh)'"
             ));
             filters.push(format!("scale={}:{}:flags=lanczos", req.output_w, req.output_h));
+            // Soft-crop recovery: a vertical crop of a low-res landscape (e.g. a
+            // 1080p Mavic/S23 clip) contains fewer pixels than 1080 wide and has
+            // to upscale. A mild unsharp is a cheap way to claw back perceived
+            // crispness (AI upscaling isn't worth it — Instagram recompresses it
+            // away). Only when the user hasn't dialled their own sharpen.
+            let (sw, sh) = src_dims.get(i).copied().unwrap_or((0, 0));
+            if sw > 0 && sh > 0 && req.adjustments.sharpen < 0.01 {
+                let crop_w = (sw as f64).min(sh as f64 * aspect);
+                if crop_w + 1.0 < req.output_w as f64 {
+                    filters.push("unsharp=5:5:0.5:5:5:0.0".into());
+                }
+            }
         }
         let a = &req.adjustments;
         if !neutral_adjustments(a) {
@@ -2031,8 +2122,13 @@ fn build_video_filter(req: &EditExportRequest) -> Result<String, String> {
                 filters.push(format!("unsharp=5:5:{:.3}", a.sharpen.clamp(0.0, 1.5)));
             }
         }
+        // Instagram plays Reels/Stories at 30 fps and decimates 60 fps crudely, so
+        // deliver 30 ourselves for smooth motion.
+        if req.normalize {
+            filters.push("fps=30".into());
+        }
         filters.push("setsar=1".into());
-        filters.push("format=yuv420p".into());
+        filters.push(if pix10 { "format=yuv420p10le".into() } else { "format=yuv420p".to_string() });
         let label = if req.clips.len() == 1 {
             "vout".to_string()
         } else {
@@ -2134,7 +2230,26 @@ fn export_reencoded(
     req: &EditExportRequest,
     dest: &Path,
     encoder: &str,
+    tonemap: bool,
+    passthrough: bool,
 ) -> Result<(), String> {
+    // Probe source dims + HDR when it can affect the filtergraph (normalising, or
+    // any crop that might upscale). One cheap `-i` per clip.
+    let need_probe = req.normalize || (req.fit != "original" && req.output_w > 0);
+    let probes: Vec<(u32, u32, bool)> = if need_probe {
+        req.clips.iter().map(|c| clip_probe(ffmpeg, Path::new(&c.path))).collect()
+    } else {
+        vec![(0, 0, false); req.clips.len()]
+    };
+    // Tone-map HDR→SDR only when normalising, tone-mapping this attempt, and NOT
+    // keeping HDR (passthrough). The caller retries with tonemap=false if the
+    // tone-map filter is unavailable.
+    let hdr_flags: Vec<bool> = if req.normalize && tonemap && !passthrough {
+        probes.iter().map(|p| p.2).collect()
+    } else {
+        vec![false; req.clips.len()]
+    };
+    let src_dims: Vec<(u32, u32)> = probes.iter().map(|p| (p.0, p.1)).collect();
     let mut cmd = Command::new(ffmpeg);
     for clip in &req.clips {
         let dur = clip_duration(clip)?;
@@ -2149,7 +2264,7 @@ fn export_reencoded(
     if let Some(music_path) = music {
         cmd.args(["-stream_loop", "-1", "-i"]).arg(music_path);
     }
-    let filter = build_video_filter(req)?;
+    let filter = build_video_filter(req, &hdr_flags, &src_dims, passthrough)?;
     cmd.args(["-filter_complex", &filter, "-map", "[vout]"]);
     if music.is_some() {
         let music_index = req.clips.len();
@@ -2159,8 +2274,14 @@ fn export_reencoded(
     } else {
         cmd.arg("-an");
     }
-    for arg in quality_args(encoder, &req.quality) {
-        cmd.arg(arg);
+    if passthrough {
+        for arg in hdr_encoder_args() {
+            cmd.arg(arg);
+        }
+    } else {
+        for arg in quality_args(encoder, &req.quality) {
+            cmd.arg(arg);
+        }
     }
     if music.is_some() || (req.preserve_source_audio && req.clips.len() == 1) {
         cmd.args(["-c:a", "aac", "-b:a", "192k"]);
@@ -2171,6 +2292,34 @@ fn export_reencoded(
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
     run_ffmpeg(cmd)
+}
+
+/// Run a re-encode, honouring the encoder choice (auto = NVENC then x264 on
+/// failure). Returns the mode string. `tonemap` controls whether HDR clips are
+/// tone-mapped this attempt.
+fn reencode_pick_encoder(
+    ffmpeg: &Path,
+    req: &EditExportRequest,
+    dest: &Path,
+    tonemap: bool,
+) -> Result<String, String> {
+    match req.encoder.as_str() {
+        "auto" => match export_reencoded(ffmpeg, req, dest, "nvenc", tonemap, false) {
+            Ok(()) => Ok("reencoded-nvenc".into()),
+            Err(_) => {
+                export_reencoded(ffmpeg, req, dest, "x264", tonemap, false)?;
+                Ok("reencoded-x264".into())
+            }
+        },
+        "nvenc" => {
+            export_reencoded(ffmpeg, req, dest, "nvenc", tonemap, false)?;
+            Ok("reencoded-nvenc".into())
+        }
+        _ => {
+            export_reencoded(ffmpeg, req, dest, "x264", tonemap, false)?;
+            Ok("reencoded-x264".into())
+        }
+    }
 }
 
 #[tauri::command]
@@ -2207,32 +2356,37 @@ pub async fn edit_export(
 
     tauri::async_runtime::spawn_blocking(move || {
         if reencode {
-            let enc = req.encoder.as_str();
-            if enc == "auto" {
-                match export_reencoded(&ffmpeg, &req, &dest, "nvenc") {
-                    Ok(()) => Ok(EditExportOutcome {
-                        path: dest.to_string_lossy().to_string(),
-                        mode: "reencoded-nvenc".into(),
-                        reencoded: true,
-                    }),
-                    Err(_) => {
-                        export_reencoded(&ffmpeg, &req, &dest, "x264")?;
-                        Ok(EditExportOutcome {
-                            path: dest.to_string_lossy().to_string(),
-                            mode: "reencoded-x264".into(),
-                            reencoded: true,
-                        })
-                    }
+            let mode = if req.normalize && req.keep_hdr {
+                // Keep HDR: try 10-bit HEVC HLG passthrough. If that encode fails
+                // (no libx265 / HDR support), fall back to SDR so the export still
+                // succeeds — the mode string records what actually happened.
+                match export_reencoded(&ffmpeg, &req, &dest, "x264", false, true) {
+                    Ok(()) => "reencoded-hdr".to_string(),
+                    Err(_) => match reencode_pick_encoder(&ffmpeg, &req, &dest, true) {
+                        Ok(m) => format!("{m}-sdr-fallback"),
+                        Err(_) => reencode_pick_encoder(&ffmpeg, &req, &dest, false)?,
+                    },
                 }
             } else {
-                let enc = if enc == "nvenc" { "nvenc" } else { "x264" };
-                export_reencoded(&ffmpeg, &req, &dest, enc)?;
-                Ok(EditExportOutcome {
-                    path: dest.to_string_lossy().to_string(),
-                    mode: format!("reencoded-{enc}"),
-                    reencoded: true,
-                })
-            }
+                // Try HDR tone-mapping first; if that attempt fails while
+                // normalising (e.g. the bundled ffmpeg lacks zscale), retry without
+                // it so the export still succeeds — just without HDR→SDR.
+                match reencode_pick_encoder(&ffmpeg, &req, &dest, true) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        if req.normalize {
+                            reencode_pick_encoder(&ffmpeg, &req, &dest, false)?
+                        } else {
+                            return Err(e);
+                        }
+                    }
+                }
+            };
+            Ok(EditExportOutcome {
+                path: dest.to_string_lossy().to_string(),
+                mode,
+                reencoded: true,
+            })
         } else {
             if req.clips.len() == 1 {
                 export_lossless_single(&ffmpeg, &req, &dest)?;

@@ -35,6 +35,8 @@ export interface MediaProbe {
   codec: string | null;
   camera: string | null;
   captured: number | null;
+  /** HDR transfer present (PQ/HLG) — the Instagram export tone-maps these to SDR. */
+  hdr: boolean;
 }
 
 export interface VideoSegment {
@@ -141,6 +143,10 @@ export interface EditExportRequest {
   preserve_source_audio: boolean;
   destination: string | null;
   basename: string | null;
+  /** Social normalisation: force 30fps + tone-map HDR→SDR (Instagram exports). */
+  normalize?: boolean;
+  /** When normalising, keep HDR (HLG 10-bit HEVC) instead of tone-mapping to SDR. */
+  keep_hdr?: boolean;
 }
 
 export interface EditExportOutcome {
