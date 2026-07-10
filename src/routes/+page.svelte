@@ -2082,7 +2082,7 @@
             <p>Pick a folder on the left to start culling. Browse-in-place — nothing is imported or changed.</p>
           </div>
         {:else if editOpen}
-          <EditStudio {active} {selectedItems} sourceItems={items} currentDir={currentDir} recursive={settings.s.includeSub} refreshKey={folderRefreshKey} bind:this={editComp} />
+          <EditStudio {active} {selectedItems} sourceItems={items} currentDir={currentDir} recursive={settings.s.includeSub} refreshKey={folderRefreshKey} onexported={() => void refreshAfterMediaOutput()} bind:this={editComp} />
         {:else if view.length === 0}
           <div class="welcome"><p>Nothing here matches the current filters.</p></div>
         {:else if viewMode === "loupe"}

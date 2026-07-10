@@ -1,4 +1,5 @@
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type {
   TreeDir,
@@ -77,6 +78,14 @@ export const api = {
     invoke<SegmentExportOutcome>("export_video_segments", { path, segments }),
   editExport: (req: EditExportRequest) =>
     invoke<EditExportOutcome>("edit_export", { req }),
+  /** Kill the in-flight edit export; its partial output file is deleted. */
+  cancelEditExport: () => invoke<void>("cancel_edit_export").catch(() => {}),
+  /** Percentage (0–100) stream for the in-flight edit export. */
+  onExportProgress: (cb: (pct: number) => void): Promise<UnlistenFn> =>
+    listen<number>("export-progress", (e) => cb(e.payload)),
+  /** Existence check for the export dialog's filename-taken hint. */
+  pathExists: (path: string) =>
+    invoke<boolean>("path_exists", { path }).catch(() => false),
   editSnapshot: (req: EditSnapshotRequest) =>
     invoke<string>("edit_snapshot", { req }),
   setRating: (path: string, rating: number) =>

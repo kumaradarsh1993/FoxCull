@@ -143,10 +143,12 @@ export interface EditExportRequest {
   preserve_source_audio: boolean;
   destination: string | null;
   basename: string | null;
-  /** Social normalisation: force 30fps + tone-map HDR→SDR (Instagram exports). */
+  /** Social normalisation: tone-map HDR→SDR + faststart (Instagram exports). */
   normalize?: boolean;
   /** When normalising, keep HDR (HLG 10-bit HEVC) instead of tone-mapping to SDR. */
   keep_hdr?: boolean;
+  /** Target frame rate (source fps capped at 60). null = keep source timing. */
+  fps?: number | null;
 }
 
 export interface EditExportOutcome {

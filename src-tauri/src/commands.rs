@@ -80,6 +80,9 @@ pub struct AppState {
     /// Bumped on every folder switch so an in-flight background warming pass for
     /// the previous folder abandons itself instead of fighting for cores.
     pub warm_gen: Arc<AtomicU64>,
+    /// Bumped by `cancel_edit_export` (and by each new export) so the in-flight
+    /// export's ffmpeg child gets killed and its partial output deleted.
+    pub export_gen: Arc<AtomicU64>,
 }
 
 /// `<catalogDir>/thumbs` — the cache lives beside whatever catalog file is in use.
@@ -1832,10 +1835,15 @@ pub struct EditExportRequest {
     pub preserve_source_audio: bool,
     pub destination: Option<String>,
     pub basename: Option<String>,
-    /// Instagram/social normalisation: force 30 fps and tone-map HDR sources down
-    /// to SDR Rec.709 (the resolution downscale is already handled by output_w/h).
+    /// Instagram/social normalisation: tone-map HDR sources down to SDR Rec.709
+    /// (the resolution downscale is already handled by output_w/h).
     #[serde(default)]
     pub normalize: bool,
+    /// Target frame rate. The frontend sends the source fps capped at 60
+    /// (Instagram supports 60 fps and drone/action footage is shot at it — never
+    /// silently halve it to 30). None/0 = keep source timing untouched.
+    #[serde(default)]
+    pub fps: Option<u32>,
     /// When normalising, preserve HDR (HLG) instead of tone-mapping to SDR —
     /// outputs 10-bit HEVC with HLG tags. Falls back to SDR if that encode fails.
     #[serde(default)]
@@ -1897,6 +1905,8 @@ fn edit_requires_reencode(req: &EditExportRequest) -> bool {
         || req.output_h > 0
         || !neutral_adjustments(&req.adjustments)
         || req.music_path.as_ref().is_some_and(|p| !p.trim().is_empty())
+        // An explicit fps target can't be stream-copied.
+        || req.fps.is_some_and(|f| f > 0)
 }
 
 fn clip_duration(c: &EditClip) -> Result<f64, String> {
@@ -1977,6 +1987,99 @@ fn run_ffmpeg(mut cmd: Command) -> Result<(), String> {
     }
 }
 
+/// Sentinel error for a user-cancelled export — callers must NOT retry/fall back
+/// past it (a cancel should end the whole ladder, not trigger the x264 retry).
+pub const EXPORT_CANCELLED: &str = "export cancelled";
+
+/// Progress + cancellation context for a watched export run.
+struct ExportWatch {
+    app: AppHandle,
+    gen: Arc<AtomicU64>,
+    my_gen: u64,
+    label: String,
+    /// Total output seconds (sum of clip durations) — drives the percentage.
+    total_s: f64,
+}
+
+impl ExportWatch {
+    fn cancelled(&self) -> bool {
+        self.gen.load(Ordering::SeqCst) != self.my_gen
+    }
+    fn emit(&self, pct: u64, state: &str) {
+        emit_activity(&self.app, "edit-export", &self.label, pct, 100, state);
+        let _ = self.app.emit("export-progress", pct);
+    }
+}
+
+/// Like `run_ffmpeg`, but streams `-progress pipe:1` (the caller must add those
+/// args before the output path), emits percentage events, and kills the child +
+/// deletes the partial `dest` when the export generation is bumped (cancel).
+/// stderr is drained on a side thread so a chatty ffmpeg can't deadlock the pipe.
+fn run_ffmpeg_watched(mut cmd: Command, watch: Option<&ExportWatch>, dest: &Path) -> Result<(), String> {
+    let Some(w) = watch else {
+        return run_ffmpeg(cmd);
+    };
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let stderr_thread = child.stderr.take().map(|mut err| {
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = String::new();
+            let _ = err.read_to_string(&mut buf);
+            buf
+        })
+    });
+    let mut cancelled = false;
+    if let Some(stdout) = child.stdout.take() {
+        use std::io::BufRead;
+        let mut last = u64::MAX;
+        for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+            if w.cancelled() {
+                cancelled = true;
+                let _ = child.kill();
+                break;
+            }
+            if w.total_s > 0.0 {
+                if let Some(v) = line.strip_prefix("out_time_us=") {
+                    if let Ok(us) = v.trim().parse::<f64>() {
+                        let pct = ((us / 1_000_000.0 / w.total_s).clamp(0.0, 1.0) * 100.0) as u64;
+                        if pct != last {
+                            last = pct;
+                            w.emit(pct, "running");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let status = child.wait().map_err(|e| e.to_string())?;
+    let err_text = stderr_thread
+        .and_then(|t| t.join().ok())
+        .unwrap_or_default();
+    if cancelled || w.cancelled() {
+        let _ = std::fs::remove_file(dest);
+        return Err(EXPORT_CANCELLED.into());
+    }
+    if status.success() {
+        Ok(())
+    } else {
+        let msg = err_text
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("ffmpeg export failed");
+        Err(msg.to_string())
+    }
+}
+
 /// Stream-copy concat requires every clip to share one frame size AND codec —
 /// mixing resolutions (an FHD Mavic clip + a 4K Osmo clip) or codecs (an S23
 /// HEVC clip + a Mavic H.264 clip) stream-copies into a broken/glitchy file.
@@ -2011,7 +2114,12 @@ fn concat_needs_reencode(ffmpeg: &Path, req: &EditExportRequest) -> bool {
     false
 }
 
-fn export_lossless_concat(ffmpeg: &Path, req: &EditExportRequest, dest: &Path) -> Result<(), String> {
+fn export_lossless_concat(
+    ffmpeg: &Path,
+    req: &EditExportRequest,
+    dest: &Path,
+    watch: Option<&ExportWatch>,
+) -> Result<(), String> {
     let list_path = std::env::temp_dir().join(format!("foxcull-concat-{}.txt", now()));
     let mut f = std::fs::File::create(&list_path).map_err(|e| e.to_string())?;
     for clip in &req.clips {
@@ -2025,12 +2133,10 @@ fn export_lossless_concat(ffmpeg: &Path, req: &EditExportRequest, dest: &Path) -
     let mut cmd = Command::new(ffmpeg);
     cmd.args(["-v", "error", "-f", "concat", "-safe", "0", "-i"])
         .arg(&list_path)
-        .args(["-c", "copy", "-avoid_negative_ts", "make_zero", "-y"])
-        .arg(dest)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped());
-    let res = run_ffmpeg(cmd);
+        .args(["-c", "copy", "-avoid_negative_ts", "make_zero"])
+        .args(["-progress", "pipe:1", "-nostats", "-y"])
+        .arg(dest);
+    let res = run_ffmpeg_watched(cmd, watch, dest);
     let _ = std::fs::remove_file(&list_path);
     res
 }
@@ -2183,9 +2289,14 @@ fn build_video_filter(
                 filters.push(format!("unsharp=5:5:{:.3}", a.sharpen.clamp(0.0, 1.5)));
             }
         }
-        // Instagram plays Reels/Stories at 30 fps and decimates 60 fps crudely, so
-        // deliver 30 ourselves for smooth motion.
-        if req.normalize {
+        // Frame rate: the frontend sends the target (source fps capped at 60 —
+        // Instagram accepts up to 60 fps and 60 uploads play smoother than a
+        // pre-halved 30). Multi-clip composites get one common rate so concat
+        // stays consistent. Legacy fallback (no fps in the request): 30 only for
+        // normalised exports, source timing otherwise.
+        if let Some(f) = req.fps.filter(|f| *f > 0) {
+            filters.push(format!("fps={}", f.min(60)));
+        } else if req.normalize {
             filters.push("fps=30".into());
         }
         filters.push("setsar=1".into());
@@ -2320,6 +2431,7 @@ fn export_reencoded(
     encoder: &str,
     tonemap: bool,
     passthrough: bool,
+    watch: Option<&ExportWatch>,
 ) -> Result<(), String> {
     let has_music = req.music_path.as_ref().is_some_and(|p| !p.trim().is_empty());
     // Probe source dims + HDR + audio when they can affect the filtergraph:
@@ -2404,12 +2516,10 @@ fn export_reencoded(
     if music.is_some() || multi_audio || (req.preserve_source_audio && req.clips.len() == 1) {
         cmd.args(["-c:a", "aac", "-b:a", "192k"]);
     }
-    cmd.args(["-movflags", "+faststart", "-y"])
-        .arg(dest)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped());
-    run_ffmpeg(cmd)
+    cmd.args(["-movflags", "+faststart"])
+        .args(["-progress", "pipe:1", "-nostats", "-y"])
+        .arg(dest);
+    run_ffmpeg_watched(cmd, watch, dest)
 }
 
 /// Run a re-encode, honouring the encoder choice (auto = NVENC then x264 on
@@ -2420,21 +2530,24 @@ fn reencode_pick_encoder(
     req: &EditExportRequest,
     dest: &Path,
     tonemap: bool,
+    watch: Option<&ExportWatch>,
 ) -> Result<String, String> {
     match req.encoder.as_str() {
-        "auto" => match export_reencoded(ffmpeg, req, dest, "nvenc", tonemap, false) {
+        "auto" => match export_reencoded(ffmpeg, req, dest, "nvenc", tonemap, false, watch) {
             Ok(()) => Ok("reencoded-nvenc".into()),
+            // A user cancel ends the ladder — never "retry" a cancelled export.
+            Err(e) if e == EXPORT_CANCELLED => Err(e),
             Err(_) => {
-                export_reencoded(ffmpeg, req, dest, "x264", tonemap, false)?;
+                export_reencoded(ffmpeg, req, dest, "x264", tonemap, false, watch)?;
                 Ok("reencoded-x264".into())
             }
         },
         "nvenc" => {
-            export_reencoded(ffmpeg, req, dest, "nvenc", tonemap, false)?;
+            export_reencoded(ffmpeg, req, dest, "nvenc", tonemap, false, watch)?;
             Ok("reencoded-nvenc".into())
         }
         _ => {
-            export_reencoded(ffmpeg, req, dest, "x264", tonemap, false)?;
+            export_reencoded(ffmpeg, req, dest, "x264", tonemap, false, watch)?;
             Ok("reencoded-x264".into())
         }
     }
@@ -2442,6 +2555,7 @@ fn reencode_pick_encoder(
 
 #[tauri::command]
 pub async fn edit_export(
+    app: AppHandle,
     state: State<'_, AppState>,
     mut req: EditExportRequest,
 ) -> Result<EditExportOutcome, String> {
@@ -2469,62 +2583,120 @@ pub async fn edit_export(
         *dest = p.to_string_lossy().to_string();
     }
     let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg not available")?;
+    // New export claims the generation token — cancelling bumps it again.
+    let my_gen = state.export_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    let gen = state.export_gen.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
+        let total_s: f64 = req
+            .clips
+            .iter()
+            .map(|c| (c.out_s - c.in_s).max(0.0))
+            .sum();
+        let first_name = Path::new(&req.clips[0].path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "clip".into());
+        let watch = ExportWatch {
+            app,
+            gen,
+            my_gen,
+            label: format!("Exporting {first_name}"),
+            total_s,
+        };
+        watch.emit(0, "running");
         // Decide re-encode BEFORE picking the output path — it selects the
         // container extension. A "lossless" multi-clip export still has to
         // re-encode when the clips' resolutions don't match (stream-copy concat
         // would produce a broken file).
         let reencode =
             edit_requires_reencode(&req) || concat_needs_reencode(&ffmpeg, &req);
-        let dest = edit_output_path(&req, reencode)?;
-        if reencode {
-            let mode = if req.normalize && req.keep_hdr {
-                // Keep HDR: try 10-bit HEVC HLG passthrough. If that encode fails
-                // (no libx265 / HDR support), fall back to SDR so the export still
-                // succeeds — the mode string records what actually happened.
-                match export_reencoded(&ffmpeg, &req, &dest, "x264", false, true) {
-                    Ok(()) => "reencoded-hdr".to_string(),
-                    Err(_) => match reencode_pick_encoder(&ffmpeg, &req, &dest, true) {
-                        Ok(m) => format!("{m}-sdr-fallback"),
-                        Err(_) => reencode_pick_encoder(&ffmpeg, &req, &dest, false)?,
-                    },
-                }
-            } else {
-                // Try HDR tone-mapping first; if that attempt fails while
-                // normalising (e.g. the bundled ffmpeg lacks zscale), retry without
-                // it so the export still succeeds — just without HDR→SDR.
-                match reencode_pick_encoder(&ffmpeg, &req, &dest, true) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        if req.normalize {
-                            reencode_pick_encoder(&ffmpeg, &req, &dest, false)?
-                        } else {
-                            return Err(e);
+        let dest = match edit_output_path(&req, reencode) {
+            Ok(d) => d,
+            Err(e) => {
+                emit_activity(&watch.app, "edit-export", &e, 0, 100, "error");
+                return Err(e);
+            }
+        };
+        let w = Some(&watch);
+        let run = || -> Result<EditExportOutcome, String> {
+            if reencode {
+                let mode = if req.normalize && req.keep_hdr {
+                    // Keep HDR: try 10-bit HEVC HLG passthrough. If that encode fails
+                    // (no libx265 / HDR support), fall back to SDR so the export still
+                    // succeeds — the mode string records what actually happened.
+                    match export_reencoded(&ffmpeg, &req, &dest, "x264", false, true, w) {
+                        Ok(()) => "reencoded-hdr".to_string(),
+                        Err(e) if e == EXPORT_CANCELLED => return Err(e),
+                        Err(_) => match reencode_pick_encoder(&ffmpeg, &req, &dest, true, w) {
+                            Ok(m) => format!("{m}-sdr-fallback"),
+                            Err(e) if e == EXPORT_CANCELLED => return Err(e),
+                            Err(_) => reencode_pick_encoder(&ffmpeg, &req, &dest, false, w)?,
+                        },
+                    }
+                } else {
+                    // Try HDR tone-mapping first; if that attempt fails while
+                    // normalising (e.g. the bundled ffmpeg lacks zscale), retry without
+                    // it so the export still succeeds — just without HDR→SDR.
+                    match reencode_pick_encoder(&ffmpeg, &req, &dest, true, w) {
+                        Ok(m) => m,
+                        Err(e) if e == EXPORT_CANCELLED => return Err(e),
+                        Err(e) => {
+                            if req.normalize {
+                                reencode_pick_encoder(&ffmpeg, &req, &dest, false, w)?
+                            } else {
+                                return Err(e);
+                            }
                         }
                     }
-                }
-            };
-            Ok(EditExportOutcome {
-                path: dest.to_string_lossy().to_string(),
-                mode,
-                reencoded: true,
-            })
-        } else {
-            if req.clips.len() == 1 {
-                export_lossless_single(&ffmpeg, &req, &dest)?;
+                };
+                Ok(EditExportOutcome {
+                    path: dest.to_string_lossy().to_string(),
+                    mode,
+                    reencoded: true,
+                })
             } else {
-                export_lossless_concat(&ffmpeg, &req, &dest)?;
+                if req.clips.len() == 1 {
+                    export_lossless_single(&ffmpeg, &req, &dest)?;
+                } else {
+                    export_lossless_concat(&ffmpeg, &req, &dest, w)?;
+                }
+                Ok(EditExportOutcome {
+                    path: dest.to_string_lossy().to_string(),
+                    mode: "stream-copy".into(),
+                    reencoded: false,
+                })
             }
-            Ok(EditExportOutcome {
-                path: dest.to_string_lossy().to_string(),
-                mode: "stream-copy".into(),
-                reencoded: false,
-            })
+        };
+        let res = run();
+        match &res {
+            Ok(_) => watch.emit(100, "done"),
+            // Terminal state reaches the frontend via the command result — only
+            // the activity chip needs closing here.
+            Err(e) if e == EXPORT_CANCELLED => {
+                emit_activity(&watch.app, "edit-export", "Export cancelled", 100, 100, "done");
+            }
+            Err(e) => emit_activity(&watch.app, "edit-export", e, 0, 100, "error"),
         }
+        res
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Cancel the in-flight edit export: the watched ffmpeg child is killed at the
+/// next progress line and its partial output file deleted.
+#[tauri::command]
+pub fn cancel_edit_export(state: State<'_, AppState>) {
+    state.export_gen.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Does a path already exist? Used by the export dialog to warn that the chosen
+/// name is taken (the export itself still auto-uniquifies, so nothing is ever
+/// overwritten either way).
+#[tauri::command]
+pub fn path_exists(path: String) -> bool {
+    Path::new(&path).exists()
 }
 
 #[tauri::command]

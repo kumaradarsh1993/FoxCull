@@ -105,6 +105,7 @@ pub fn run() {
                 recycle_dir: Mutex::new(recycle_dir),
                 ffmpeg: video::ffmpeg_path(),
                 warm_gen: Arc::new(AtomicU64::new(0)),
+                export_gen: Arc::new(AtomicU64::new(0)),
             });
             Ok(())
         })
@@ -146,6 +147,8 @@ pub fn run() {
             commands::set_video_segments,
             commands::export_video_segments,
             commands::edit_export,
+            commands::cancel_edit_export,
+            commands::path_exists,
             commands::edit_snapshot,
             commands::list_rejected,
             commands::dispose_rejected,
