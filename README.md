@@ -27,7 +27,7 @@ project is treated as the legacy Claude-built variant.
 ## Download
 
 Latest stable release:
-[FoxCull releases](https://github.com/kumaradarsh1993/FoxCullCodex/releases/latest)
+[FoxCull releases](https://github.com/kumaradarsh1993/FoxCull/releases/latest)
 
 Current stable `v0.6.3` assets:
 

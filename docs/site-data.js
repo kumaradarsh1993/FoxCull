@@ -4,7 +4,7 @@ window.PRODUCT_SITE = {
   kicker: "Culling plus quick edit workflows",
   headline: "Cull the shoot, then shape the clips worth sharing.",
   subhead: "FoxCull keeps the speed of a media culling app and adds a focused edit lane for trims, crops, timeline assembly, screenshots, and social-ready exports.",
-  repoUrl: "https://github.com/kumaradarsh1993/FoxCullCodex",
+  repoUrl: "https://github.com/kumaradarsh1993/FoxCull",
   scene: "edit",
   theme: {
     bg: "#f4f1ea",
@@ -17,28 +17,28 @@ window.PRODUCT_SITE = {
     {
       label: "Download for Windows",
       note: "Stable v0.6.3 installer",
-      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.6.3/FoxCull_0.6.3_x64-setup.exe"
+      href: "https://github.com/kumaradarsh1993/FoxCull/releases/download/v0.6.3/FoxCull_0.6.3_x64-setup.exe"
     },
     {
       label: "Download for macOS",
       note: "Apple silicon DMG",
-      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.6.3/FoxCull_0.6.3_aarch64.dmg"
+      href: "https://github.com/kumaradarsh1993/FoxCull/releases/download/v0.6.3/FoxCull_0.6.3_aarch64.dmg"
     },
     {
       label: "Download for Linux",
       note: "AppImage",
-      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.6.3/FoxCull_0.6.3_amd64.AppImage"
+      href: "https://github.com/kumaradarsh1993/FoxCull/releases/download/v0.6.3/FoxCull_0.6.3_amd64.AppImage"
     },
     {
       label: "Portable Windows",
       note: "Zip build",
-      href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/download/v0.6.3/foxcull_0.6.3_x64_portable.zip"
+      href: "https://github.com/kumaradarsh1993/FoxCull/releases/download/v0.6.3/foxcull_0.6.3_x64_portable.zip"
     }
   ],
   secondary: [
-    { label: "Latest release", href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases/latest" },
-    { label: "All releases", href: "https://github.com/kumaradarsh1993/FoxCullCodex/releases" },
-    { label: "View source", href: "https://github.com/kumaradarsh1993/FoxCullCodex" },
+    { label: "Latest release", href: "https://github.com/kumaradarsh1993/FoxCull/releases/latest" },
+    { label: "All releases", href: "https://github.com/kumaradarsh1993/FoxCull/releases" },
+    { label: "View source", href: "https://github.com/kumaradarsh1993/FoxCull" },
     { label: "Icon options", href: "icon-options.html" }
   ],
   stage: {

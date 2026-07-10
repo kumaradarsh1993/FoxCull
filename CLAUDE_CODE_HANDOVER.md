@@ -4,12 +4,20 @@ This file is intended to give Claude Code or any future coding agent enough
 context to continue FoxCull without accidentally touching the original
 Claude-built `fox-cull` project.
 
-## Current State: Stable FoxCull v0.6.3
+> **2026-07-10 rename:** the working folder and GitHub repo were renamed from
+> `FoxCullCodex` to **`FoxCull`** (the "Codex" origin distinction is no longer
+> useful now that this is the sole active product). The old `fox-cull` reference
+> folder/repo was renamed to `fox-cull_archive` / `FoxCull-Archive`. GitHub
+> auto-redirects the old URLs. Every `FoxCullCodex` mention below this point is a
+> **historical record** of names in effect at the time — left as-is for
+> accuracy; don't "fix" them.
+
+## Current State: Stable FoxCull v1.0.0
 
 - Current main product name: **FoxCull**.
-- Working folder: `D:\Claude Code Projects\FoxCullCodex`.
-- GitHub repository: `https://github.com/kumaradarsh1993/FoxCullCodex`.
-- Stable tag prepared: `v0.6.3`.
+- Working folder: `D:\Claude Code Projects\FoxCull`.
+- GitHub repository: `https://github.com/kumaradarsh1993/FoxCull`.
+- Stable tag prepared: `v0.6.3` (superseded — current stable is `v1.0.0`).
 - Stable commit: the commit pointed to by tag `v0.6.3`.
 - The earlier `fox-cull` folder is now legacy/reference only.
 - User-facing "Codex" branding has been removed from the product. Current
