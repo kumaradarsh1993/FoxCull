@@ -100,6 +100,8 @@
     setOut?: () => void;
     togglePlay?: () => void;
     seekBy?: (d: number) => void;
+    deleteSelected?: () => void;
+    cutAtPlayhead?: () => void;
   } | null>(null);
 
   const HOLD_MS = 850;
@@ -1497,6 +1499,14 @@
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
     const k = e.key.toLowerCase();
     if (editOpen) {
+      // Delete/cut the selection, or the clip under the playhead. editComp's
+      // deleteSelected/cutAtPlayhead exports land alongside this change (see
+      // EditStudio.svelte) — until then these calls are no-ops via `?.`.
+      if (e.key === "Delete" || e.key === "Backspace") { editComp?.deleteSelected?.(); e.preventDefault(); return; }
+      if (k === "c" && !e.ctrlKey && !e.metaKey && !e.altKey) { editComp?.cutAtPlayhead?.(); e.preventDefault(); return; }
+      // Same step-scrub keys as Focus mode (`,`/`.`), for consistency.
+      if (e.key === "," || e.key === "<") { editComp?.seekBy?.(-5); e.preventDefault(); return; }
+      if (e.key === "." || e.key === ">") { editComp?.seekBy?.(5); e.preventDefault(); return; }
       if (e.key === " " || e.code === "Space") { editComp?.togglePlay?.(); e.preventDefault(); return; }
       if (e.key === "[") { editComp?.setIn?.(); e.preventDefault(); return; }
       if (e.key === "]") { editComp?.setOut?.(); e.preventDefault(); return; }
@@ -1642,29 +1652,35 @@
         onclick={(e) => toggleStack(e, rel, item.path)}
       ></span>
     {/if}
-    <Thumb {item} size={gridThumbTier} />
-    <span class="ov">
-      {#if rel}
-        <span class="rel-badges">
-          {#each rel.group.badges.slice(0, 2) as b}
-            <span>{b}</span>
-          {/each}
-        </span>
-        <span class="rel-role">{relatedRoleLabel(rel)}</span>
-        {#if rel.group.orphaned && rel.index === 0}
-          <span class="rel-orphan" title="Original source is no longer present — these are its edits/exports">no orig</span>
+    <!-- The stack line lives OUTSIDE this clipping wrapper (as a sibling above)
+         so its bar can bleed past the tile edge into the grid gap — see
+         .stackline CSS. Everything that still needs rounded-corner clipping
+         (the thumbnail image, reject dim, badges) moves in here instead. -->
+    <div class="cellclip">
+      <Thumb {item} size={gridThumbTier} />
+      <span class="ov">
+        {#if rel}
+          <span class="rel-badges">
+            {#each rel.group.badges.slice(0, 2) as b}
+              <span>{b}</span>
+            {/each}
+          </span>
+          <span class="rel-role">{relatedRoleLabel(rel)}</span>
+          {#if rel.group.orphaned && rel.index === 0}
+            <span class="rel-orphan" title="Original source is no longer present — these are its edits/exports">no orig</span>
+          {/if}
+          {#if isCollapsedRepresentative(item, rel)}
+            <span class="rel-count">{rel.count}</span>
+          {/if}
         {/if}
-        {#if isCollapsedRepresentative(item, rel)}
-          <span class="rel-count">{rel.count}</span>
-        {/if}
-      {/if}
-      {#if item.label}<span class="lbl-dot" style="background:var({LABEL_VAR[item.label]})"></span>{/if}
-      {#if item.flag === "reject"}<span class="fl x">✕</span>{/if}
-      {#if item.flag === "pick"}<span class="fl pick">✓</span>{/if}
-      {#if item.rating > 0}<span class="stars">{"★".repeat(item.rating)}</span>{/if}
-      {#if item.tags.length}<span class="tagdot" title={item.tags.join(", ")}>🏷</span>{/if}
-      {#if derivativeBadge(item.name)}<span class="deriv-badge" title="Exported by FoxCull ({derivativeBadge(item.name)})">{derivativeBadge(item.name)}</span>{/if}
-    </span>
+        {#if item.label}<span class="lbl-dot" style="background:var({LABEL_VAR[item.label]})"></span>{/if}
+        {#if item.flag === "reject"}<span class="fl x">✕</span>{/if}
+        {#if item.flag === "pick"}<span class="fl pick">✓</span>{/if}
+        {#if item.rating > 0}<span class="stars">{"★".repeat(item.rating)}</span>{/if}
+        {#if item.tags.length}<span class="tagdot" title={item.tags.join(", ")}>🏷</span>{/if}
+        {#if derivativeBadge(item.name)}<span class="deriv-badge" title="Exported by FoxCull ({derivativeBadge(item.name)})">{derivativeBadge(item.name)}</span>{/if}
+      </span>
+    </div>
   </button>
 {/snippet}
 
@@ -1697,17 +1713,21 @@
         onclick={(e) => toggleStack(e, rel, item.path)}
       ></span>
     {/if}
-    <Thumb {item} size={stripThumbTier} />
-    {#if rel}
-      <span class="s-rel">{shortRelatedBadge(rel)}</span>
-      <span class="s-role">{relatedRoleLabel(rel).slice(0, 1)}</span>
-      {#if isCollapsedRepresentative(item, rel)}<span class="s-count">{rel.count}</span>{/if}
-    {/if}
-    {#if item.label}<span class="s-lbl" style="background:var({LABEL_VAR[item.label]})"></span>{/if}
-    {#if item.rating > 0}<span class="s-stars">{"★".repeat(item.rating)}</span>{/if}
-    {#if item.flag === "reject"}<span class="s-x">✕</span>{/if}
-    {#if item.flag === "pick"}<span class="s-pick">✓</span>{/if}
-    {#if derivativeBadge(item.name)}<span class="s-deriv">{derivativeBadge(item.name)}</span>{/if}
+    <!-- Same reasoning as gridCell: keep the stack line out of the clipped
+         wrapper so it can bleed into the strip gap between same-stack tiles. -->
+    <div class="cellclip">
+      <Thumb {item} size={stripThumbTier} />
+      {#if rel}
+        <span class="s-rel">{shortRelatedBadge(rel)}</span>
+        <span class="s-role">{relatedRoleLabel(rel).slice(0, 1)}</span>
+        {#if isCollapsedRepresentative(item, rel)}<span class="s-count">{rel.count}</span>{/if}
+      {/if}
+      {#if item.label}<span class="s-lbl" style="background:var({LABEL_VAR[item.label]})"></span>{/if}
+      {#if item.rating > 0}<span class="s-stars">{"★".repeat(item.rating)}</span>{/if}
+      {#if item.flag === "reject"}<span class="s-x">✕</span>{/if}
+      {#if item.flag === "pick"}<span class="s-pick">✓</span>{/if}
+      {#if derivativeBadge(item.name)}<span class="s-deriv">{derivativeBadge(item.name)}</span>{/if}
+    </div>
   </button>
 {/snippet}
 
@@ -2333,11 +2353,23 @@
   .welcome h1 { font-size: 28px; margin: 0; }
 
   /* Every tile reserves a thin top band so the golden stack line (when present)
-     sits above the thumbnail without shrinking it unevenly across a row. */
-  .cell { position: relative; width: 100%; height: 100%; border: 2px solid transparent; border-radius: 6px; overflow: hidden; padding: 8px 0 0; background: var(--viewport-bg); }
+     sits above the thumbnail without shrinking it unevenly across a row.
+     NOTE: no overflow:hidden here — clipping now lives on .cellclip (the inner
+     wrapper around Thumb+overlays) so the stackline bar, a direct child of
+     .cell, is free to bleed past the tile edge into the grid gap. The 2px
+     border still renders with rounded corners on its own without needing
+     overflow:hidden. */
+  .cell { position: relative; width: 100%; height: 100%; border: 2px solid transparent; border-radius: 6px; padding: 8px 0 0; background: var(--viewport-bg); }
   .cell.selected { border-color: var(--select); }
   .cell.active { border-color: var(--accent); }
   .cell.reject :global(.media) { opacity: 0.35; }
+
+  /* Clips the thumbnail + overlay badges to the tile's rounded corners — the
+     job .cell's own overflow:hidden used to do before it had to let the
+     stackline bleed out. Sits below .stackline (lower in DOM, no z-index
+     conflict since stackline is a sibling, not a descendant). */
+  .cellclip { position: relative; width: 100%; height: 100%; overflow: hidden; border-radius: 4px; }
+  .scell .cellclip { border-radius: 3px; }
 
   /* Related/stack tiles: a single golden line on top for an expanded stack,
      a double line for a collapsed stack. The band is the click target (toggles
@@ -2354,11 +2386,15 @@
   /* The bar runs full-bleed by default so adjacent tiles of the SAME stack join
      into one continuous golden line. Only the group's outer ends get a rounded
      cap — which both closes off a lone/collapsed stack and leaves a clear break
-     between two neighbouring stacks. */
+     between two neighbouring stacks. Non-edge sides extend past the tile by
+     border-width(2px) + half the grid/strip gap(3px) so two neighbouring
+     same-stack bars meet (with a safe 1px overlap) in the middle of the gap
+     instead of stopping dead at each tile's own edge. .cell/.scell no longer
+     clip (see .cellclip above), so this bleed is actually visible. */
   .stackline::before {
     content: "";
     position: absolute;
-    left: 0; right: 0;
+    left: -5px; right: -5px;
     top: 2.5px;
     height: 2.5px;
     background: var(--stack);
@@ -2368,7 +2404,7 @@
   .stackline.dbl::after {
     content: "";
     position: absolute;
-    left: 0; right: 0;
+    left: -5px; right: -5px;
     top: 4.5px;
     height: 2.5px;
     background: var(--stack);
@@ -2386,7 +2422,10 @@
   .stackline:hover::before,
   .stackline:hover::after { background: var(--stack-strong); }
 
-  .ov { position: absolute; top: 8px; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none; }
+  /* top:0 (not 8px) — .ov now lives inside .cellclip, which already starts
+     8px down thanks to .cell's padding-top, so the old manual offset would
+     double up. */
+  .ov { position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none; }
   .lbl-dot { position: absolute; top: 5px; right: 5px; width: 12px; height: 12px; border-radius: 3px; border: 1px solid rgba(0,0,0,0.4); }
   .fl { position: absolute; top: 4px; left: 6px; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
   .cell.related .fl { top: 25px; }
@@ -2432,7 +2471,7 @@
   }
   .rel-count { position: absolute; right: 6px; bottom: 21px; min-width: 22px; padding: 3px 6px; text-align: center; font-size: 11px; background: color-mix(in srgb, var(--accent) 72%, #000); }
 
-  .scell { position: relative; width: 100%; height: 100%; border: 2px solid transparent; border-radius: 5px; overflow: hidden; padding: 0; background: var(--viewport-bg); }
+  .scell { position: relative; width: 100%; height: 100%; border: 2px solid transparent; border-radius: 5px; padding: 0; background: var(--viewport-bg); }
   .scell.selected { border-color: var(--select); }
   .scell.active { border-color: var(--accent); }
   .scell.reject { opacity: 0.45; }

@@ -71,10 +71,26 @@
     kind: "video" | "audio";
     mode: DragMode;
     startX: number;
+    startY: number;
     start: number;
+    lane: number;
     inS: number;
     outS: number;
     duration: number;
+    // For a group "move" drag: the initial start/lane of every selected clip so
+    // they all shift by the same delta.
+    group: { id: string; start: number; lane: number }[];
+  };
+
+  type ProgramSeg = { start: number; end: number; clip: TimelineClip | null };
+  type ProgramClip = {
+    path: string;
+    name: string;
+    in_s: number;
+    out_s: number;
+    crop_x: number;
+    crop_y: number;
+    zoom: number;
   };
 
   const PRESETS: Record<PresetId, { label: string; detail: string; w: number; h: number; fit: "crop" | "original" }> = {
@@ -104,6 +120,7 @@
 
   const VIDEO_LANES = [0, 1, 2];
   const AUDIO_LANES = [0, 1, 2];
+  const TRACK_HEIGHT = 36;
   const SNAP = 0.16;
   const TIMELINE_ZOOM_MIN = 12;
   const TIMELINE_ZOOM_MAX = 60;
@@ -134,7 +151,14 @@
   let clips = $state<TimelineClip[]>([]);
   let audioClips = $state<AudioClip[]>([]);
   let selectedId = $state<string | null>(null);
+  let selectedIds = $state<Set<string>>(new Set());
   let selectedAudioId = $state<string | null>(null);
+  // Program playback: the top player follows a single timeline playhead across
+  // every clip/gap, not one clicked clip.
+  let playheadS = $state(0);
+  let playing = $state(false);
+  // While dragging a clip's trim handle we park the player on the moving edge.
+  let trimPreview = $state<{ id: string; time: number } | null>(null);
   let preset = $state<PresetId>("reels");
   let exportTarget = $state<ExportTarget>("instagram_reels");
   let encoder = $state<Encoder>("auto");
@@ -168,18 +192,22 @@
   let dragSourcePath = $state<string | null>(null);
   let seededKey = $state("");
   let seeding = $state(false);
-  let lastPreviewClipId = "";
   let timelineDrag: TimelineDrag | null = null;
   let sourceMenu = $state<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
   let exportMenuOpen = $state(false);
   type DlgMode = "instagram" | "lossless" | "custom";
   let exportDlg = $state(false);
   let dlgMode = $state<DlgMode>("instagram");
-  let dlgAspect = $state<"reels" | "square">("reels");
   let keepHdr = $state(false);
   let frameToast = $state<string | null>(null);
   let pendingPreviewSeek = $state<number | null>(null);
   let previewSeekRAF = 0;
+  // Program engine internals (plain refs — not reactive state).
+  let engineRAF = 0;
+  let lastWall = 0;
+  let loadedSrc = "";
+  let pendingSeek: number | null = null;
+  let pendingPlay = false;
   let cropDrag:
     | { x: number; y: number; cropX: number; cropY: number; imgW: number; imgH: number; cropW: number; cropH: number }
     | null = null;
@@ -201,9 +229,90 @@
   let selectedClip = $derived(clips.find((c) => c.id === selectedId) ?? clips[0] ?? null);
   let selectedAudio = $derived(audioClips.find((c) => c.id === selectedAudioId) ?? null);
   let orderedClips = $derived.by(() => [...clips].sort((a, b) => a.start - b.start || a.lane - b.lane));
-  let timelineSeconds = $derived(clips.reduce((sum, c) => sum + Math.max(0, c.outS - c.inS), 0));
   let audioEnd = $derived(audioClips.reduce((max, c) => Math.max(max, c.start + c.duration), 0));
   let videoEnd = $derived(clips.reduce((max, c) => Math.max(max, c.start + Math.max(0, c.outS - c.inS)), 0));
+  // The "program": video clips resolved into an ordered, gap-inclusive sequence
+  // covering [0, videoEnd]. Where clips overlap across lanes the LOWER lane index
+  // wins (V1 beats V2 beats V3). Null-clip segments are gaps (played black).
+  let program = $derived.by<ProgramSeg[]>(() => {
+    const end = videoEnd;
+    if (end <= 0) return [];
+    const bounds = new Set<number>([0, end]);
+    for (const c of clips) {
+      const s = Math.max(0, Math.min(c.start, end));
+      const e = Math.max(0, Math.min(c.start + clipLen(c), end));
+      if (e > s) {
+        bounds.add(s);
+        bounds.add(e);
+      }
+    }
+    const marks = [...bounds].sort((a, b) => a - b);
+    const raw: ProgramSeg[] = [];
+    for (let i = 0; i < marks.length - 1; i++) {
+      const a = marks[i];
+      const b = marks[i + 1];
+      if (b - a < 1e-4) continue;
+      const mid = (a + b) / 2;
+      let winner: TimelineClip | null = null;
+      for (const c of clips) {
+        if (mid >= c.start && mid < c.start + clipLen(c)) {
+          if (!winner || c.lane < winner.lane) winner = c;
+        }
+      }
+      raw.push({ start: a, end: b, clip: winner });
+    }
+    // Merge adjacent segments that resolve to the same clip (or both gaps).
+    const merged: ProgramSeg[] = [];
+    for (const seg of raw) {
+      const last = merged[merged.length - 1];
+      if (last && (last.clip?.id ?? null) === (seg.clip?.id ?? null) && Math.abs(last.end - seg.start) < 1e-4) {
+        last.end = seg.end;
+      } else {
+        merged.push({ ...seg });
+      }
+    }
+    return merged;
+  });
+  // The flattened, gap-free export list: each program segment mapped back to its
+  // source in/out — this (top-lane-wins) is what export sends.
+  let programClips = $derived.by<ProgramClip[]>(() =>
+    program
+      .filter((s) => s.clip)
+      .map((s) => {
+        const c = s.clip as TimelineClip;
+        return {
+          path: c.path,
+          name: c.name,
+          in_s: c.inS + (s.start - c.start),
+          out_s: c.inS + (s.end - c.start),
+          crop_x: c.cropX,
+          crop_y: c.cropY,
+          zoom: c.zoom,
+        };
+      }),
+  );
+  let programSeconds = $derived(programClips.reduce((sum, c) => sum + Math.max(0, c.out_s - c.in_s), 0));
+  // Distinct source resolutions across the program (drives the "conform" step).
+  let programResCount = $derived.by(() => {
+    const set = new Set<string>();
+    for (const pc of programClips) {
+      const p = probes[pc.path];
+      if (p?.width && p?.height) set.add(`${p.width}x${p.height}`);
+    }
+    return set.size;
+  });
+  // Mixed resolutions OR codecs across the program: the backend refuses to
+  // stream-copy-concat these (it would produce a broken file) and silently
+  // re-encodes instead — the dialog's stream-copy promises must match that.
+  let mixedSources = $derived.by(() => {
+    if (programResCount >= 2) return true;
+    const codecs = new Set<string>();
+    for (const pc of programClips) {
+      const c = probes[pc.path]?.codec;
+      if (c) codecs.add(c);
+    }
+    return codecs.size >= 2;
+  });
   let timelineEnd = $derived(Math.max(10, videoEnd, audioEnd));
   let timelineWidth = $derived(Math.max(980, timelineEnd * timelineScale + 220));
   let previewFilter = $derived(
@@ -214,11 +323,24 @@
   let igSourceClip = $derived(selectedClip ?? orderedClips[0] ?? null);
   let igSourceProbe = $derived(igSourceClip ? probes[igSourceClip.path] ?? null : null);
   let igEstimateSecs = $derived.by(() => {
-    const secs = timelineSeconds || (igSourceClip ? igSourceClip.outS - igSourceClip.inS : 0);
+    const secs = programSeconds || (igSourceClip ? igSourceClip.outS - igSourceClip.inS : 0);
     const hdrHeavy = igSourceProbe?.hdr && dlgMode === "instagram";
-    const factor = hdrHeavy ? 1.5 : dlgMode === "lossless" && outPreset.fit === "original" ? 0.05 : 0.7;
-    return Math.max(dlgMode === "lossless" && outPreset.fit === "original" ? 1 : 4, Math.round(secs * factor));
+    const streamCopy = dlgMode === "lossless" && outPreset.fit === "original" && !mixedSources;
+    const factor = hdrHeavy ? 1.5 : streamCopy ? 0.05 : 0.7;
+    return Math.max(streamCopy ? 1 : 4, Math.round(secs * factor));
   });
+  // The effective post-crop source rectangle (in source pixels) for the current
+  // output aspect + clip zoom. Single source of truth for the compare card, the
+  // soft-crop warning, and the time breakdown.
+  function cropDims(p: MediaProbe | null, clip: { zoom: number } | null): { cropW: number; cropH: number } | null {
+    if (!p?.width || !p?.height) return null;
+    const aspect = outPreset.w / outPreset.h;
+    const zoom = clip?.zoom && clip.zoom > 0 ? clip.zoom : 1;
+    const cropW = Math.min(p.width, p.height * aspect) / zoom;
+    const cropH = Math.min(p.height, p.width / aspect) / zoom;
+    return { cropW, cropH };
+  }
+  let igCrop = $derived(outPreset.fit === "original" ? null : cropDims(igSourceProbe, igSourceClip));
   let neutralLook = $derived(
     Math.abs(adjustments.brightness) < 0.001 &&
       Math.abs(adjustments.contrast - 1) < 0.001 &&
@@ -228,25 +350,23 @@
   );
   // Will a vertical crop of this source have to upscale (→ soft)? True when the
   // crop's pixel width is below the output width (e.g. a 1080p landscape → 9:16).
-  let softCrop = $derived.by(() => {
-    if (outPreset.fit === "original") return false;
-    const p = igSourceProbe;
-    if (!p?.width || !p?.height) return false;
-    const cropW = Math.min(p.width, p.height * (outPreset.w / outPreset.h));
-    return cropW < outPreset.w - 1;
-  });
+  let softCrop = $derived(!!igCrop && igCrop.cropW < outPreset.w - 1);
   // Rule-based breakdown of what drives the export time (shown under the estimate).
   let exportSteps = $derived.by(() => {
     const steps: { label: string; note: string }[] = [];
     const p = igSourceProbe;
-    if (dlgMode === "lossless" && outPreset.fit === "original" && neutralLook) {
+    if (dlgMode === "lossless" && outPreset.fit === "original" && neutralLook && !mixedSources) {
       steps.push({ label: "Trim (stream copy)", note: "instant — no re-encode" });
       return steps;
     }
     if (p?.hdr && dlgMode === "instagram" && keepHdr) steps.push({ label: "Keep HDR (10-bit HEVC)", note: "heavy" });
     else if (p?.hdr && dlgMode === "instagram") steps.push({ label: "HDR → SDR tone-map", note: "heaviest step" });
-    if (p?.width && outPreset.fit !== "original" && p.width > outPreset.w)
-      steps.push({ label: `Downscale ${p.width}→${outPreset.w}px`, note: "moderate" });
+    if (igCrop && outPreset.fit !== "original") {
+      const cw = Math.round(igCrop.cropW);
+      if (cw > outPreset.w + 1) steps.push({ label: `Downscale ${cw}→${outPreset.w}px`, note: "moderate" });
+      else if (cw < outPreset.w - 1) steps.push({ label: `Upscale ${cw}→${outPreset.w}px`, note: "light" });
+    }
+    if (mixedSources) steps.push({ label: "Conform mixed sources", note: "moderate" });
     if (softCrop) steps.push({ label: "Sharpen soft crop", note: "light" });
     if (p?.fps && p.fps > 31 && dlgMode === "instagram") steps.push({ label: `${Math.round(p.fps)}→30 fps`, note: "light" });
     if (!neutralLook) steps.push({ label: "Look adjustments", note: "light" });
@@ -261,6 +381,17 @@
       Math.abs(adjustments.saturation - 1) > 0.001 ||
       Math.abs(adjustments.warmth) > 0.001 ||
       Math.abs(adjustments.sharpen) > 0.001,
+  );
+  // Warmth is a blend overlay (CSS filter can't warm/cool) — see the preview tint.
+  let warmthTint = $derived.by(() => {
+    const w = adjustments.warmth;
+    if (Math.abs(w) < 0.001) return null;
+    return { color: w > 0 ? "#ff8a2a" : "#3b7dff", opacity: Math.min(0.6, Math.abs(w) * 1.8) };
+  });
+  // The crop overlay only makes sense when the clip under the playhead IS the
+  // selected clip (that's the frame the player is showing + the crop applies to).
+  let cropVisible = $derived(
+    !productionPreview && !!selectedClip && (segAt(playheadS)?.clip?.id ?? null) === (selectedClip?.id ?? null),
   );
 
   function mediaToSource(item: MediaItem): EditSourceItem {
@@ -362,13 +493,39 @@
     });
   });
 
+  // Keep the paused player parked on the correct frame: the clip under the
+  // playhead (or a trim edge, mid-drag). While PLAYING, the engine owns the
+  // video and this effect bows out (it reads `playing` first, so it doesn't even
+  // subscribe to playheadS during playback → no per-frame re-seeks).
   $effect(() => {
-    const clip = selectedClip;
-    const video = previewVideo;
-    if (!clip || !video || clip.id === lastPreviewClipId) return;
-    lastPreviewClipId = clip.id;
-    currentTime = clip.inS;
-    video.currentTime = clip.inS;
+    const v = previewVideo;
+    const pp = productionPreview;
+    const tp = trimPreview;
+    const isPlaying = playing;
+    if (!v || pp || isPlaying) return;
+    if (tp) {
+      const c = clips.find((x) => x.id === tp.id);
+      if (c) syncVideoImperative(c, tp.time, false);
+      return;
+    }
+    const ph = playheadS;
+    const seg = segAt(ph);
+    const clip = seg?.clip ?? null;
+    syncVideoImperative(clip, clip ? clip.inS + (ph - clip.start) : 0, false);
+  });
+
+  // Production preview swaps in a different <video> element with a reactive src,
+  // so drop the imperative src bookkeeping when the mode flips.
+  $effect(() => {
+    productionPreview;
+    loadedSrc = "";
+    pendingSeek = null;
+    pendingPlay = false;
+  });
+
+  // Clamp the playhead into range as the timeline changes.
+  $effect(() => {
+    if (playheadS > videoEnd) playheadS = Math.max(0, videoEnd);
   });
 
   $effect(() => {
@@ -402,6 +559,51 @@
 
   function uid() {
     return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  const clipLen = (c: { inS: number; outS: number }) => Math.max(0.05, c.outS - c.inS);
+
+  // The program segment (clip or gap) that contains timeline time t.
+  function segAt(t: number): ProgramSeg | null {
+    for (const s of program) if (t >= s.start - 1e-4 && t < s.end - 1e-4) return s;
+    return program.length ? program[program.length - 1] : null;
+  }
+
+  // Push a candidate placement right until it no longer overlaps an existing clip
+  // on the same lane — the "never overwrite what's already there" rule.
+  function freeStart(lane: number, start: number, len: number, ignoreId?: string): number {
+    let s = Math.max(0, start);
+    for (let guard = 0; guard < 400; guard++) {
+      const conflict = clips.find(
+        (o) => o.id !== ignoreId && o.lane === lane && s < o.start + clipLen(o) - 1e-4 && s + len > o.start + 1e-4,
+      );
+      if (!conflict) break;
+      s = conflict.start + clipLen(conflict);
+    }
+    return s;
+  }
+
+  // After a group move, shove each moved clip clear of any NON-moved clip it now
+  // overlaps on its lane (moved clips keep their relative layout).
+  function resolveOverlaps(movedIds: string[]) {
+    const moved = new Set(movedIds);
+    const next = clips.map((c) => ({ ...c }));
+    const movedClips = next.filter((c) => moved.has(c.id)).sort((a, b) => a.start - b.start);
+    for (const mc of movedClips) {
+      for (let guard = 0; guard < 400; guard++) {
+        const conflict = next.find(
+          (o) =>
+            o.id !== mc.id &&
+            !moved.has(o.id) &&
+            o.lane === mc.lane &&
+            mc.start < o.start + clipLen(o) - 1e-4 &&
+            mc.start + clipLen(mc) > o.start + 1e-4,
+        );
+        if (!conflict) break;
+        mc.start = conflict.start + clipLen(conflict);
+      }
+    }
+    clips = next;
   }
 
   function fmt(s: number) {
@@ -521,13 +723,14 @@
     let cursor = start ?? nextVideoStart(lane);
     for (const item of items.filter((s) => s.kind === "video")) {
       const clip = await makeClip(item, lane, cursor);
+      // Never overwrite an existing clip on the lane — push right if it collides.
+      clip.start = freeStart(lane, cursor, clipLen(clip), clip.id);
       made.push(clip);
-      cursor += clip.outS - clip.inS;
+      cursor = clip.start + clipLen(clip);
     }
     if (!made.length) return;
     clips = [...clips, ...made];
-    selectedId = made[made.length - 1].id;
-    selectedAudioId = null;
+    selectClip(made[made.length - 1].id);
     exportNote = null;
   }
 
@@ -587,24 +790,28 @@
     }
     if (!made.length) return;
     clips = [...clips, ...made];
-    selectedId = made[made.length - 1].id;
-    selectedAudioId = null;
+    selectClip(made[made.length - 1].id);
     exportNote = null;
   }
 
-  async function addAudio(src: EditSourceItem, lane = 0, start = nextAudioStart(lane)) {
+  // Default to A3 so picked music doesn't sit under V1's source-audio mirror bars.
+  async function addAudio(src: EditSourceItem, lane = 2, start = nextAudioStart(lane)) {
     if (src.kind !== "audio") return;
     const duration = await durationFor(src);
     const clip = { id: uid(), path: src.path, name: src.name, start, duration: Math.max(1, duration || 30), lane };
     audioClips = [...audioClips, clip];
-    selectedAudioId = clip.id;
-    selectedId = null;
+    selectAudio(clip.id);
     preserveSourceAudio = false;
     exportNote = null;
   }
 
   function removeClip(id: string) {
     clips = clips.filter((c) => c.id !== id);
+    if (selectedIds.has(id)) {
+      const next = new Set(selectedIds);
+      next.delete(id);
+      selectedIds = next;
+    }
     if (selectedId === id) selectedId = clips[0]?.id ?? null;
     exportNote = null;
   }
@@ -616,10 +823,10 @@
   }
 
   function duplicateClip(clip: TimelineClip) {
-    const copy = { ...clip, id: uid(), start: clip.start + Math.max(0.1, clip.outS - clip.inS) };
+    const len = clipLen(clip);
+    const copy = { ...clip, id: uid(), start: freeStart(clip.lane, clip.start + len, len) };
     clips = [...clips, copy];
-    selectedId = copy.id;
-    selectedAudioId = null;
+    selectClip(copy.id);
     exportNote = null;
   }
 
@@ -672,62 +879,216 @@
   }
 
   function onPreviewError() {
-    if (selectedClip) void ensurePreviewProxy(selectedClip);
+    const clip = productionPreview ? selectedClip : segAt(playheadS)?.clip ?? selectedClip;
+    if (clip) void ensurePreviewProxy(clip);
+  }
+
+  // The single funnel that positions the top <video>: which source it holds and
+  // where in that source it sits. Skips redundant loads (a repeated src is just a
+  // seek) and defers seeks until metadata is ready.
+  function syncVideoImperative(clip: TimelineClip | null, srcTime: number, play: boolean) {
+    const v = previewVideo;
+    if (!v || productionPreview) return;
+    if (!clip) {
+      // Gap → black: drop the source entirely.
+      if (loadedSrc) {
+        try {
+          v.pause();
+        } catch {
+          /* ignore */
+        }
+        v.removeAttribute("src");
+        v.load();
+        loadedSrc = "";
+      }
+      return;
+    }
+    if (loadedSrc !== clip.src) {
+      loadedSrc = clip.src;
+      pendingSeek = srcTime;
+      pendingPlay = play;
+      v.src = clip.src;
+      v.load();
+      return;
+    }
+    if (v.readyState < 1) {
+      pendingSeek = srcTime;
+      pendingPlay = play;
+      return;
+    }
+    if (Math.abs(v.currentTime - srcTime) > 0.033) {
+      try {
+        v.currentTime = srcTime;
+      } catch {
+        /* ignore */
+      }
+    }
+    if (play) {
+      if (v.paused) v.play().catch(() => {});
+    } else if (!v.paused) {
+      v.pause();
+    }
   }
 
   function onMeta() {
-    if (!previewVideo || !selectedClip) return;
-    const d = Number.isFinite(previewVideo.duration) ? previewVideo.duration : selectedClip.duration;
-    videoW = previewVideo.videoWidth || probes[selectedClip.path]?.width || videoW;
-    videoH = previewVideo.videoHeight || probes[selectedClip.path]?.height || videoH;
-    if (previewVideo.currentTime < selectedClip.inS || previewVideo.currentTime > selectedClip.outS) {
-      previewVideo.currentTime = selectedClip.inS;
-      currentTime = selectedClip.inS;
-    }
-    if (d > 0 && Math.abs(d - selectedClip.duration) > 0.01) {
-      updateClip(selectedClip.id, { duration: d, outS: Math.min(selectedClip.outS || d, d) });
-    }
-  }
-
-  function onTime() {
-    if (!previewVideo || !selectedClip) return;
-    currentTime = previewVideo.currentTime || 0;
-    if (currentTime > selectedClip.outS) {
-      previewVideo.pause();
-      previewVideo.currentTime = selectedClip.inS;
-    }
-  }
-
-  function applyPreviewSeek(t: number) {
-    if (!previewVideo || !selectedClip) return;
-    const next = Math.max(0, Math.min(t, selectedClip.duration));
-    currentTime = next;
-    if ("fastSeek" in previewVideo && typeof previewVideo.fastSeek === "function") {
-      try {
-        previewVideo.fastSeek(next);
-        return;
-      } catch {
-        /* fall back */
+    const v = previewVideo;
+    if (!v) return;
+    const clip = productionPreview ? selectedClip : segAt(playheadS)?.clip ?? null;
+    if (clip) {
+      videoW = v.videoWidth || probes[clip.path]?.width || videoW;
+      videoH = v.videoHeight || probes[clip.path]?.height || videoH;
+      const d = Number.isFinite(v.duration) ? v.duration : clip.duration;
+      if (d > 0 && Math.abs(d - clip.duration) > 0.01) {
+        updateClip(clip.id, { duration: d, outS: Math.min(clip.outS || d, d) });
       }
     }
-    previewVideo.currentTime = next;
+    if (productionPreview && selectedClip) {
+      if (v.currentTime < selectedClip.inS || v.currentTime > selectedClip.outS) {
+        v.currentTime = selectedClip.inS;
+        currentTime = selectedClip.inS;
+      }
+      return;
+    }
+    if (pendingSeek != null) {
+      try {
+        v.currentTime = pendingSeek;
+      } catch {
+        /* ignore */
+      }
+      pendingSeek = null;
+    }
+    if (pendingPlay) {
+      v.play().catch(() => {});
+      pendingPlay = false;
+    }
   }
 
-  function seek(t: number) {
-    if (!selectedClip) return;
-    const next = Math.max(0, Math.min(t, selectedClip.duration));
-    currentTime = next;
-    pendingPreviewSeek = next;
-    if (previewSeekRAF) return;
-    previewSeekRAF = requestAnimationFrame(() => {
-      const target = pendingPreviewSeek;
-      pendingPreviewSeek = null;
-      previewSeekRAF = 0;
-      if (target != null) applyPreviewSeek(target);
-    });
+  // ---- Program engine (sequence playback across clips + gaps) ----
+
+  function scheduleTick() {
+    if (engineRAF) return;
+    engineRAF = requestAnimationFrame(engineTick);
+  }
+
+  // Read the video's own clock into the playhead; advance at the segment edge.
+  // Returns true when it handled a live clip segment.
+  function sampleFromVideo(): boolean {
+    const v = previewVideo;
+    if (!v) return false;
+    const seg = segAt(playheadS);
+    if (!seg?.clip) return false;
+    const clip = seg.clip;
+    if (loadedSrc !== clip.src || v.readyState < 1) return false;
+    const segOutSrc = clip.inS + (seg.end - seg.start);
+    const ph = seg.start + (v.currentTime - clip.inS);
+    if (v.currentTime >= segOutSrc - 1e-3 || ph >= seg.end - 1e-3) {
+      advanceFrom(seg);
+      return true;
+    }
+    if (ph > playheadS) playheadS = Math.min(ph, seg.end);
+    return true;
+  }
+
+  function advanceFrom(seg: ProgramSeg) {
+    const next = seg.end;
+    if (next >= videoEnd - 1e-3) {
+      playheadS = videoEnd;
+      stopPlayback();
+      return;
+    }
+    playheadS = next;
+    const nseg = segAt(playheadS);
+    if (nseg?.clip) syncVideoImperative(nseg.clip, nseg.clip.inS + (playheadS - nseg.clip.start), true);
+    else syncVideoImperative(null, 0, false);
+  }
+
+  function engineTick() {
+    engineRAF = 0;
+    if (!playing) return;
+    const seg = segAt(playheadS);
+    if (!seg) {
+      stopPlayback();
+      return;
+    }
+    const now = performance.now();
+    const dt = Math.max(0, (now - lastWall) / 1000);
+    lastWall = now;
+    if (seg.clip) {
+      const v = previewVideo;
+      if (v && loadedSrc === seg.clip.src && v.readyState >= 1) {
+        if (v.paused) v.play().catch(() => {});
+        sampleFromVideo();
+      } else {
+        syncVideoImperative(seg.clip, seg.clip.inS + (playheadS - seg.clip.start), true);
+      }
+    } else {
+      const ph = playheadS + dt;
+      if (ph >= seg.end - 1e-3) advanceFrom(seg);
+      else playheadS = ph;
+    }
+    if (playing) scheduleTick();
+  }
+
+  function onNormalTime() {
+    if (playing) sampleFromVideo();
+  }
+
+  function startPlayback() {
+    if (!clips.length) return;
+    if (playheadS >= videoEnd - 1e-3) playheadS = 0;
+    playing = true;
+    lastWall = performance.now();
+    const seg = segAt(playheadS);
+    if (seg?.clip) syncVideoImperative(seg.clip, seg.clip.inS + (playheadS - seg.clip.start), true);
+    else syncVideoImperative(null, 0, false);
+    scheduleTick();
+  }
+
+  function stopPlayback() {
+    playing = false;
+    if (engineRAF) {
+      cancelAnimationFrame(engineRAF);
+      engineRAF = 0;
+    }
+    try {
+      previewVideo?.pause();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function seekTimeline(t: number) {
+    const clamped = Math.max(0, Math.min(t, videoEnd));
+    playheadS = clamped;
+    lastWall = performance.now();
+    if (playing) {
+      const seg = segAt(clamped);
+      if (seg?.clip) syncVideoImperative(seg.clip, seg.clip.inS + (clamped - seg.clip.start), true);
+      else syncVideoImperative(null, 0, false);
+    }
+    // Paused: the frame-sync $effect repositions the video off playheadS.
   }
 
   export function togglePlay() {
+    if (productionPreview) {
+      togglePlayProduction();
+      return;
+    }
+    if (playing) stopPlayback();
+    else startPlayback();
+  }
+
+  export function seekBy(delta: number) {
+    if (productionPreview) {
+      seekProduction(currentTime + delta);
+      return;
+    }
+    seekTimeline(playheadS + delta);
+  }
+
+  // ---- Production ("Preview" / fullscreen output) — per-clip, engine bypassed ----
+
+  function togglePlayProduction() {
     if (!previewVideo || !selectedClip) return;
     if (previewVideo.paused) {
       if (previewVideo.currentTime < selectedClip.inS || previewVideo.currentTime >= selectedClip.outS) {
@@ -739,9 +1100,37 @@
     }
   }
 
-  export function seekBy(delta: number) {
+  function onProdTime() {
+    if (!previewVideo || !selectedClip) return;
+    currentTime = previewVideo.currentTime || 0;
+    if (currentTime > selectedClip.outS) {
+      previewVideo.pause();
+      previewVideo.currentTime = selectedClip.inS;
+    }
+  }
+
+  function seekProduction(t: number) {
     if (!selectedClip) return;
-    seek(currentTime + delta);
+    const next = Math.max(selectedClip.inS, Math.min(t, selectedClip.outS));
+    currentTime = next;
+    pendingPreviewSeek = next;
+    if (previewSeekRAF) return;
+    previewSeekRAF = requestAnimationFrame(() => {
+      const target = pendingPreviewSeek;
+      pendingPreviewSeek = null;
+      previewSeekRAF = 0;
+      if (target != null && previewVideo) {
+        if ("fastSeek" in previewVideo && typeof previewVideo.fastSeek === "function") {
+          try {
+            previewVideo.fastSeek(target);
+            return;
+          } catch {
+            /* fall back */
+          }
+        }
+        previewVideo.currentTime = target;
+      }
+    });
   }
 
   async function syncProductionPreviewTime() {
@@ -753,26 +1142,74 @@
 
   export async function setOutputPreview(on: boolean) {
     if (on && !selectedClip) return;
+    if (on) stopPlayback();
     productionPreview = on && !!selectedClip;
     exportMenuOpen = false;
     exportDlg = false;
-    if (productionPreview) await syncProductionPreviewTime();
+    if (productionPreview) {
+      currentTime = Math.max(selectedClip!.inS, Math.min(currentTime, selectedClip!.outS));
+      await syncProductionPreviewTime();
+    }
   }
 
   async function toggleProductionPreview() {
     await setOutputPreview(!productionPreview);
   }
 
+  // [ / ] trim the SELECTED clip at the playhead (only when the playhead is
+  // inside it). Trimming the in-point keeps the remaining content in place by
+  // shifting `start`, mirroring the trimIn drag.
   export function setIn() {
-    if (!selectedClip) return;
-    updateClip(selectedClip.id, { inS: Math.min(currentTime, selectedClip.outS - 0.05) });
-    clampTrim();
+    const clip = selectedClip;
+    if (!clip) return;
+    const len = clipLen(clip);
+    if (playheadS < clip.start - 1e-3 || playheadS > clip.start + len + 1e-3) return;
+    const local = clip.inS + (playheadS - clip.start);
+    const nextIn = Math.max(0, Math.min(local, clip.outS - 0.05));
+    updateClip(clip.id, { start: clip.start + (nextIn - clip.inS), inS: nextIn });
   }
 
   export function setOut() {
-    if (!selectedClip) return;
-    updateClip(selectedClip.id, { outS: Math.max(currentTime, selectedClip.inS + 0.05) });
-    clampTrim();
+    const clip = selectedClip;
+    if (!clip) return;
+    const len = clipLen(clip);
+    if (playheadS < clip.start - 1e-3 || playheadS > clip.start + len + 1e-3) return;
+    const local = clip.inS + (playheadS - clip.start);
+    const nextOut = Math.max(clip.inS + 0.05, Math.min(local, clip.duration));
+    updateClip(clip.id, { outS: nextOut });
+  }
+
+  // Razor-split at the playhead: the selected clips under it, else every clip the
+  // playhead strictly contains. Clip A keeps [inS, cutLocal]; a new B holds
+  // [cutLocal, outS] at start = playhead.
+  export function cutAtPlayhead() {
+    const t = playheadS;
+    const contains = (c: TimelineClip) => c.start < t - 1e-3 && c.start + clipLen(c) > t + 1e-3;
+    const sel = clips.filter((c) => selectedIds.has(c.id) && contains(c));
+    const targets = new Set((sel.length ? sel : clips.filter(contains)).map((c) => c.id));
+    if (!targets.size) return;
+    const additions: TimelineClip[] = [];
+    const updated = clips.map((c) => {
+      if (!targets.has(c.id)) return c;
+      const cutLocal = c.inS + (t - c.start);
+      additions.push({ ...c, id: uid(), inS: cutLocal, start: t });
+      return { ...c, outS: cutLocal };
+    });
+    clips = [...updated, ...additions];
+    exportNote = null;
+  }
+
+  export function deleteSelected() {
+    if (selectedIds.size) {
+      clips = clips.filter((c) => !selectedIds.has(c.id));
+      selectedIds = new Set();
+      selectedId = clips[0]?.id ?? null;
+    }
+    if (selectedAudioId) {
+      audioClips = audioClips.filter((a) => a.id !== selectedAudioId);
+      selectedAudioId = null;
+    }
+    exportNote = null;
   }
 
   const NEUTRAL_ADJ: EditAdjustments = { brightness: 0, contrast: 1, saturation: 1, warmth: 0, sharpen: 0 };
@@ -791,21 +1228,21 @@
     adjustments = { ...LOOK_PRESETS[id].values };
   }
 
+  // Small numeric readout beside each slider label (signed for brightness/warmth).
+  function adjReadout(field: keyof EditAdjustments): string {
+    const v = adjustments[field];
+    if (field === "brightness" || field === "warmth") {
+      if (Math.abs(v) < 0.0005) return "0";
+      return `${v > 0 ? "+" : ""}${v.toFixed(2)}`;
+    }
+    return v.toFixed(2);
+  }
+
   // A live CSS-filter preview of a look, used for the preset swatches so they
   // show what they do instead of being flat text tiles.
   function lookFilter(v: EditAdjustments): string {
     const warm = Math.max(0, v.warmth) * 3;
     return `brightness(${(1 + v.brightness).toFixed(3)}) contrast(${v.contrast}) saturate(${v.saturation}) sepia(${warm.toFixed(3)})`;
-  }
-
-  function applyExportTarget(target: ExportTarget) {
-    exportTarget = target;
-    const targetDef = EXPORT_TARGETS[target];
-    preset = targetDef.preset;
-    quality = targetDef.quality;
-    if (target === "archive") {
-      preserveSourceAudio = true;
-    }
   }
 
   function setPreset(id: PresetId) {
@@ -880,17 +1317,18 @@
   //   DJI_0674_trim_crop — lossless trim + crop
   //   A+B_mix            — composite of two sources
   function exportName() {
-    const clips = orderedClips;
-    const first = clips[0]?.name ?? "clip";
+    const seq = programClips;
+    const first = seq[0]?.name ?? "clip";
     const stem = first.replace(/\.[^.]+$/, "");
-    const distinct = new Set(clips.map((c) => c.path));
+    const distinct = new Set(seq.map((c) => c.path));
     if (distinct.size > 1) {
-      const other = clips.find((c) => c.path !== clips[0].path)?.name ?? "";
+      const other = seq.find((c) => c.path !== seq[0].path)?.name ?? "";
       const otherStem = other.replace(/\.[^.]+$/, "");
       return `${stem}+${otherStem || distinct.size - 1}_mix`;
     }
-    const c = clips[0];
-    const trimmed = !!c && (c.inS > 0.05 || c.outS < c.duration - 0.05);
+    const c = seq[0];
+    const dur = clips.find((x) => x.path === c?.path)?.duration ?? 0;
+    const trimmed = !!c && (c.in_s > 0.05 || c.out_s < dur - 0.05);
     const cropped = outPreset.fit !== "original";
     const parts = [stem];
     if (exportTarget.startsWith("instagram")) {
@@ -960,6 +1398,7 @@
       x: e.clientX,
       y: e.clientY,
       entries: [
+        { label: "Split at playhead", icon: "✂", action: () => cutAtPlayhead() },
         { label: "Duplicate clip", icon: "+", action: () => duplicateClip(clip) },
         { label: "Remove clip", icon: "×", danger: true, action: () => removeClip(clip.id) },
         { separator: true },
@@ -986,29 +1425,31 @@
     };
   }
 
-  // Unified export dialog. Every path — the main Export button and the ▾ quick
-  // items — opens the SAME dialog; the quick items just preselect the mode.
-  function setDlgAspect(a: "reels" | "square") {
-    dlgAspect = a;
-    applyExportTarget(a === "square" ? "instagram_square" : "instagram_reels");
-  }
-
+  // Aspect is now chosen in the edit screen (the preset row) — the dialog only
+  // picks the delivery mode. Every entry opens the SAME dialog.
   function applyDlgMode(mode: DlgMode) {
     dlgMode = mode;
-    if (mode === "instagram") setDlgAspect(dlgAspect);
-    // lossless/custom keep whatever aspect preset the user already has.
   }
 
-  function openExport(mode: DlgMode, target?: ExportTarget) {
+  function openExport(mode: DlgMode) {
     exportMenuOpen = false;
-    if (mode === "instagram") dlgAspect = target === "instagram_square" ? "square" : "reels";
     applyDlgMode(mode);
     exportDlg = true;
+  }
+
+  // Map the edit-screen aspect preset to the Instagram export target (drives the
+  // filename suffix + quality).
+  function instagramTargetForPreset(): ExportTarget {
+    if (preset === "square") return "instagram_square";
+    if (preset === "landscape") return "instagram_landscape";
+    return "instagram_reels";
   }
 
   async function runDialogExport() {
     exportDlg = false;
     if (dlgMode === "instagram") {
+      exportTarget = instagramTargetForPreset();
+      quality = "high";
       await exportTimeline(true, keepHdr);
     } else if (dlgMode === "lossless") {
       // Keep the current aspect/crop; just max quality (stream-copies with no
@@ -1022,19 +1463,19 @@
   }
 
   async function exportTimeline(normalize = false, keep_hdr = false) {
-    if (!orderedClips.length || exporting) return;
+    if (!programClips.length || exporting) return;
     exportMenuOpen = false;
     exporting = true;
     exportNote = "Exporting";
     try {
       const music = audioClips[0]?.path ?? null;
       const req: EditExportRequest = {
-        clips: orderedClips.map((clip) => ({
+        clips: programClips.map((clip) => ({
           path: clip.path,
-          in_s: clip.inS,
-          out_s: clip.outS,
-          crop_x: clip.cropX,
-          crop_y: clip.cropY,
+          in_s: clip.in_s,
+          out_s: clip.out_s,
+          crop_x: clip.crop_x,
+          crop_y: clip.crop_y,
           zoom: clip.zoom,
         })),
         output_w: outPreset.w,
@@ -1044,7 +1485,7 @@
         quality,
         adjustments,
         music_path: music,
-        preserve_source_audio: preserveSourceAudio && !music && orderedClips.length === 1,
+        preserve_source_audio: preserveSourceAudio && !music,
         destination: null,
         basename: exportName(),
         normalize,
@@ -1061,21 +1502,26 @@
   }
 
   async function takeSnapshot() {
-    if (!selectedClip || snapshotting) return;
+    // Snapshot the frame under the playhead — the visible program clip mapped to
+    // its source time (falls back to the selected clip's in-point).
+    const seg = productionPreview ? null : segAt(playheadS);
+    const clip = seg?.clip ?? selectedClip;
+    if (!clip || snapshotting) return;
+    const timeS = productionPreview ? currentTime : Math.max(clip.inS, Math.min(clip.inS + (playheadS - clip.start), clip.outS));
     snapshotting = true;
     exportNote = "Saving frame";
     try {
       const req: EditSnapshotRequest = {
-        path: selectedClip.path,
-        time_s: currentTime,
+        path: clip.path,
+        time_s: timeS,
         output_w: outPreset.w,
         output_h: outPreset.h,
         fit: outPreset.fit,
-        crop_x: selectedClip.cropX,
-        crop_y: selectedClip.cropY,
-        zoom: selectedClip.zoom,
+        crop_x: clip.cropX,
+        crop_y: clip.cropY,
+        zoom: clip.zoom,
         adjustments,
-        basename: `${selectedClip.name.replace(/\.[^.]+$/, "")}_frame`,
+        basename: `${clip.name.replace(/\.[^.]+$/, "")}_frame`,
       };
       const out = await api.editSnapshot(req);
       const saved = basename(out);
@@ -1094,24 +1540,46 @@
 
   function selectClip(id: string) {
     selectedId = id;
+    selectedIds = new Set([id]);
     selectedAudioId = null;
+  }
+
+  // Plain click = single-select (+ jump the playhead into the clip if it's
+  // outside, so "click a clip → see it" still holds). Ctrl/Cmd = toggle in/out
+  // of the multi-selection.
+  function onClipClick(e: MouseEvent, clip: TimelineClip) {
+    e.stopPropagation();
+    if (e.ctrlKey || e.metaKey) {
+      const next = new Set(selectedIds);
+      if (next.has(clip.id)) next.delete(clip.id);
+      else next.add(clip.id);
+      selectedIds = next;
+      selectedId = next.has(clip.id) ? clip.id : next.values().next().value ?? null;
+      selectedAudioId = null;
+      return;
+    }
+    selectClip(clip.id);
+    const len = clipLen(clip);
+    if (playheadS < clip.start - 1e-3 || playheadS > clip.start + len + 1e-3) seekTimeline(clip.start);
   }
 
   function selectAudio(id: string) {
     selectedAudioId = id;
     selectedId = null;
+    selectedIds = new Set();
   }
 
-  function snapTime(t: number, excludeId?: string) {
+  function snapTime(t: number, exclude?: string | Set<string>) {
+    const skip = (id: string) => (typeof exclude === "string" ? exclude === id : !!exclude?.has(id));
     let best = Math.max(0, t);
     let bestDist = SNAP;
-    const edges = [0, currentTime + (selectedClip?.start ?? 0)];
+    const edges = [0, playheadS];
     for (const c of clips) {
-      if (c.id === excludeId) continue;
+      if (skip(c.id)) continue;
       edges.push(c.start, c.start + c.outS - c.inS);
     }
     for (const a of audioClips) {
-      if (a.id === excludeId) continue;
+      if (skip(a.id)) continue;
       edges.push(a.start, a.start + a.duration);
     }
     for (const edge of edges) {
@@ -1130,16 +1598,26 @@
     if (kind === "video") {
       const clip = clips.find((c) => c.id === id);
       if (!clip) return;
-      selectClip(id);
+      // A move-drag on a clip that isn't in the current selection resets to a
+      // single selection; otherwise the whole selection moves together.
+      if (mode === "move" && !selectedIds.has(id)) selectClip(id);
+      else if (mode !== "move") selectClip(id);
+      const group =
+        mode === "move"
+          ? clips.filter((c) => selectedIds.has(c.id)).map((c) => ({ id: c.id, start: c.start, lane: c.lane }))
+          : [{ id: clip.id, start: clip.start, lane: clip.lane }];
       timelineDrag = {
         id,
         kind,
         mode,
         startX: e.clientX,
+        startY: e.clientY,
         start: clip.start,
+        lane: clip.lane,
         inS: clip.inS,
         outS: clip.outS,
         duration: clip.duration,
+        group,
       };
     } else {
       const clip = audioClips.find((c) => c.id === id);
@@ -1150,10 +1628,13 @@
         kind,
         mode,
         startX: e.clientX,
+        startY: e.clientY,
         start: clip.start,
+        lane: clip.lane,
         inS: 0,
         outS: clip.duration,
         duration: clip.duration,
+        group: [],
       };
     }
     window.addEventListener("pointermove", onTimelineDrag);
@@ -1170,21 +1651,58 @@
     const clip = clips.find((c) => c.id === timelineDrag?.id);
     if (!clip) return;
     if (timelineDrag.mode === "move") {
-      updateClip(clip.id, { start: snapTime(timelineDrag.start + d, clip.id) });
+      // Snap the primary clip, then shift the whole selection by that delta.
+      // Vertical motion re-lanes the selection (V1–V3), clamped per clip.
+      const groupIds = new Set(timelineDrag.group.map((g) => g.id));
+      const snappedStart = snapTime(timelineDrag.start + d, groupIds);
+      const delta = snappedStart - timelineDrag.start;
+      const deltaLanes = Math.round((e.clientY - timelineDrag.startY) / TRACK_HEIGHT);
+      clips = clips.map((c) => {
+        const g = timelineDrag!.group.find((x) => x.id === c.id);
+        if (!g) return c;
+        return { ...c, start: Math.max(0, g.start + delta), lane: Math.max(0, Math.min(2, g.lane + deltaLanes)) };
+      });
     } else if (timelineDrag.mode === "trimIn") {
       const snappedStart = snapTime(timelineDrag.start + d, clip.id);
       const nextIn = Math.max(0, Math.min(timelineDrag.inS + (snappedStart - timelineDrag.start), timelineDrag.outS - 0.05));
       updateClip(clip.id, { start: timelineDrag.start + (nextIn - timelineDrag.inS), inS: nextIn });
+      trimPreview = { id: clip.id, time: nextIn };
     } else {
       const right = snapTime(timelineDrag.start + (timelineDrag.outS - timelineDrag.inS) + d, clip.id);
       const nextOut = Math.max(clip.inS + 0.05, Math.min(timelineDrag.duration, clip.inS + Math.max(0.05, right - clip.start)));
       updateClip(clip.id, { outS: nextOut });
+      trimPreview = { id: clip.id, time: nextOut };
     }
   }
 
   function endTimelineDrag() {
+    const drag = timelineDrag;
     timelineDrag = null;
+    trimPreview = null;
     window.removeEventListener("pointermove", onTimelineDrag);
+    // On release, shove moved clips clear of anything they landed on.
+    if (drag && drag.kind === "video" && drag.mode === "move") resolveOverlaps(drag.group.map((g) => g.id));
+  }
+
+  // Scrub the playhead by dragging the ruler.
+  function startRulerScrub(e: PointerEvent) {
+    e.preventDefault();
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const toTime = (clientX: number) => Math.max(0, Math.min(videoEnd, (clientX - rect.left) / timelineScale));
+    seekTimeline(toTime(e.clientX));
+    const move = (ev: PointerEvent) => seekTimeline(toTime(ev.clientX));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  // Clicking empty track background seeks to that time.
+  function onTrackClick(e: MouseEvent) {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    seekTimeline(Math.max(0, Math.min(videoEnd, (e.clientX - rect.left) / timelineScale)));
   }
 
   function startSourceDrag(e: DragEvent, item: EditSourceItem) {
@@ -1489,7 +2007,7 @@
       <button class="miniBtn" class:on={productionPreview} onclick={toggleProductionPreview} disabled={!selectedClip}>
         Preview
       </button>
-      <button class="miniBtn" onclick={takeSnapshot} disabled={!selectedClip || snapshotting}>
+      <button class="miniBtn" onclick={takeSnapshot} disabled={!clips.length || snapshotting}>
         {snapshotting ? "Saving" : "Frame"}
       </button>
       {#if frameToast}<span class="topToast" aria-live="polite">{frameToast}</span>{/if}
@@ -1509,13 +2027,9 @@
         </div>
         {#if exportMenuOpen}
           <div class="exportMenu choices">
-            <button class="exportChoice" onclick={() => openExport("instagram", "instagram_reels")} disabled={!clips.length}>
+            <button class="exportChoice" onclick={() => openExport("instagram")} disabled={!clips.length}>
               <strong>Export to Instagram</strong>
-              <span>Reels / Stories · 1080×1920</span>
-            </button>
-            <button class="exportChoice" onclick={() => openExport("instagram", "instagram_square")} disabled={!clips.length}>
-              <strong>Export to Instagram</strong>
-              <span>Square 1:1 · 1080×1080</span>
+              <span>{outPreset.fit === "original" ? "Original aspect — uses your edit-screen aspect" : `${outPreset.label} · ${outPreset.detail} — uses your edit-screen aspect`}</span>
             </button>
             <button class="exportChoice" onclick={() => openExport("lossless")} disabled={!clips.length}>
               <strong>Export lossless</strong>
@@ -1535,8 +2049,8 @@
       {#if timelineCollapsed}
         <button class="restoreTab restoreTimeline" onclick={() => (timelineCollapsed = false)} title="Show timeline">Timeline</button>
       {/if}
-      {#if selectedClip}
-        {#if productionPreview && productionFrame && productionVideoRect}
+      {#if clips.length}
+        {#if productionPreview && selectedClip && productionFrame && productionVideoRect}
           <div
             class="productionFrame"
             style="left:{productionFrame.left}px; top:{productionFrame.top}px; width:{productionFrame.w}px; height:{productionFrame.h}px"
@@ -1550,10 +2064,13 @@
               class="productionVideo"
               style="left:{productionVideoRect.left}px; top:{productionVideoRect.top}px; width:{productionVideoRect.w}px; height:{productionVideoRect.h}px; filter:{previewFilter}"
               onloadedmetadata={onMeta}
-              ontimeupdate={onTime}
+              ontimeupdate={onProdTime}
               onerror={onPreviewError}
               onclick={togglePlay}
             ></video>
+            {#if warmthTint}
+              <div class="warmthTint prod" style="background:{warmthTint.color}; opacity:{warmthTint.opacity}"></div>
+            {/if}
           </div>
           <div class="productionControls">
             <button class="play" onclick={togglePlay}>{previewVideo?.paused === false ? "Pause" : "Play"}</button>
@@ -1564,7 +2081,7 @@
               max={selectedClip.outS}
               step="0.01"
               value={currentTime}
-              oninput={(e) => seek(Number((e.currentTarget as HTMLInputElement).value))}
+              oninput={(e) => seekProduction(Number((e.currentTarget as HTMLInputElement).value))}
             />
             <button class="miniBtn" onclick={() => setOutputPreview(false)}>Exit</button>
           </div>
@@ -1572,20 +2089,28 @@
           <!-- svelte-ignore a11y_media_has_caption -->
           <video
             bind:this={previewVideo}
-            src={selectedClip.src}
             preload="auto"
             playsinline
             style:filter={previewFilter}
             onloadedmetadata={onMeta}
-            ontimeupdate={onTime}
+            ontimeupdate={onNormalTime}
             onerror={onPreviewError}
             onclick={togglePlay}
           ></video>
+          {#if warmthTint}
+            <div
+              class="warmthTint"
+              style="left:{imageRect.left}px; top:{imageRect.top}px; width:{imageRect.w}px; height:{imageRect.h}px; background:{warmthTint.color}; opacity:{warmthTint.opacity}"
+            ></div>
+          {/if}
         {/if}
         {#if previewPreparing}
           <div class="previewBusy">Preparing preview</div>
         {/if}
-        {#if cropRect && !productionPreview}
+        {#if trimPreview}
+          <div class="trimCaption">Trimming · {fmt(trimPreview.time)}</div>
+        {/if}
+        {#if cropRect && cropVisible}
           <button
             class="cropFrame"
             style="left:{cropRect.left}px; top:{cropRect.top}px; width:{cropRect.w}px; height:{cropRect.h}px"
@@ -1602,16 +2127,16 @@
     </div>
 
     <div class="transport">
-      <button class="play" onclick={togglePlay} disabled={!selectedClip}>{previewVideo?.paused === false ? "Pause" : "Play"}</button>
-      <span class="time">{fmt(currentTime)} / {fmt(selectedClip?.duration ?? 0)}</span>
+      <button class="play" onclick={togglePlay} disabled={!clips.length}>{playing ? "Pause" : "Play"}</button>
+      <span class="time">{fmt(playheadS)} / {fmt(videoEnd)}</span>
       <input
         type="range"
         min="0"
-        max={selectedClip?.duration ?? 1}
+        max={videoEnd || 1}
         step="0.01"
-        value={currentTime}
-        disabled={!selectedClip}
-        oninput={(e) => seek(Number((e.currentTarget as HTMLInputElement).value))}
+        value={playheadS}
+        disabled={!clips.length}
+        oninput={(e) => seekTimeline(Number((e.currentTarget as HTMLInputElement).value))}
       />
     </div>
 
@@ -1621,16 +2146,18 @@
     <section class="timeline" aria-label="Edit timeline">
       <div class="timelineHead">
         <strong>Timeline</strong>
-        <span>{clips.length} video · {audioClips.length} audio · {fmt(timelineSeconds)}</span>
+        <span>{clips.length} video · {audioClips.length} audio · {fmt(programSeconds)}</span>
         <label class="scale">Zoom <input type="range" min={TIMELINE_ZOOM_MIN} max={TIMELINE_ZOOM_MAX} bind:value={timelineScale} /></label>
         <span class="snap">Snap</span>
         <span class="spacer"></span>
+        <button class="ghost" onclick={cutAtPlayhead} disabled={!clips.length} title="Split at playhead (C)">✂ Cut</button>
         <button class="ghost" onclick={() => (timelineCollapsed = true)}>Collapse</button>
         <button class="ghost" onclick={() => { clips = []; audioClips = []; }} disabled={!clips.length && !audioClips.length}>Clear</button>
       </div>
       <div class="timelineViewport" onwheel={onTimelineWheel}>
         <div class="timelineCanvas" style="width:{timelineWidth}px">
-          <div class="ruler">
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="ruler" onpointerdown={startRulerScrub} role="slider" tabindex="-1" aria-label="Scrub playhead" aria-valuenow={Math.round(playheadS)}>
             {#each Array(Math.ceil(timelineEnd / 5) + 1) as _, i}
               <span style="left:{i * 5 * timelineScale}px">{fmt(i * 5)}</span>
             {/each}
@@ -1638,14 +2165,14 @@
 
           {#each VIDEO_LANES as lane}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="track videoTrack" ondragover={allowDrop} ondrop={(e) => dropOnLane(e, "video", lane)}>
+            <div class="track videoTrack" onpointerdown={onTrackClick} ondragover={allowDrop} ondrop={(e) => dropOnLane(e, "video", lane)}>
               <span class="trackLabel">V{lane + 1}</span>
               {#each clips.filter((c) => c.lane === lane) as clip (clip.id)}
                 <button
                   class="timelineClip video"
-                  class:on={clip.id === selectedId}
-                  style="left:{clip.start * timelineScale}px; width:{Math.max(42, (clip.outS - clip.inS) * timelineScale)}px"
-                  onclick={() => selectClip(clip.id)}
+                  class:on={selectedIds.has(clip.id)}
+                  style="left:{clip.start * timelineScale}px; width:{Math.max(42, clipLen(clip) * timelineScale)}px"
+                  onclick={(e) => onClipClick(e, clip)}
                   oncontextmenu={(e) => openTimelineMenu(e, clip)}
                   onpointerdown={(e) => startTimelinePointer(e, "video", clip.id, "move")}
                   title={clip.path}
@@ -1653,7 +2180,7 @@
                   <!-- svelte-ignore a11y_no_static_element_interactions -->
                   <span class="handle left" onpointerdown={(e) => startTimelinePointer(e, "video", clip.id, "trimIn")}></span>
                   <strong>{clip.name}</strong>
-                  <em>{fmt(clip.outS - clip.inS)}</em>
+                  <em>{fmt(clipLen(clip))}</em>
                   <!-- svelte-ignore a11y_no_static_element_interactions -->
                   <span class="handle right" onpointerdown={(e) => startTimelinePointer(e, "video", clip.id, "trimOut")}></span>
                 </button>
@@ -1663,8 +2190,17 @@
 
           {#each AUDIO_LANES as lane}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="track audioTrack" class:firstAudio={lane === 0} ondragover={allowDrop} ondrop={(e) => dropOnLane(e, "audio", lane)}>
+            <div class="track audioTrack" class:firstAudio={lane === 0} onpointerdown={onTrackClick} ondragover={allowDrop} ondrop={(e) => dropOnLane(e, "audio", lane)}>
               <span class="trackLabel">A{lane + 1}</span>
+              <!-- Source-audio mirrors: slim, non-interactive bars echoing every video clip
+                   on Vn. Derived from `clips`, not stored — they play/export with the clip. -->
+              {#each clips.filter((c) => c.lane === lane) as v (v.id)}
+                <div
+                  class="sourceAudioBar"
+                  style="left:{v.start * timelineScale}px; width:{Math.max(42, clipLen(v) * timelineScale)}px"
+                  title="Source audio — plays and exports with the clip"
+                ></div>
+              {/each}
               {#each audioClips.filter((c) => c.lane === lane) as clip (clip.id)}
                 <button
                   class="timelineClip audio"
@@ -1681,6 +2217,10 @@
               {/each}
             </div>
           {/each}
+
+          {#if clips.length}
+            <div class="playhead" style="left:{TIMELINE_TRACK_OFFSET + playheadS * timelineScale}px"></div>
+          {/if}
         </div>
       </div>
     </section>
@@ -1738,11 +2278,11 @@
         <button class="miniBtn ghost" onclick={resetColor} title="Reset all adjustments">Reset all</button>
       </div>
       <p class="adjHint">Double-click a slider to reset just that control.</p>
-      <label>Brightness <input type="range" min="-0.25" max="0.25" step="0.005" bind:value={adjustments.brightness} ondblclick={() => resetAdj("brightness")} /></label>
-      <label>Contrast <input type="range" min="0.6" max="1.6" step="0.01" bind:value={adjustments.contrast} ondblclick={() => resetAdj("contrast")} /></label>
-      <label>Saturation <input type="range" min="0" max="2" step="0.01" bind:value={adjustments.saturation} ondblclick={() => resetAdj("saturation")} /></label>
-      <label>Warmth <input type="range" min="-0.2" max="0.2" step="0.005" bind:value={adjustments.warmth} ondblclick={() => resetAdj("warmth")} /></label>
-      <label>Sharpen <input type="range" min="0" max="1" step="0.01" bind:value={adjustments.sharpen} ondblclick={() => resetAdj("sharpen")} /></label>
+      <label><span class="adjLabel">Brightness <em class="adjVal">{adjReadout("brightness")}</em></span><input type="range" min="-0.4" max="0.4" step="0.005" bind:value={adjustments.brightness} ondblclick={() => resetAdj("brightness")} /></label>
+      <label><span class="adjLabel">Contrast <em class="adjVal">{adjReadout("contrast")}</em></span><input type="range" min="0.5" max="1.8" step="0.01" bind:value={adjustments.contrast} ondblclick={() => resetAdj("contrast")} /></label>
+      <label><span class="adjLabel">Saturation <em class="adjVal">{adjReadout("saturation")}</em></span><input type="range" min="0" max="2" step="0.01" bind:value={adjustments.saturation} ondblclick={() => resetAdj("saturation")} /></label>
+      <label><span class="adjLabel">Warmth <em class="adjVal">{adjReadout("warmth")}</em></span><input type="range" min="-0.3" max="0.3" step="0.005" bind:value={adjustments.warmth} ondblclick={() => resetAdj("warmth")} /></label>
+      <label><span class="adjLabel">Sharpen <em class="adjVal">{adjReadout("sharpen")}</em></span><input type="range" min="0" max="1" step="0.01" bind:value={adjustments.sharpen} ondblclick={() => resetAdj("sharpen")} /></label>
     </div>
 
     {#if selectedClip}
@@ -1777,7 +2317,7 @@
           <option value="small">Small</option>
         </select>
       </label>
-      <label class="check"><input type="checkbox" bind:checked={preserveSourceAudio} disabled={audioClips.length > 0 || orderedClips.length !== 1} /> Keep source audio</label>
+      <label class="check"><input type="checkbox" bind:checked={preserveSourceAudio} disabled={audioClips.length > 0} /> Keep source audio</label>
       <div class="music">
         <button class="miniBtn" onclick={pickAudio}>Choose audio</button>
         {#if audioClips.length}
@@ -1805,16 +2345,18 @@
         </div>
 
         {#if dlgMode === "instagram"}
-          <div class="dlgAspect">
-            <button class:on={dlgAspect === "reels"} onclick={() => setDlgAspect("reels")}>Reels / Stories · 9:16</button>
-            <button class:on={dlgAspect === "square"} onclick={() => setDlgAspect("square")}>Square · 1:1</button>
-          </div>
+          <p class="igAspectLine">
+            {#if outPreset.fit === "original"}Aspect: Original aspect{:else}Aspect: from your edit — <strong>{outPreset.label} · {outPreset.detail}</strong>{/if}
+          </p>
           <p class="igDisclaim">FoxCull auto-applies the best Instagram settings for what it detected in your clip. It's good to go by default — tweak below only if you want to.</p>
           <div class="igCompare">
             <div class="igCol">
               <span class="igColHead">Your clip</span>
               <ul>
                 <li>{igSourceProbe?.width ?? "?"}×{igSourceProbe?.height ?? "?"}</li>
+                {#if igCrop && outPreset.fit !== "original"}
+                  <li><em>crop ≈ {Math.round(igCrop.cropW)}×{Math.round(igCrop.cropH)} px</em></li>
+                {/if}
                 <li>{igSourceProbe?.fps ? `${Math.round(igSourceProbe?.fps ?? 0)} fps` : "source fps"}</li>
                 <li>{igSourceProbe?.codec ?? "source codec"}</li>
                 <li class:warn={igSourceProbe?.hdr}>{igSourceProbe?.hdr ? "HDR (HLG/PQ)" : "SDR"}</li>
@@ -1824,7 +2366,7 @@
             <div class="igCol optimised">
               <span class="igColHead">Optimised</span>
               <ul>
-                <li>{outPreset.w}×{outPreset.h}{#if (igSourceProbe?.width ?? 0) > outPreset.w}<em> (downscaled)</em>{/if}</li>
+                <li>{outPreset.w}×{outPreset.h}{#if igCrop && igCrop.cropW > outPreset.w + 1}<em> (downscaled)</em>{:else if igCrop && igCrop.cropW < outPreset.w - 1}<em> (upscaled — slightly soft)</em>{/if}</li>
                 <li>30 fps{#if (igSourceProbe?.fps ?? 0) > 31}<em> (from {Math.round(igSourceProbe?.fps ?? 0)})</em>{/if}</li>
                 <li>{keepHdr && igSourceProbe?.hdr ? "HEVC 10-bit · MP4" : "H.264 · MP4 · faststart"}</li>
                 <li>{igSourceProbe?.hdr ? (keepHdr ? "HDR (HLG kept)" : "SDR Rec.709 (tone-mapped)") : "SDR Rec.709"}</li>
@@ -1844,16 +2386,12 @@
         {:else if dlgMode === "lossless"}
           <p class="igDisclaim">
             Keeps your current aspect{outPreset.fit === "original" ? "" : " and crop"} at original quality.
-            {#if outPreset.fit === "original" && neutralLook}Trim only — stream-copied, no re-encode, no quality loss.{:else}A crop/adjustment needs a render, so this re-encodes at best quality.{/if}
+            {#if outPreset.fit === "original" && neutralLook && !mixedSources}Trim only — stream-copied, no re-encode, no quality loss.{:else if mixedSources}Your clips differ in resolution or codec, so they're joined with a best-quality re-encode (a straight stream copy would produce a broken file).{:else}A crop/adjustment needs a render, so this re-encodes at best quality.{/if}
           </p>
         {:else}
-          <label class="dlgField">Aspect
-            <select value={preset} onchange={(e) => setPreset((e.currentTarget as HTMLSelectElement).value as PresetId)}>
-              {#each Object.entries(PRESETS) as [id, p]}
-                <option value={id}>{p.label} · {p.detail}</option>
-              {/each}
-            </select>
-          </label>
+          <p class="igAspectLine">
+            {#if outPreset.fit === "original"}Aspect: Original aspect{:else}Aspect: from your edit — <strong>{outPreset.label} · {outPreset.detail}</strong>{/if}
+          </p>
           <label class="dlgField">Encoder
             <select bind:value={encoder}>
               <option value="auto">Auto</option>
@@ -1869,7 +2407,7 @@
               <option value="small">Small</option>
             </select>
           </label>
-          <label class="check"><input type="checkbox" bind:checked={preserveSourceAudio} disabled={audioClips.length > 0 || orderedClips.length !== 1} /> Keep source audio</label>
+          <label class="check"><input type="checkbox" bind:checked={preserveSourceAudio} disabled={audioClips.length > 0} /> Keep source audio</label>
           <button class="miniBtn" onclick={() => void pickAudio()}>Choose audio…</button>
         {/if}
 
@@ -1888,7 +2426,7 @@
 
         <div class="igActions">
           <button class="miniBtn" onclick={() => (exportDlg = false)}>Cancel</button>
-          <button class="exportBtn" onclick={runDialogExport} disabled={exporting || !clips.length}>{exporting ? "Exporting…" : "Export"}</button>
+          <button class="exportBtn" onclick={runDialogExport} disabled={exporting || !programClips.length}>{exporting ? "Exporting…" : "Export"}</button>
         </div>
       </div>
     </div>
@@ -2416,6 +2954,28 @@
     color: var(--text-dim);
     font-size: 12px;
   }
+  /* Warmth can't be a CSS filter — a soft-light tint over the exact video area
+     stands in for it in the preview. */
+  .warmthTint {
+    position: absolute;
+    pointer-events: none;
+    mix-blend-mode: soft-light;
+  }
+  .warmthTint.prod {
+    inset: 0;
+  }
+  .trimCaption {
+    position: absolute;
+    left: 12px;
+    top: 12px;
+    padding: 5px 9px;
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--bg-elev) 88%, transparent);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
   .emptyState {
     color: var(--text-faint);
     font-size: 13px;
@@ -2646,9 +3206,8 @@
     color: var(--text-faint);
     font-size: 18px;
   }
-  /* Mode segmented control + IG aspect toggle */
-  .dlgModes,
-  .dlgAspect {
+  /* Mode segmented control */
+  .dlgModes {
     display: flex;
     gap: 4px;
     padding: 3px;
@@ -2656,8 +3215,7 @@
     border-radius: 9px;
     background: var(--bg-elev);
   }
-  .dlgModes button,
-  .dlgAspect button {
+  .dlgModes button {
     flex: 1;
     padding: 6px 8px;
     border: 1px solid transparent;
@@ -2667,10 +3225,18 @@
     font-size: 12px;
     font-weight: 600;
   }
-  .dlgModes button.on,
-  .dlgAspect button.on {
+  .dlgModes button.on {
     background: var(--accent);
     color: var(--accent-on);
+  }
+  .igAspectLine {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .igAspectLine strong {
+    color: var(--text);
+    font-weight: 600;
   }
   .dlgHdr {
     display: flex;
@@ -2816,6 +3382,37 @@
     right: 0;
     height: 24px;
     border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    z-index: 3;
+  }
+  /* Playhead: a vertical accent line spanning ruler + all tracks. */
+  .playhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--accent);
+    pointer-events: none;
+    z-index: 5;
+  }
+  .playhead::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -4px;
+    border: 5px solid transparent;
+    border-top-color: var(--accent);
+  }
+  /* Slim, non-interactive mirror of a video clip's linked source audio. */
+  .sourceAudioBar {
+    position: absolute;
+    top: 12px;
+    bottom: 12px;
+    border-radius: 4px;
+    pointer-events: none;
+    background: color-mix(in srgb, var(--pick) 22%, transparent);
+    border: 1px solid color-mix(in srgb, var(--pick) 30%, transparent);
   }
   .ruler span {
     position: absolute;
@@ -3025,6 +3622,18 @@
     gap: 4px;
     color: var(--text-dim);
     font-size: 12px;
+  }
+  .adjLabel {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .adjVal {
+    font-style: normal;
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
   }
   .check {
     display: flex;

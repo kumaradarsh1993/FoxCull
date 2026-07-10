@@ -570,18 +570,26 @@
           </div>
           {#if clipToolsOpen}
             <!-- Clip tools live in their own bordered panel, visually separated
-                 from the scrubber/timeline above so the in/out/range/save
-                 controls read as one grouped tool rather than loose buttons. -->
+                 from the scrubber/timeline above. Everything — in/out, range,
+                 mark, the marked-segment chips, and the save actions — sits in
+                 ONE row (wraps only if it has to; the common ≤3-segment case
+                 fits). The old separate range-header line was redundant: the
+                 numbers already show on the In/Out buttons and the range span. -->
             <div class="clippanel">
-              <div class="cliprange">
-                <span>{fmt(inS)} – {fmt(outS ?? dur)} ({fmt((outS ?? dur) - inS)})</span>
-                {#if segments.length}<span>{segments.length} marked</span>{/if}
-              </div>
               <div class="ctrls">
                 <button onclick={setIn} title="Set in point to current time">In {fmt(inS)}</button>
                 <button onclick={setOut} title="Set out point to current time">Out {fmt(outS ?? dur)}</button>
                 <span class="len">range {fmt((outS ?? dur) - inS)}</span>
                 <button onclick={addSegment} disabled={!canExport} title="Remember this range as one subclip">Mark range</button>
+                {#each segments as segment, i (i)}
+                  <span class="segmentPill">
+                    <button class="segLabel" onclick={() => useSegment(segment)} title={`Use subclip ${i + 1}: ${fmt(segment.in_s)}-${fmt(segment.out_s)}`}>
+                      <strong>{i + 1}</strong>
+                      <span>{fmt(segment.in_s)}-{fmt(segment.out_s)}</span>
+                    </button>
+                    <button class="segRemove" onclick={() => removeSegment(i)} title="Remove subclip">×</button>
+                  </span>
+                {/each}
                 <span class="spacer"></span>
                 {#if canExport}<button class="reset" onclick={resetTrim}>Reset</button>{/if}
                 <button class="exp" onclick={exportCut} disabled={!canExport || exporting}>
@@ -591,18 +599,6 @@
                   {exportingSegments ? "Saving..." : `Save ${segments.length || ""} marked`}
                 </button>
               </div>
-              {#if segments.length}
-                <div class="segments">
-                  {#each segments as segment, i (i)}
-                    <button class="segmentPill" onclick={() => useSegment(segment)}>
-                      <strong>{i + 1}</strong>
-                      <span>{fmt(segment.in_s)}-{fmt(segment.out_s)}</span>
-                      <em>{fmt(segment.out_s - segment.in_s)}</em>
-                    </button>
-                    <button class="segRemove" onclick={() => removeSegment(i)} title="Remove subclip">×</button>
-                  {/each}
-                </div>
-              {/if}
             </div>
           {/if}
           {#if exportNote}<div class="note">{exportNote}</div>{/if}
@@ -834,22 +830,14 @@
     border-radius: 10px;
     background: color-mix(in srgb, var(--bg-elev) 60%, transparent);
   }
-  .cliprange {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    color: var(--text-dim);
-    font-size: 12.5px;
-    font-variant-numeric: tabular-nums;
-  }
-  .cliprange span {
-    white-space: nowrap;
-  }
+  /* Single row: wraps only when it must (5-6 marked segments) — the common
+     case of a couple of marks plus the fixed buttons fits on one line. */
   .ctrls {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
-    margin-top: 8px;
+    row-gap: 6px;
     margin-bottom: 0;
   }
   .ctrls button {
@@ -884,40 +872,48 @@
   .ctrls .exp:disabled {
     opacity: 0.45;
   }
-  .segments {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    flex-wrap: wrap;
-    margin-top: 8px;
-  }
+  /* A marked segment is ONE pill (label + a fused × button) instead of two
+     separate chips, so it drops inline into the single clip-tools row. */
   .segmentPill {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    min-height: 24px;
-    padding: 3px 8px;
+    height: 24px;
     border-radius: 999px;
     border: 1px solid color-mix(in srgb, var(--pick) 55%, var(--border));
     background: color-mix(in srgb, var(--pick) 12%, var(--bg-elev));
+    overflow: hidden;
+  }
+  .segLabel {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 100%;
+    padding: 0 4px 0 10px;
+    border: none;
+    background: transparent;
     color: var(--text);
     font-size: 11.5px;
+    white-space: nowrap;
   }
-  .segmentPill strong {
+  .segLabel strong {
     color: var(--pick);
   }
-  .segmentPill em {
-    color: var(--text-faint);
-    font-style: normal;
+  .segLabel span {
+    font-variant-numeric: tabular-nums;
   }
   .segRemove {
-    width: 22px;
-    height: 22px;
-    border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--reject) 50%, var(--border));
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    padding: 0 9px 0 5px;
+    border: none;
+    background: transparent;
     color: var(--reject);
-    background: var(--bg-elev);
     line-height: 1;
+  }
+  .segRemove:hover {
+    background: color-mix(in srgb, var(--reject) 18%, transparent);
   }
   .note {
     margin-top: 6px;

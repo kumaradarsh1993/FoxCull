@@ -999,10 +999,12 @@ fn parse_video_stream(err: &str) -> (u32, u32, f64, Option<String>, bool) {
     (width, height, fps, codec, hdr)
 }
 
-/// Best-effort probe of a single clip's source dimensions + HDR flag (used at
-/// export time to decide tone-mapping and soft-crop sharpening). Reads ffmpeg's
-/// `-i` banner; zeros/false on any error.
-fn clip_probe(ffmpeg: &Path, src: &Path) -> (u32, u32, bool) {
+/// Best-effort probe of a single clip's source dimensions, HDR flag, whether it
+/// carries an audio stream, and its video codec (used at export time to decide
+/// tone-mapping, soft-crop sharpening, multi-clip audio preservation, and
+/// concat compatibility). Reads ffmpeg's `-i` banner; zeros/false/None on any
+/// error. An audio stream shows up as `Audio:` on a `Stream` line of the banner.
+fn clip_probe(ffmpeg: &Path, src: &Path) -> (u32, u32, bool, bool, Option<String>) {
     let mut cmd = Command::new(ffmpeg);
     cmd.arg("-i")
         .arg(src)
@@ -1017,10 +1019,14 @@ fn clip_probe(ffmpeg: &Path, src: &Path) -> (u32, u32, bool) {
     }
     match cmd.output() {
         Ok(out) => {
-            let (w, h, _, _, hdr) = parse_video_stream(&String::from_utf8_lossy(&out.stderr));
-            (w, h, hdr)
+            let banner = String::from_utf8_lossy(&out.stderr);
+            let (w, h, _, codec, hdr) = parse_video_stream(&banner);
+            let has_audio = banner
+                .lines()
+                .any(|l| l.contains("Stream") && l.contains("Audio:"));
+            (w, h, hdr, has_audio, codec)
         }
-        Err(_) => (0, 0, false),
+        Err(_) => (0, 0, false, false, None),
     }
 }
 
@@ -1971,6 +1977,40 @@ fn run_ffmpeg(mut cmd: Command) -> Result<(), String> {
     }
 }
 
+/// Stream-copy concat requires every clip to share one frame size AND codec —
+/// mixing resolutions (an FHD Mavic clip + a 4K Osmo clip) or codecs (an S23
+/// HEVC clip + a Mavic H.264 clip) stream-copies into a broken/glitchy file.
+/// Probe multi-clip lossless exports and force the re-encode path when dims or
+/// codec differ; 0×0 dims / unknown codec are treated as unknown/compatible so
+/// lossless stays the default.
+fn concat_needs_reencode(ffmpeg: &Path, req: &EditExportRequest) -> bool {
+    if req.clips.len() < 2 {
+        return false;
+    }
+    let mut dims: Option<(u32, u32)> = None;
+    let mut codecs: Option<String> = None;
+    for clip in &req.clips {
+        let (w, h, _, _, codec) = clip_probe(ffmpeg, Path::new(&clip.path));
+        if w > 0 && h > 0 {
+            match dims {
+                Some(d) if d != (w, h) => return true,
+                Some(_) => {}
+                None => dims = Some((w, h)),
+            }
+        }
+        // Codec matters too: e.g. an S23 HEVC clip + a Mavic H.264 clip at the
+        // same 1920×1080 still stream-copy into a broken file.
+        if let Some(c) = codec {
+            match &codecs {
+                Some(seen) if *seen != c => return true,
+                Some(_) => {}
+                None => codecs = Some(c),
+            }
+        }
+    }
+    false
+}
+
 fn export_lossless_concat(ffmpeg: &Path, req: &EditExportRequest, dest: &Path) -> Result<(), String> {
     let list_path = std::env::temp_dir().join(format!("foxcull-concat-{}.txt", now()));
     let mut f = std::fs::File::create(&list_path).map_err(|e| e.to_string())?;
@@ -2065,6 +2105,8 @@ fn build_video_filter(
     req: &EditExportRequest,
     hdr_flags: &[bool],
     src_dims: &[(u32, u32)],
+    conform: Option<(u32, u32)>,
+    with_audio: bool,
     pix10: bool,
 ) -> Result<String, String> {
     let mut chains = Vec::new();
@@ -2105,6 +2147,16 @@ fn build_video_filter(
                     filters.push("unsharp=5:5:0.5:5:5:0.0".into());
                 }
             }
+        } else if let Some((cw, ch)) = conform {
+            // Mixed-resolution composite (fit=original, >1 clip): concat needs every
+            // frame at one identical size. Fit each clip into the shared canvas
+            // (largest-area clip's dims) preserving aspect, then letterbox-pad the
+            // remainder so nothing is cropped and small clips aren't blown up past
+            // their own resolution beyond the fit.
+            filters.push(format!(
+                "scale={cw}:{ch}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos"
+            ));
+            filters.push(format!("pad={cw}:{ch}:(ow-iw)/2:(oh-ih)/2:black"));
         }
         let a = &req.adjustments;
         if !neutral_adjustments(a) {
@@ -2115,8 +2167,17 @@ fn build_video_filter(
                 a.saturation.clamp(0.0, 3.0)
             ));
             if a.warmth.abs() >= 0.001 {
-                let w = a.warmth.clamp(-0.25, 0.25);
-                filters.push(format!("colorbalance=rs={w:.4}:bs={:.4}", -w));
+                // Warmth spread across shadows/mids/highlights so it's actually
+                // visible (shadows-only was imperceptible at the old ±0.25 range).
+                let w = a.warmth.clamp(-0.3, 0.3);
+                filters.push(format!(
+                    "colorbalance=rs={w:.4}:bs={:.4}:rm={:.4}:bm={:.4}:rh={:.4}:bh={:.4}",
+                    -w,
+                    0.6 * w,
+                    -0.6 * w,
+                    0.3 * w,
+                    -0.3 * w
+                ));
             }
             if a.sharpen > 0.001 {
                 filters.push(format!("unsharp=5:5:{:.3}", a.sharpen.clamp(0.0, 1.5)));
@@ -2136,10 +2197,28 @@ fn build_video_filter(
         };
         labels.push(label.clone());
         chains.push(format!("[{i}:v]{}[{label}]", filters.join(",")));
+        // Per-clip audio chain, normalised to a common rate/format/layout so the
+        // interleaved concat below accepts them.
+        if with_audio {
+            chains.push(format!(
+                "[{i}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]"
+            ));
+        }
     }
     if req.clips.len() > 1 {
-        let inputs = labels.iter().map(|l| format!("[{l}]")).collect::<String>();
-        chains.push(format!("{inputs}concat=n={}:v=1:a=0[vout]", req.clips.len()));
+        if with_audio {
+            // Interleave [v0][a0][v1][a1]… and concat both streams together.
+            let inputs = (0..req.clips.len())
+                .map(|i| format!("[v{i}][a{i}]"))
+                .collect::<String>();
+            chains.push(format!(
+                "{inputs}concat=n={}:v=1:a=1[vout][aout]",
+                req.clips.len()
+            ));
+        } else {
+            let inputs = labels.iter().map(|l| format!("[{l}]")).collect::<String>();
+            chains.push(format!("{inputs}concat=n={}:v=1:a=0[vout]", req.clips.len()));
+        }
     }
     Ok(chains.join(";"))
 }
@@ -2173,8 +2252,17 @@ fn build_single_frame_filter(
             adjustments.saturation.clamp(0.0, 3.0)
         ));
         if adjustments.warmth.abs() >= 0.001 {
-            let w = adjustments.warmth.clamp(-0.25, 0.25);
-            filters.push(format!("colorbalance=rs={w:.4}:bs={:.4}", -w));
+            // Warmth spread across shadows/mids/highlights so it's actually visible
+            // (matches the video path).
+            let w = adjustments.warmth.clamp(-0.3, 0.3);
+            filters.push(format!(
+                "colorbalance=rs={w:.4}:bs={:.4}:rm={:.4}:bm={:.4}:rh={:.4}:bh={:.4}",
+                -w,
+                0.6 * w,
+                -0.6 * w,
+                0.3 * w,
+                -0.3 * w
+            ));
         }
         if adjustments.sharpen > 0.001 {
             filters.push(format!("unsharp=5:5:{:.3}", adjustments.sharpen.clamp(0.0, 1.5)));
@@ -2233,13 +2321,19 @@ fn export_reencoded(
     tonemap: bool,
     passthrough: bool,
 ) -> Result<(), String> {
-    // Probe source dims + HDR when it can affect the filtergraph (normalising, or
-    // any crop that might upscale). One cheap `-i` per clip.
-    let need_probe = req.normalize || (req.fit != "original" && req.output_w > 0);
-    let probes: Vec<(u32, u32, bool)> = if need_probe {
+    let has_music = req.music_path.as_ref().is_some_and(|p| !p.trim().is_empty());
+    // Probe source dims + HDR + audio when they can affect the filtergraph:
+    // normalising, a crop that might upscale, any multi-clip composite (needs a
+    // shared canvas), or multi-clip source-audio preservation. One cheap `-i` per
+    // clip.
+    let need_probe = req.normalize
+        || (req.fit != "original" && req.output_w > 0)
+        || req.clips.len() > 1
+        || (req.preserve_source_audio && !has_music);
+    let probes: Vec<(u32, u32, bool, bool, Option<String>)> = if need_probe {
         req.clips.iter().map(|c| clip_probe(ffmpeg, Path::new(&c.path))).collect()
     } else {
-        vec![(0, 0, false); req.clips.len()]
+        vec![(0, 0, false, false, None); req.clips.len()]
     };
     // Tone-map HDR→SDR only when normalising, tone-mapping this attempt, and NOT
     // keeping HDR (passthrough). The caller retries with tonemap=false if the
@@ -2250,6 +2344,28 @@ fn export_reencoded(
         vec![false; req.clips.len()]
     };
     let src_dims: Vec<(u32, u32)> = probes.iter().map(|p| (p.0, p.1)).collect();
+    // Shared conform canvas for mixed-resolution composites: only when >1 clip AND
+    // the crop path isn't already forcing everything to output_w×output_h. Size =
+    // largest-area probed clip (even-rounded), fallback 1920×1080 if probes are 0.
+    let crop_conforms = req.fit != "original" && req.output_w > 0 && req.output_h > 0;
+    let conform: Option<(u32, u32)> = if req.clips.len() > 1 && !crop_conforms {
+        let (cw, ch) = src_dims
+            .iter()
+            .filter(|(w, h)| *w > 0 && *h > 0)
+            .max_by_key(|(w, h)| (*w as u64) * (*h as u64))
+            .copied()
+            .unwrap_or((1920, 1080));
+        Some((cw & !1, ch & !1))
+    } else {
+        None
+    };
+    // Preserve source audio across a multi-clip re-encode only when there's no
+    // music track, the user asked for it, and EVERY clip actually has audio (any
+    // silent clip → fall back to a safe silent export).
+    let multi_audio = !has_music
+        && req.preserve_source_audio
+        && req.clips.len() > 1
+        && probes.iter().all(|p| p.3);
     let mut cmd = Command::new(ffmpeg);
     for clip in &req.clips {
         let dur = clip_duration(clip)?;
@@ -2264,11 +2380,13 @@ fn export_reencoded(
     if let Some(music_path) = music {
         cmd.args(["-stream_loop", "-1", "-i"]).arg(music_path);
     }
-    let filter = build_video_filter(req, &hdr_flags, &src_dims, passthrough)?;
+    let filter = build_video_filter(req, &hdr_flags, &src_dims, conform, multi_audio, passthrough)?;
     cmd.args(["-filter_complex", &filter, "-map", "[vout]"]);
     if music.is_some() {
         let music_index = req.clips.len();
         cmd.arg("-map").arg(format!("{music_index}:a:0")).arg("-shortest");
+    } else if multi_audio {
+        cmd.args(["-map", "[aout]"]);
     } else if req.preserve_source_audio && req.clips.len() == 1 {
         cmd.args(["-map", "0:a?"]);
     } else {
@@ -2283,7 +2401,7 @@ fn export_reencoded(
             cmd.arg(arg);
         }
     }
-    if music.is_some() || (req.preserve_source_audio && req.clips.len() == 1) {
+    if music.is_some() || multi_audio || (req.preserve_source_audio && req.clips.len() == 1) {
         cmd.args(["-c:a", "aac", "-b:a", "192k"]);
     }
     cmd.args(["-movflags", "+faststart", "-y"])
@@ -2351,10 +2469,15 @@ pub async fn edit_export(
         *dest = p.to_string_lossy().to_string();
     }
     let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg not available")?;
-    let reencode = edit_requires_reencode(&req);
-    let dest = edit_output_path(&req, reencode)?;
 
     tauri::async_runtime::spawn_blocking(move || {
+        // Decide re-encode BEFORE picking the output path — it selects the
+        // container extension. A "lossless" multi-clip export still has to
+        // re-encode when the clips' resolutions don't match (stream-copy concat
+        // would produce a broken file).
+        let reencode =
+            edit_requires_reencode(&req) || concat_needs_reencode(&ffmpeg, &req);
+        let dest = edit_output_path(&req, reencode)?;
         if reencode {
             let mode = if req.normalize && req.keep_hdr {
                 // Keep HDR: try 10-bit HEVC HLG passthrough. If that encode fails
