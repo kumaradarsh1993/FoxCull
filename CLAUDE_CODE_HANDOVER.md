@@ -17,31 +17,65 @@ Claude-built `fox-cull` project.
 - Current main product name: **FoxCull**.
 - Working folder: `D:\Claude Code Projects\FoxCull`.
 - GitHub repository: `https://github.com/kumaradarsh1993/FoxCull`.
-- Stable tag prepared: `v0.6.3` (superseded — current stable is `v1.0.0`).
-- Stable commit: the commit pointed to by tag `v0.6.3`.
-- The earlier `fox-cull` folder is now legacy/reference only.
+- Stable tag: **`v1.0.0`** (commit `e00749e`, tagged + pushed 2026-07-10;
+  CI publishing — see release page for final status).
+- Dev port: **1460** (`.claude/launch.json` config name `foxcull`).
+- The earlier `fox-cull` folder is now `fox-cull_archive` — legacy/reference
+  only, frozen.
 - User-facing "Codex" branding has been removed from the product. Current
   builds use `_FoxCull` and `foxcull-data` only; old pre-stable library folders
   are not adopted by the runtime.
+- App icon: orange low-poly fox on slate (`src-tauri/icons/`, regenerated via
+  `npx tauri icon` from a squared/transparent source PNG).
+- Window title shows the exact running version (`FoxCull v1.0.0`, or the exact
+  nightly string) — set in `src-tauri/src/lib.rs` from `CARGO_PKG_VERSION` at
+  startup, so the user can always tell which build is installed.
 
-Latest v0.6.3 changes:
+### Changelog: v0.6.3 → v1.0.0 (2026-07-09 to 2026-07-10)
 
-- Product rename to FoxCull (`productName`, app title, package metadata, docs).
-- Modern abstract icon applied across Tauri icons and favicon; four SVG options
-  live in `assets/icon-options/` with a preview page at `docs/icon-options.html`.
-- Library toolbar cleanup: Arrange menu owns sort/group/subgroup/stacks; top
-  All and Trash duplicates removed; Prepare icon restored; Library/Edit switch
-  made more prominent.
-- Selection fixes: Shift-click and Shift-arrow range selection, Ctrl/Cmd+A
-  select all, Grid up/down moves by row, Details remains row-by-row.
-- Grouping fixes: Group + Subgroup now render as nested section headers.
-- Warm theme restored for late-night work.
-- Edit mode trim memory persists in-session per source path, so in/out points
-  survive panel remounts and re-adding a clip.
-- Prepare/pre-cache behavior formalized in `README.md` and `STORAGE.md`.
-- The per-drive library folder is `_FoxCull` only. The old compatibility path
-  was removed after a one-time local audit showed no meaningful user metadata in
-  the old folders.
+A single long session took the app from v0.6.3 through five nightlies to
+v1.0.0 stable. Highlights, newest first:
+
+- **v1.0.0** — Instagram-pipeline audit (see `docs/INSTAGRAM_EXPORT_PLAYBOOK.md`
+  2026-07-10 addendum, sourced from Meta's official Reels ingest spec + Meta
+  engineering blog posts, not just SEO blogs): Keep-HDR now tags output with
+  the SOURCE's transfer function (HLG stays HLG for the Osmo Pocket 3, PQ/HDR10+
+  stays PQ for the S23 Ultra — blanket-HLG previously decoded PQ footage with
+  wrong gamma); Instagram exports capped at 25 Mbps VBR (Meta's ingest ceiling);
+  export dialog reminds about the "Upload at highest quality" IG app toggle;
+  new icon; versioned window title; repo/folder rename to `FoxCull`.
+- **v0.7.0-nightly.5** — unified export dialog for every entry point (source
+  facts left / editable target settings right, pre-filled by preset but always
+  overridable — resolution, frame rate, quality); Instagram exports **retain
+  source fps capped at 60** (was previously force-set to 30 — Meta's ingest
+  spec accepts 23–60 fps and forcing 30 made 60fps drone/gimbal footage look
+  worse); live export progress bar + two-step cancel (kills ffmpeg, deletes
+  the partial file); library auto-refreshes after export/snapshot; fixed a
+  Look-panel z-index inversion that let it cover the export menu/buttons;
+  timeline zoom-out now fits the whole program instead of stopping at a fixed
+  floor.
+- **v0.7.0-nightly.4** — Edit module rebuilt as a real mini-NLE: single
+  timeline playhead/program engine that plays the whole sequence including
+  gaps (not just the clicked clip), razor cut (C), Delete key, Ctrl+click
+  multi-select, drag clips between tracks with a no-overwrite rule, live
+  trim-drag preview. Aspect is decided ONLY in the edit screen (removed from
+  export dialogs). Crop-aware export math (a 1080p→9:16 crop correctly reads
+  "upscaled — soft" instead of "downscaled"). Mixed-resolution/mixed-codec
+  composites (e.g. S23 HEVC + Mavic H.264) conform to a shared canvas instead
+  of producing a broken stream-copy. Contiguous stack-line rendering across
+  grid tile gaps.
+- **v0.7.0-nightly.1–3** — stack-line grid/filmstrip toggle, Lightroom-style
+  folder tree, Focus view compaction, Look panel Presets/Adjust split with
+  per-slider double-click reset, first Instagram export dialog (current →
+  optimised spec comparison + time estimate), smart backend export (HDR
+  tone-map default with Keep-HDR opt-in, soft-crop auto-sharpen), thumbnail
+  derivative badges (IG/trim/crop/composite), Loupe→Edit in/out segment
+  carryover.
+
+See `docs/ROADMAP.md` for deferred ideas (auto-expose clip tools when marks
+exist, merging the Edit top bar into the global bar, etc.) and
+`docs/INSTAGRAM_EXPORT_PLAYBOOK.md` for the full Instagram export research,
+including the 2026-07-10 audit table of corrected assumptions.
 
 ## Project Lineage
 
