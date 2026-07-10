@@ -2,6 +2,29 @@
 
 _Last researched: July 2026. Devices: Samsung S23 Ultra, DJI Osmo Pocket 3, DJI Mavic Mini 1._
 
+---
+
+## ⚠ 2026-07-10 audit — corrections that override the text below
+
+A source-level stress test (Meta's official Reels ingest spec + Meta engineering
+blog posts on the Reels pipeline) overturned two assumptions this playbook was
+written on. Where the sections below disagree with this table, **this table wins**
+(and the app now implements it):
+
+| Topic | Old advice below | Audited reality |
+|---|---|---|
+| Frame rate | "Deliver 30 fps yourself" | **Wrong.** Meta ingest spec accepts **23–60 fps**; 60 fps uploads play smoother than a pre-halved 30. FoxCull keeps source fps (capped at 60). |
+| HEVC uploads | (implied H.264-only) | Ingest accepts **"HEVC or H264"** natively — lossless HEVC trims upload fine. H.264 remains our re-encode default (safe + fast). |
+| Bitrate | — | Ingest cap is **VBR 25 Mbps**; FoxCull adds `-maxrate 25M` on IG exports. |
+| HDR→SDR | tone-map yourself | **Confirmed** — and validated: Meta's own server SDR derivative uses the same Hable operator; doing it ourselves controls the look. |
+| Keep-HDR tagging | (always HLG) | **Fixed:** output is tagged with the SOURCE transfer — HLG stays HLG (Osmo), PQ/HDR10+ stays PQ (S23). Blanket HLG tags decode PQ footage with the wrong gamma. |
+| 1080×1920 downscale | downscale yourself | **Confirmed** — ingest caps at 1920 horizontal pixels; the phone app's own downscale is worse than our lanczos+sharpen. |
+| App toggle | Upload at highest quality ON | **Confirmed**, still the #1 lever. |
+
+Sources: Meta Reels ingest spec (developers.facebook.com), "Bringing HDR video to
+Reels" (engineering.fb.com, 2023), "Enhancing HDR on Instagram for iOS with Dolby
+Vision" (engineering.fb.com, Nov 2025).
+
 This is the "how do I make my videos look as good on Instagram as they do on my
 laptop" reference. It is written for **casual-but-quality** posting: occasional
 Reels and Stories, cropped or uncropped, driven off three cameras. It also
@@ -15,8 +38,8 @@ FoxCull.
 1. **Instagram re-encodes everything to a 1080-px-wide ceiling.** 4K helps you
    *zero*. Feeding it a giant 4K60 file makes its server encoder do a rushed,
    ugly downscale. **Downscale to exactly 1080×1920 yourself, cleanly, first.**
-2. **Reels/Stories play at 30 fps.** Instagram converts 60 fps → 30 fps with a
-   crude frame-drop that can look juddery. **Deliver 30 fps yourself.**
+2. ~~Reels/Stories play at 30 fps — deliver 30 yourself.~~ **Superseded (see
+   audit above): ingest accepts 23–60 fps. Keep your 60 fps; only cap above 60.**
 3. **HDR is the #1 hidden cause of "washed-out / weird colour."** The Osmo
    Pocket 3 (HLG) and the S23 Ultra (HDR10+) can both record HDR. Instagram's
    auto HDR→SDR tone-map is inconsistent and often looks dull. **Tone-map to
@@ -29,8 +52,8 @@ FoxCull.
    USB-C / Quick Share / Google Photos "original" transfers are lossless — keep
    using those.
 
-If you do nothing else: **produce a 1080×1920, 30 fps, H.264, SDR Rec.709 master
-and upload that from the phone with the highest-quality toggle on.**
+If you do nothing else: **produce a 1080×1920, source-fps (≤60), H.264, SDR
+Rec.709 master and upload that from the phone with the highest-quality toggle on.**
 
 ---
 

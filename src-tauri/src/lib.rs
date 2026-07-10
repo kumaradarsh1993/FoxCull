@@ -107,6 +107,12 @@ pub fn run() {
                 warm_gen: Arc::new(AtomicU64::new(0)),
                 export_gen: Arc::new(AtomicU64::new(0)),
             });
+
+            // Title carries the exact build (stable or nightly) so the user can
+            // always tell which version they're testing at a glance.
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_title(&format!("FoxCull v{}", env!("CARGO_PKG_VERSION")));
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

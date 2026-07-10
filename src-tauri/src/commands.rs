@@ -1007,7 +1007,11 @@ fn parse_video_stream(err: &str) -> (u32, u32, f64, Option<String>, bool) {
 /// tone-mapping, soft-crop sharpening, multi-clip audio preservation, and
 /// concat compatibility). Reads ffmpeg's `-i` banner; zeros/false/None on any
 /// error. An audio stream shows up as `Audio:` on a `Stream` line of the banner.
-fn clip_probe(ffmpeg: &Path, src: &Path) -> (u32, u32, bool, bool, Option<String>) {
+/// Returns (width, height, hdr, has_audio, codec, pq). `pq` distinguishes the
+/// HDR transfer function: true = PQ/HDR10 (smpte2084, e.g. S23 Ultra HDR10+),
+/// false = HLG (arib-std-b67, e.g. Osmo Pocket 3) — the Keep-HDR export must
+/// tag the output with the SOURCE's transfer or players decode the gamma wrong.
+fn clip_probe(ffmpeg: &Path, src: &Path) -> (u32, u32, bool, bool, Option<String>, bool) {
     let mut cmd = Command::new(ffmpeg);
     cmd.arg("-i")
         .arg(src)
@@ -1027,9 +1031,10 @@ fn clip_probe(ffmpeg: &Path, src: &Path) -> (u32, u32, bool, bool, Option<String
             let has_audio = banner
                 .lines()
                 .any(|l| l.contains("Stream") && l.contains("Audio:"));
-            (w, h, hdr, has_audio, codec)
+            let pq = banner.to_ascii_lowercase().contains("smpte2084");
+            (w, h, hdr, has_audio, codec, pq)
         }
-        Err(_) => (0, 0, false, false, None),
+        Err(_) => (0, 0, false, false, None, false),
     }
 }
 
@@ -2093,7 +2098,7 @@ fn concat_needs_reencode(ffmpeg: &Path, req: &EditExportRequest) -> bool {
     let mut dims: Option<(u32, u32)> = None;
     let mut codecs: Option<String> = None;
     for clip in &req.clips {
-        let (w, h, _, _, codec) = clip_probe(ffmpeg, Path::new(&clip.path));
+        let (w, h, _, _, codec, _) = clip_probe(ffmpeg, Path::new(&clip.path));
         if w > 0 && h > 0 {
             match dims {
                 Some(d) if d != (w, h) => return true,
@@ -2183,13 +2188,16 @@ fn quality_args(encoder: &str, quality: &str) -> Vec<String> {
     }
 }
 
-/// HDR-passthrough encoder: 10-bit HEVC tagged HLG (BT.2020). `hvc1` tag keeps it
-/// playable in QuickTime/Instagram. Used when the user chooses "Keep HDR".
-fn hdr_encoder_args() -> Vec<String> {
+/// HDR-passthrough encoder: 10-bit HEVC in BT.2020, tagged with the SOURCE's
+/// transfer function — HLG (Osmo Pocket 3) stays HLG, PQ/HDR10 (S23 Ultra
+/// HDR10+) stays PQ. Blanket-tagging PQ footage as HLG decodes with the wrong
+/// gamma (dim/washed). `hvc1` tag keeps it playable in QuickTime/Instagram.
+fn hdr_encoder_args(pq: bool) -> Vec<String> {
+    let trc = if pq { "smpte2084" } else { "arib-std-b67" };
     [
         "-c:v", "libx265", "-preset", "medium", "-crf", "20",
         "-pix_fmt", "yuv420p10le", "-tag:v", "hvc1",
-        "-color_primaries", "bt2020", "-color_trc", "arib-std-b67", "-colorspace", "bt2020nc",
+        "-color_primaries", "bt2020", "-color_trc", trc, "-colorspace", "bt2020nc",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -2442,10 +2450,10 @@ fn export_reencoded(
         || (req.fit != "original" && req.output_w > 0)
         || req.clips.len() > 1
         || (req.preserve_source_audio && !has_music);
-    let probes: Vec<(u32, u32, bool, bool, Option<String>)> = if need_probe {
+    let probes: Vec<(u32, u32, bool, bool, Option<String>, bool)> = if need_probe {
         req.clips.iter().map(|c| clip_probe(ffmpeg, Path::new(&c.path))).collect()
     } else {
-        vec![(0, 0, false, false, None); req.clips.len()]
+        vec![(0, 0, false, false, None, false); req.clips.len()]
     };
     // Tone-map HDR→SDR only when normalising, tone-mapping this attempt, and NOT
     // keeping HDR (passthrough). The caller retries with tonemap=false if the
@@ -2505,12 +2513,19 @@ fn export_reencoded(
         cmd.arg("-an");
     }
     if passthrough {
-        for arg in hdr_encoder_args() {
+        // Tag with the source's transfer (any PQ clip → PQ; else HLG).
+        let pq = probes.iter().any(|p| p.5);
+        for arg in hdr_encoder_args(pq) {
             cmd.arg(arg);
         }
     } else {
         for arg in quality_args(encoder, &req.quality) {
             cmd.arg(arg);
+        }
+        // Instagram ingest caps at VBR 25 Mbps — belt-and-braces so a grain- or
+        // confetti-heavy CRF encode can never spike past what Meta accepts.
+        if req.normalize {
+            cmd.args(["-maxrate", "25M", "-bufsize", "50M"]);
         }
     }
     if music.is_some() || multi_audio || (req.preserve_source_audio && req.clips.len() == 1) {

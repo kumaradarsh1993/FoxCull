@@ -2558,7 +2558,7 @@
           {#if outPreset.fit === "original"}Aspect: Original (decided in the edit screen){:else}Aspect: from your edit — <strong>{outPreset.label} · {outPreset.detail}</strong>{/if}
         </p>
         {#if dlgMode === "instagram"}
-          <p class="igDisclaim">Instagram-ready settings are pre-filled — everything on the right stays editable.</p>
+          <p class="igDisclaim">Instagram-ready settings are pre-filled — everything on the right stays editable. Tip: in the Instagram app, turn on <strong>Settings → Data usage &amp; media quality → Upload at highest quality</strong>, or the app recompresses this on your phone.</p>
         {:else if dlgMode === "lossless"}
           <p class="igDisclaim">
             {#if !willRender}Trim only — stream-copied, no re-encode, no quality loss.{:else if mixedSources}Your clips differ in resolution or codec, so they're joined with a best-quality re-encode (a straight stream copy would produce a broken file).{:else}A crop/adjustment/fps change needs a render, so this re-encodes at best quality.{/if}
