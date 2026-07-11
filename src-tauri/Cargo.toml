@@ -1,6 +1,6 @@
 [package]
 name = "foxcull"
-version = "1.0.0"
+version = "1.0.1"
 description = "Photo/video culling and lightweight editing tool"
 authors = ["FoxCull contributors"]
 edition = "2021"
