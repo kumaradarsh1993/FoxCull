@@ -129,6 +129,9 @@ export interface EditAdjustments {
   saturation: number;
   warmth: number;
   sharpen: number;
+  /** Orange & teal split-tone strength, 0 = off. Optional so requests built
+   *  before this field existed still satisfy the type. */
+  splitTone: number;
 }
 
 export interface EditExportRequest {

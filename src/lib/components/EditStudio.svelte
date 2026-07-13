@@ -39,7 +39,7 @@
 
   type PresetId = "original" | "landscape" | "square" | "reels" | "mobile";
   type ExportTarget = "instagram_reels" | "instagram_square" | "instagram_landscape" | "whatsapp" | "archive";
-  type LookPresetId = "neutral" | "drone" | "osmo" | "phone" | "sunset" | "lowlight";
+  type LookPresetId = "neutral" | "batman" | "noir" | "orangeteal" | "vivid" | "osmo" | "sunset";
   type Encoder = "auto" | "x264" | "nvenc";
   type Quality = "best" | "high" | "standard" | "small";
   type SourceView = "details" | "list" | "thumbs";
@@ -113,13 +113,21 @@
     archive: { label: "Archive/original", preset: "original", quality: "best", detail: "Stream-copy when possible" },
   };
 
+  // Parameter-set presets: each is a full EditAdjustments, so the intensity
+  // slider can scale any of them uniformly as neutral + (preset − neutral)×t.
   const LOOK_PRESETS: Record<LookPresetId, { label: string; hint: string; values: EditAdjustments }> = {
-    neutral: { label: "Neutral", hint: "Reset", values: { brightness: 0, contrast: 1, saturation: 1, warmth: 0, sharpen: 0 } },
-    drone: { label: "Drone pop", hint: "Mavic Mini", values: { brightness: 0.015, contrast: 1.11, saturation: 1.16, warmth: 0.015, sharpen: 0.18 } },
-    osmo: { label: "Osmo clean", hint: "Pocket 3", values: { brightness: 0.005, contrast: 1.06, saturation: 1.08, warmth: 0.02, sharpen: 0.12 } },
-    phone: { label: "Phone natural", hint: "Samsung/iPhone", values: { brightness: 0, contrast: 1.04, saturation: 1.04, warmth: 0, sharpen: 0.08 } },
-    sunset: { label: "Warm travel", hint: "Golden hour", values: { brightness: 0.01, contrast: 1.08, saturation: 1.12, warmth: 0.08, sharpen: 0.1 } },
-    lowlight: { label: "Low light", hint: "Night clips", values: { brightness: 0.035, contrast: 0.95, saturation: 1.03, warmth: 0.02, sharpen: 0.05 } },
+    neutral: { label: "Neutral", hint: "Reset", values: { brightness: 0, contrast: 1, saturation: 1, warmth: 0, sharpen: 0, splitTone: 0 } },
+    // The Batman (2022): underexposed but lifted (low-contrast) blacks, heavily
+    // desaturated, cool/teal-leaning — Fraser/Cole's grade approximated globally.
+    batman: { label: "The Batman", hint: "Dark, cool, gritty", values: { brightness: 0.06, contrast: 0.88, saturation: 0.6, warmth: -0.24, sharpen: 0.05, splitTone: 0 } },
+    // Proper monochrome, kept on the brighter side (blacks lifted, mild punch).
+    noir: { label: "Noir B&W", hint: "Bright monochrome", values: { brightness: 0.08, contrast: 1.14, saturation: 0, warmth: 0, sharpen: 0.1, splitTone: 0 } },
+    // The travel/drone split-tone — curves do the teal/orange, params add polish.
+    orangeteal: { label: "Orange & Teal", hint: "Travel split-tone", values: { brightness: 0.02, contrast: 1.06, saturation: 1.1, warmth: 0.05, sharpen: 0.12, splitTone: 1 } },
+    // Punchy "vivid drone" look: saturation + contrast lift for Mavic footage.
+    vivid: { label: "Vivid drone", hint: "Mavic Mini pop", values: { brightness: 0.04, contrast: 1.16, saturation: 1.42, warmth: 0.03, sharpen: 0.2, splitTone: 0 } },
+    osmo: { label: "Osmo clean", hint: "Pocket 3 natural", values: { brightness: 0.01, contrast: 1.06, saturation: 1.08, warmth: 0.04, sharpen: 0.14, splitTone: 0 } },
+    sunset: { label: "Warm travel", hint: "Golden hour", values: { brightness: 0.02, contrast: 1.08, saturation: 1.14, warmth: 0.18, sharpen: 0.12, splitTone: 0 } },
   };
 
   const VIDEO_LANES = [0, 1, 2];
@@ -237,7 +245,13 @@
     saturation: 1,
     warmth: 0,
     sharpen: 0,
+    splitTone: 0,
   });
+  // Which preset is currently driving `adjustments`, and how strongly. A manual
+  // slider edit detaches (activeLook = null) so the intensity control only shows
+  // while an untouched preset is live.
+  let activeLook = $state<LookPresetId | null>(null);
+  let lookIntensity = $state(1);
 
   let activeVideo = $derived(active?.kind === "video" ? active : null);
   let selectedVideos = $derived(selectedItems.filter((i) => i.kind === "video"));
@@ -343,9 +357,32 @@
   let timelineWidth = $derived(
     Math.max(timelineViewportW || 980, timelineEnd * timelineScale + TIMELINE_TRACK_OFFSET + 60),
   );
+  // Brightness/contrast/saturation are native CSS filters; warmth + split-tone
+  // ride an inline SVG filter (feColorMatrix + feComponentTransfer) so the same
+  // channel maths as the ffmpeg export can run in the browser. The url() is only
+  // appended when it does something, so the plain-look fast path stays untouched.
+  let lookNeedsSvg = $derived(Math.abs(adjustments.warmth) >= 0.001 || adjustments.splitTone >= 0.001);
   let previewFilter = $derived(
-    `brightness(${Math.max(0, 1 + adjustments.brightness)}) contrast(${adjustments.contrast}) saturate(${adjustments.saturation})`,
+    `brightness(${Math.max(0, 1 + adjustments.brightness)}) contrast(${adjustments.contrast}) saturate(${adjustments.saturation})` +
+      (lookNeedsSvg ? " url(#foxLook)" : ""),
   );
+  // feColorMatrix diagonal for warmth: red-gain up / blue-gain down, matching the
+  // export's colorchannelmixer=rr:gg:bb.
+  let lookMatrix = $derived.by(() => {
+    const w = Math.max(-0.5, Math.min(0.5, adjustments.warmth));
+    return `${(1 + 0.4 * w).toFixed(4)} 0 0 0 0  0 1 0 0 0  0 0 ${(1 - 0.4 * w).toFixed(4)} 0 0  0 0 0 1 0`;
+  });
+  // Per-channel split-tone tables mirroring the export's ffmpeg curves control
+  // points (evenly spaced at 0/.25/.5/.75/1 — the SVG ramps them linearly).
+  let lookSplit = $derived.by(() => {
+    const a = Math.max(0, Math.min(1.5, adjustments.splitTone));
+    const xs = [0, 0.25, 0.5, 0.75, 1];
+    const rd = [-0.06, -0.02, 0.04, 0.09, 0.06];
+    const gd = [0.03, 0.02, 0, -0.02, -0.03];
+    const bd = [0.09, 0.05, 0, -0.05, -0.08];
+    const tbl = (d: number[]) => xs.map((x, i) => Math.max(0, Math.min(1, x + a * d[i])).toFixed(4)).join(" ");
+    return { r: tbl(rd), g: tbl(gd), b: tbl(bd) };
+  });
   // Dialog data: the source clip we're about to optimise, its probe, and a rough
   // export-time estimate (HDR tone-mapping is slower than a plain re-encode).
   let igSourceClip = $derived(selectedClip ?? orderedClips[0] ?? null);
@@ -357,7 +394,8 @@
       Math.abs(adjustments.contrast - 1) < 0.001 &&
       Math.abs(adjustments.saturation - 1) < 0.001 &&
       Math.abs(adjustments.warmth) < 0.001 &&
-      adjustments.sharpen < 0.001,
+      adjustments.sharpen < 0.001 &&
+      adjustments.splitTone < 0.001,
   );
   // Highest fps across the whole program — a composite conforms to this (≤60).
   let programMaxFps = $derived.by(() => {
@@ -445,27 +483,58 @@
   // crop's pixel width is below the output width (e.g. a 1080p landscape → 9:16).
   let softCrop = $derived(!!igCrop && dlgOut.w > 0 && igCrop.cropW < dlgOut.w - 1);
   // Rule-based breakdown of what drives the export time (shown under the estimate).
+  // `cost` is a relative weight (roughly the compute each step adds); the estimate
+  // bar normalises these to proportions so the widest segment = the heaviest step.
   let exportSteps = $derived.by(() => {
-    const steps: { label: string; note: string }[] = [];
+    const steps: { label: string; note: string; cost: number }[] = [];
     const p = igSourceProbe;
     if (!willRender) {
-      steps.push({ label: "Trim (stream copy)", note: "instant — no re-encode" });
+      steps.push({ label: "Trim (stream copy)", note: "instant — no re-encode", cost: 1 });
       return steps;
     }
-    if (p?.hdr && dlgMode === "instagram" && keepHdr) steps.push({ label: "Keep HDR (10-bit HEVC)", note: "heavy" });
-    else if (p?.hdr && dlgMode === "instagram") steps.push({ label: "HDR → SDR tone-map", note: "heaviest step" });
+    if (p?.hdr && dlgMode === "instagram" && keepHdr) steps.push({ label: "Keep HDR (10-bit HEVC)", note: "heavy", cost: 4 });
+    else if (p?.hdr && dlgMode === "instagram") steps.push({ label: "HDR → SDR tone-map", note: "heaviest step", cost: 5 });
     if (igCrop && dlgOut.w > 0) {
       const cw = Math.round(igCrop.cropW);
-      if (cw > dlgOut.w + 1) steps.push({ label: `Downscale ${cw}→${dlgOut.w}px`, note: "moderate" });
-      else if (cw < dlgOut.w - 1) steps.push({ label: `Upscale ${cw}→${dlgOut.w}px`, note: "light" });
+      if (cw > dlgOut.w + 1) steps.push({ label: `Downscale ${cw}→${dlgOut.w}px`, note: "moderate", cost: 2.5 });
+      else if (cw < dlgOut.w - 1) steps.push({ label: `Upscale ${cw}→${dlgOut.w}px`, note: "light", cost: 1.2 });
     }
-    if (mixedSources) steps.push({ label: "Conform mixed sources", note: "moderate" });
-    if (softCrop) steps.push({ label: "Sharpen soft crop", note: "light" });
-    if (srcFps && shownFps < srcFps - 1) steps.push({ label: `${srcFps}→${shownFps} fps`, note: "light" });
-    if (!neutralLook) steps.push({ label: "Look adjustments", note: "light" });
-    steps.push({ label: keepHdr && dlgMode === "instagram" ? "HEVC encode" : "H.264 encode", note: "scales with clip length" });
+    if (mixedSources) steps.push({ label: "Conform mixed sources", note: "moderate", cost: 2.5 });
+    if (softCrop) steps.push({ label: "Sharpen soft crop", note: "light", cost: 1 });
+    if (srcFps && shownFps < srcFps - 1) steps.push({ label: `${srcFps}→${shownFps} fps`, note: "light", cost: 1 });
+    if (!neutralLook) steps.push({ label: "Look adjustments", note: "light", cost: 1 });
+    steps.push({ label: keepHdr && dlgMode === "instagram" ? "HEVC encode" : "H.264 encode", note: "scales with clip length", cost: 3.5 });
     return steps;
   });
+  // Normalised time split for the estimate bar: each step gets a % of the total
+  // cost, an approximate second count (share × total estimate), and a stable
+  // colour so a legend key lines up with its segment.
+  const COST_PALETTE = ["#5b9bff", "#f6a545", "#e5647d", "#54c1a0", "#b98bff", "#e0b64d", "#7bd0e0", "#ef8fb0"];
+  let exportCost = $derived.by(() => {
+    const steps = exportSteps;
+    const total = steps.reduce((a, s) => a + s.cost, 0) || 1;
+    return {
+      steps: steps.map((s, i) => ({
+        label: s.label,
+        note: s.note,
+        pct: (s.cost / total) * 100,
+        secs: Math.max(1, Math.round((igEstimateSecs * s.cost) / total)),
+        color: COST_PALETTE[i % COST_PALETTE.length],
+      })),
+    };
+  });
+  // Plain-language + technical (x264 CRF) meaning of the quality picker. High is
+  // the Instagram default on purpose — the app recompresses uploads, so Best just
+  // makes a bigger file for no visible gain.
+  let qualityNote = $derived(
+    quality === "best"
+      ? "Near-lossless (CRF 16) — largest file, for archiving or re-editing."
+      : quality === "high"
+        ? "Visually lossless (CRF 18) — recommended; Instagram recompresses anyway."
+        : quality === "standard"
+          ? "Balanced (CRF 20) — noticeably smaller file."
+          : "Most compressed (CRF 23) — smallest file, some quality loss.",
+  );
   let needsRender = $derived(
     outPreset.fit !== "original" ||
       audioClips.length > 0 ||
@@ -473,14 +542,9 @@
       Math.abs(adjustments.contrast - 1) > 0.001 ||
       Math.abs(adjustments.saturation - 1) > 0.001 ||
       Math.abs(adjustments.warmth) > 0.001 ||
-      Math.abs(adjustments.sharpen) > 0.001,
+      Math.abs(adjustments.sharpen) > 0.001 ||
+      adjustments.splitTone > 0.001,
   );
-  // Warmth is a blend overlay (CSS filter can't warm/cool) — see the preview tint.
-  let warmthTint = $derived.by(() => {
-    const w = adjustments.warmth;
-    if (Math.abs(w) < 0.001) return null;
-    return { color: w > 0 ? "#ff8a2a" : "#3b7dff", opacity: Math.min(0.6, Math.abs(w) * 1.8) };
-  });
   // The crop overlay only makes sense when the clip under the playhead IS the
   // selected clip (that's the frame the player is showing + the crop applies to).
   let cropVisible = $derived(
@@ -1330,20 +1394,54 @@
     exportNote = null;
   }
 
-  const NEUTRAL_ADJ: EditAdjustments = { brightness: 0, contrast: 1, saturation: 1, warmth: 0, sharpen: 0 };
+  const NEUTRAL_ADJ: EditAdjustments = { brightness: 0, contrast: 1, saturation: 1, warmth: 0, sharpen: 0, splitTone: 0 };
 
   function resetColor() {
     adjustments = { ...NEUTRAL_ADJ };
+    activeLook = null;
   }
 
   // Lightroom habit: double-click a slider to snap that one control back to its
-  // neutral value.
+  // neutral value. That's a manual edit, so it breaks the preset link too.
   function resetAdj(field: keyof EditAdjustments) {
     adjustments = { ...adjustments, [field]: NEUTRAL_ADJ[field] };
+    activeLook = null;
+  }
+
+  // A preset is a full parameter set; the intensity slider scales it uniformly as
+  // neutral + (preset − neutral) × t, which works for every field at once.
+  function scaleAdj(v: EditAdjustments, t: number): EditAdjustments {
+    const mix = (from: number, to: number) => from + (to - from) * t;
+    return {
+      brightness: mix(NEUTRAL_ADJ.brightness, v.brightness),
+      contrast: mix(NEUTRAL_ADJ.contrast, v.contrast),
+      saturation: mix(NEUTRAL_ADJ.saturation, v.saturation),
+      warmth: mix(NEUTRAL_ADJ.warmth, v.warmth),
+      sharpen: mix(NEUTRAL_ADJ.sharpen, v.sharpen),
+      splitTone: mix(NEUTRAL_ADJ.splitTone, v.splitTone),
+    };
   }
 
   function applyLook(id: LookPresetId) {
-    adjustments = { ...LOOK_PRESETS[id].values };
+    if (id === "neutral") {
+      resetColor();
+      return;
+    }
+    activeLook = id;
+    lookIntensity = 1;
+    adjustments = scaleAdj(LOOK_PRESETS[id].values, lookIntensity);
+  }
+
+  // Re-derive the live look from the active preset at the new strength.
+  function setLookIntensity(t: number) {
+    lookIntensity = t;
+    if (activeLook) adjustments = scaleAdj(LOOK_PRESETS[activeLook].values, t);
+  }
+
+  // Any hand edit of a slider divorces the result from its preset (so the
+  // intensity control hides and won't clobber the tweak on the next render).
+  function detachLook() {
+    activeLook = null;
   }
 
   // Small numeric readout beside each slider label (signed for brightness/warmth).
@@ -1357,10 +1455,13 @@
   }
 
   // A live CSS-filter preview of a look, used for the preset swatches so they
-  // show what they do instead of being flat text tiles.
+  // show what they do instead of being flat text tiles. Decorative only (no SVG
+  // filter here) — warm/cool and split-tone are faked with sepia + hue-rotate so
+  // the tiles read distinct at a glance.
   function lookFilter(v: EditAdjustments): string {
-    const warm = Math.max(0, v.warmth) * 3;
-    return `brightness(${(1 + v.brightness).toFixed(3)}) contrast(${v.contrast}) saturate(${v.saturation}) sepia(${warm.toFixed(3)})`;
+    const warmSep = (Math.max(0, v.warmth) + v.splitTone * 0.25) * 3;
+    const coolRot = v.warmth < 0 ? Math.min(35, -v.warmth * 90) : 0;
+    return `brightness(${(1 + v.brightness).toFixed(3)}) contrast(${v.contrast}) saturate(${v.saturation}) sepia(${warmSep.toFixed(3)}) hue-rotate(${(-coolRot).toFixed(1)}deg)`;
   }
 
   function setPreset(id: PresetId) {
@@ -2197,18 +2298,14 @@
           </button>
         {/each}
       </div>
-      <span class="status" class:warn={needsRender}>{needsRender ? "Render required" : "Stream copy ready"}</span>
       <div class="layoutTools">
         <button class="miniBtn" class:on={!sourceCollapsed} onclick={() => (sourceCollapsed = !sourceCollapsed)}>Source</button>
         <button class="miniBtn" class:on={!timelineCollapsed} onclick={() => (timelineCollapsed = !timelineCollapsed)}>Timeline</button>
         <button class="miniBtn" class:on={!inspectorCollapsed} onclick={() => (inspectorCollapsed = !inspectorCollapsed)}>Look</button>
       </div>
-      <span class="spacer"></span>
+      <span class="topGap"></span>
       <button class="miniBtn" class:on={productionPreview} onclick={toggleProductionPreview} disabled={!selectedClip}>
         Preview
-      </button>
-      <button class="miniBtn" onclick={takeSnapshot} disabled={!clips.length || snapshotting}>
-        {snapshotting ? "Saving" : "Frame"}
       </button>
       {#if frameToast}<span class="topToast" aria-live="polite">{frameToast}</span>{/if}
       <div class="exportOpts">
@@ -2222,8 +2319,14 @@
           </div>
         {:else}
         <div class="exportGroup">
-          <button class="exportBtn main" onclick={() => openExport("custom")} disabled={!clips.length} title="Open the export dialog (all settings)">
-            Export
+          <button
+            class="exportBtn main"
+            class:needsRender
+            onclick={() => openExport("custom")}
+            disabled={!clips.length}
+            title={needsRender ? "Export — this aspect/look needs a re-render (details in the dialog)" : "Export — stream copy ready (details in the dialog)"}
+          >
+            Export{#if needsRender}<span class="reDot" aria-hidden="true"></span>{/if}
           </button>
           <button
             class="exportBtn caret"
@@ -2246,6 +2349,9 @@
               <span>Original quality · keeps your aspect/crop</span>
             </button>
             <div class="menuSep"></div>
+            <button class="exportChoice sub" onclick={() => { exportMenuOpen = false; takeSnapshot(); }} disabled={!clips.length || snapshotting}>
+              {snapshotting ? "Saving frame…" : "Save current frame (PNG)"}
+            </button>
             <button class="exportChoice sub" onclick={() => openExport("custom")}>All export settings…</button>
           </div>
         {/if}
@@ -2253,6 +2359,18 @@
     </div>
 
     <div class="preview" bind:this={previewBox} onwheel={onCropWheel}>
+      <!-- Warmth + split-tone for the preview. sRGB interpolation so the maths
+           lands in the same colour space as the ffmpeg export path. -->
+      <svg class="lookFilterDefs" width="0" height="0" aria-hidden="true">
+        <filter id="foxLook" color-interpolation-filters="sRGB">
+          <feColorMatrix type="matrix" values={lookMatrix} />
+          <feComponentTransfer>
+            <feFuncR type="table" tableValues={lookSplit.r} />
+            <feFuncG type="table" tableValues={lookSplit.g} />
+            <feFuncB type="table" tableValues={lookSplit.b} />
+          </feComponentTransfer>
+        </filter>
+      </svg>
       {#if inspectorCollapsed}
         <button class="restoreTab restoreLook" onclick={() => (inspectorCollapsed = false)} title="Show Look panel">Look</button>
       {/if}
@@ -2278,9 +2396,6 @@
               onerror={onPreviewError}
               onclick={togglePlay}
             ></video>
-            {#if warmthTint}
-              <div class="warmthTint prod" style="background:{warmthTint.color}; opacity:{warmthTint.opacity}"></div>
-            {/if}
           </div>
           <div class="productionControls">
             <button class="play" onclick={togglePlay}>{previewVideo?.paused === false ? "Pause" : "Play"}</button>
@@ -2307,12 +2422,6 @@
             onerror={onPreviewError}
             onclick={togglePlay}
           ></video>
-          {#if warmthTint}
-            <div
-              class="warmthTint"
-              style="left:{imageRect.left}px; top:{imageRect.top}px; width:{imageRect.w}px; height:{imageRect.h}px; background:{warmthTint.color}; opacity:{warmthTint.opacity}"
-            ></div>
-          {/if}
         {/if}
         {#if previewPreparing}
           <div class="previewBusy">Preparing preview</div>
@@ -2474,7 +2583,12 @@
       <p class="groupLabel">Presets</p>
       <div class="lookPresets">
         {#each Object.entries(LOOK_PRESETS) as [id, look]}
-          <button class="lookPreset" onclick={() => applyLook(id as LookPresetId)} title={look.hint}>
+          <button
+            class="lookPreset"
+            class:active={activeLook === id || (id === "neutral" && neutralLook)}
+            onclick={() => applyLook(id as LookPresetId)}
+            title={look.hint}
+          >
             <span class="swatch" style="filter:{lookFilter(look.values)}"></span>
             <span class="lpText">
               <strong>{look.label}</strong>
@@ -2483,16 +2597,31 @@
           </button>
         {/each}
       </div>
+      {#if activeLook}
+        <label class="lookIntensity">
+          <span class="adjLabel">Intensity <em class="adjVal">{Math.round(lookIntensity * 100)}%</em></span>
+          <input
+            type="range"
+            min="0"
+            max="1.5"
+            step="0.01"
+            value={lookIntensity}
+            oninput={(e) => setLookIntensity(Number((e.currentTarget as HTMLInputElement).value))}
+            ondblclick={() => setLookIntensity(1)}
+          />
+        </label>
+      {/if}
       <div class="groupDivider">
         <span class="groupLabel">Adjust</span>
         <button class="miniBtn ghost" onclick={resetColor} title="Reset all adjustments">Reset all</button>
       </div>
       <p class="adjHint">Double-click a slider to reset just that control.</p>
-      <label><span class="adjLabel">Brightness <em class="adjVal">{adjReadout("brightness")}</em></span><input type="range" min="-0.4" max="0.4" step="0.005" bind:value={adjustments.brightness} ondblclick={() => resetAdj("brightness")} /></label>
-      <label><span class="adjLabel">Contrast <em class="adjVal">{adjReadout("contrast")}</em></span><input type="range" min="0.5" max="1.8" step="0.01" bind:value={adjustments.contrast} ondblclick={() => resetAdj("contrast")} /></label>
-      <label><span class="adjLabel">Saturation <em class="adjVal">{adjReadout("saturation")}</em></span><input type="range" min="0" max="2" step="0.01" bind:value={adjustments.saturation} ondblclick={() => resetAdj("saturation")} /></label>
-      <label><span class="adjLabel">Warmth <em class="adjVal">{adjReadout("warmth")}</em></span><input type="range" min="-0.3" max="0.3" step="0.005" bind:value={adjustments.warmth} ondblclick={() => resetAdj("warmth")} /></label>
-      <label><span class="adjLabel">Sharpen <em class="adjVal">{adjReadout("sharpen")}</em></span><input type="range" min="0" max="1" step="0.01" bind:value={adjustments.sharpen} ondblclick={() => resetAdj("sharpen")} /></label>
+      <label><span class="adjLabel">Brightness <em class="adjVal">{adjReadout("brightness")}</em></span><input type="range" min="-0.5" max="0.5" step="0.01" bind:value={adjustments.brightness} oninput={detachLook} ondblclick={() => resetAdj("brightness")} /></label>
+      <label><span class="adjLabel">Contrast <em class="adjVal">{adjReadout("contrast")}</em></span><input type="range" min="0.5" max="1.8" step="0.01" bind:value={adjustments.contrast} oninput={detachLook} ondblclick={() => resetAdj("contrast")} /></label>
+      <label><span class="adjLabel">Saturation <em class="adjVal">{adjReadout("saturation")}</em></span><input type="range" min="0" max="2" step="0.01" bind:value={adjustments.saturation} oninput={detachLook} ondblclick={() => resetAdj("saturation")} /></label>
+      <label><span class="adjLabel">Warmth <em class="adjVal">{adjReadout("warmth")}</em></span><input type="range" min="-0.5" max="0.5" step="0.01" bind:value={adjustments.warmth} oninput={detachLook} ondblclick={() => resetAdj("warmth")} /></label>
+      <label><span class="adjLabel">Split tone <em class="adjVal">{adjReadout("splitTone")}</em></span><input type="range" min="0" max="1" step="0.01" bind:value={adjustments.splitTone} oninput={detachLook} ondblclick={() => resetAdj("splitTone")} /></label>
+      <label><span class="adjLabel">Sharpen <em class="adjVal">{adjReadout("sharpen")}</em></span><input type="range" min="0" max="1" step="0.01" bind:value={adjustments.sharpen} oninput={detachLook} ondblclick={() => resetAdj("sharpen")} /></label>
     </div>
 
     {#if selectedClip}
@@ -2565,60 +2694,81 @@
           </p>
         {/if}
 
-        <div class="igCompare">
-          <div class="igCol">
-            <span class="igColHead">Source</span>
-            <ul>
-              <li>{igSourceProbe?.width ?? "?"}×{igSourceProbe?.height ?? "?"}</li>
-              {#if igCrop && outPreset.fit !== "original"}
-                <li><em>after crop &amp; zoom ≈ {Math.round(igCrop.cropW)}×{Math.round(igCrop.cropH)} px</em></li>
-              {/if}
-              <li>{srcFps ? `${srcFps} fps` : "source fps"}</li>
-              <li>{igSourceProbe?.codec ?? "source codec"}</li>
-              <li class:warn={igSourceProbe?.hdr}>{igSourceProbe?.hdr ? "HDR (HLG/PQ)" : "SDR"}</li>
-              <li>{fmt(programSeconds)} · {programClips.length} clip{programClips.length === 1 ? "" : "s"}</li>
-              {#if mixedSources}
-                <li class="warn">mixed resolutions/codecs</li>
-              {/if}
-            </ul>
+        <!-- Aligned Source → Output comparison. Each row is one property so the
+             current value and the target sit on the same line (was two loosely
+             related lists). The Output column stays editable. -->
+        <div class="igGrid">
+          <div class="igGridHead">
+            <span>Property</span>
+            <span>Source</span>
+            <span>Output</span>
           </div>
-          <div class="igArrow">→</div>
-          <div class="igCol optimised">
-            <span class="igColHead">Output</span>
-            <div class="dlgSets">
-              <label class="dlgSet">Resolution
-                <select bind:value={dlgRes} disabled={resOptions.length < 2}>
-                  {#each resOptions as o (o.id)}
-                    <option value={o.id}>{o.label}</option>
-                  {/each}
-                </select>
-              </label>
-              <label class="dlgSet">Frame rate
-                <select bind:value={dlgFps}>
-                  {#each fpsOptions as o (o.id)}
-                    <option value={o.id}>{o.label}</option>
-                  {/each}
-                </select>
-              </label>
-              <label class="dlgSet">Quality
-                <select bind:value={quality}>
-                  <option value="best">Best</option>
-                  <option value="high">High</option>
-                  <option value="standard">Standard</option>
-                  <option value="small">Small</option>
-                </select>
-              </label>
-              <p class="dlgFormat">
-                {#if !willRender}Stream copy · {igSourceProbe?.codec ?? "original codec"} untouched{:else if keepHdr && igSourceProbe?.hdr && dlgMode === "instagram"}HEVC 10-bit · MP4 · HDR (HLG kept){:else if igSourceProbe?.hdr && dlgMode === "instagram"}H.264 · MP4 · faststart · SDR (tone-mapped){:else}H.264 · MP4 · faststart{/if}
-              </p>
+
+          <div class="igGridRow">
+            <span class="k">Resolution</span>
+            <span class="s">
+              {igSourceProbe?.width ?? "?"}×{igSourceProbe?.height ?? "?"}
+              {#if igCrop && outPreset.fit !== "original"}<em>crop ≈ {Math.round(igCrop.cropW)}×{Math.round(igCrop.cropH)} px</em>{/if}
+            </span>
+            <span class="o">
+              <select bind:value={dlgRes} disabled={resOptions.length < 2}>
+                {#each resOptions as o (o.id)}
+                  <option value={o.id}>{o.label}</option>
+                {/each}
+              </select>
               {#if igCrop && dlgOut.w > 0}
-                {#if Math.round(igCrop.cropW) > dlgOut.w + 1}
-                  <p class="dlgFormat dim">downscaled from the crop — crisp</p>
-                {:else if Math.round(igCrop.cropW) < dlgOut.w - 1}
-                  <p class="dlgFormat dim">upscaled past the crop's pixels — slightly soft</p>
-                {/if}
+                {#if Math.round(igCrop.cropW) > dlgOut.w + 1}<em class="ok">downscaled — crisp</em>
+                {:else if Math.round(igCrop.cropW) < dlgOut.w - 1}<em class="soft">upscaled — slightly soft</em>{/if}
               {/if}
+            </span>
+          </div>
+
+          <div class="igGridRow">
+            <span class="k">Frame rate</span>
+            <span class="s">{srcFps ? `${srcFps} fps` : "source fps"}</span>
+            <span class="o">
+              <select bind:value={dlgFps}>
+                {#each fpsOptions as o (o.id)}
+                  <option value={o.id}>{o.label}</option>
+                {/each}
+              </select>
+            </span>
+          </div>
+
+          <div class="igGridRow">
+            <span class="k">Quality</span>
+            <span class="s">as recorded</span>
+            <span class="o">
+              <select bind:value={quality}>
+                <option value="best">Best — CRF 16</option>
+                <option value="high">High — CRF 18</option>
+                <option value="standard">Standard — CRF 20</option>
+                <option value="small">Small — CRF 23</option>
+              </select>
+              <em class="dim">{qualityNote}</em>
+            </span>
+          </div>
+
+          <div class="igGridRow">
+            <span class="k">Format</span>
+            <span class="s">{igSourceProbe?.codec ?? "source codec"}</span>
+            <span class="o">
+              {#if !willRender}stream copy · untouched{:else if keepHdr && igSourceProbe?.hdr && dlgMode === "instagram"}HEVC 10-bit · MP4{:else}H.264 · MP4 · faststart{/if}
+            </span>
+          </div>
+
+          {#if igSourceProbe?.hdr}
+            <div class="igGridRow">
+              <span class="k">Dynamic range</span>
+              <span class="s warn">HDR (HLG/PQ)</span>
+              <span class="o">{keepHdr && dlgMode === "instagram" ? "HDR (HLG kept)" : "SDR (tone-mapped)"}</span>
             </div>
+          {/if}
+
+          <div class="igGridRow">
+            <span class="k">Length</span>
+            <span class="s">{fmt(programSeconds)} · {programClips.length} clip{programClips.length === 1 ? "" : "s"}</span>
+            <span class="o">unchanged{#if mixedSources} · <em class="warn">mixed sources conformed</em>{/if}</span>
           </div>
         </div>
 
@@ -2638,11 +2788,26 @@
             <strong><span class="effortDot {effort}"></span>Estimated time ~{fmt(igEstimateSecs)} <em class="effortWord">({effortLabel})</em></strong>
             <span class="dlgInfo" title="Rule-of-thumb breakdown of what drives the time">ⓘ what drives this</span>
           </div>
-          <ul class="dlgSteps">
-            {#each exportSteps as s}
-              <li><span>{s.label}</span><em>{s.note}</em></li>
-            {/each}
-          </ul>
+          {#if willRender && exportCost.steps.length}
+            <!-- Stacked bar: each segment's WIDTH is that step's share of the time,
+                 so the widest segment is the most taxing operation at a glance. -->
+            <div class="costBar" role="img" aria-label="Estimated time split by step">
+              {#each exportCost.steps as s (s.label)}
+                <span class="costSeg" style="width:{s.pct}%; background:{s.color}" title="{s.label} — ~{s.secs}s ({Math.round(s.pct)}%)"></span>
+              {/each}
+            </div>
+            <ul class="costLegend">
+              {#each exportCost.steps as s (s.label)}
+                <li>
+                  <span class="costKey" style="background:{s.color}"></span>
+                  <span class="costName">{s.label}</span>
+                  <em>~{s.secs}s · {Math.round(s.pct)}%</em>
+                </li>
+              {/each}
+            </ul>
+          {:else}
+            <p class="costNone">{exportSteps[0]?.label ?? "Trim (stream copy)"} — {exportSteps[0]?.note ?? "instant, no re-encode"}</p>
+          {/if}
           <p class="dlgRerender">{willRender ? "Re-render required" : "No re-render — bit-exact stream copy"}</p>
         </div>
 
@@ -2656,6 +2821,7 @@
           <p class="dlgLoc">
             Saves next to the source{#if dlgNameTaken} — <em class="taken">name taken, will save as “{dlgName.trim() || exportName()} (2)”</em>{/if}
           </p>
+          <p class="dlgNameTip">Rename freely — but keeping the original clip name plus a suffix (e.g. DJI_0679_myedit) keeps the export stacked with its source in the library grid.</p>
         </div>
 
         <div class="dlgOther">
@@ -3045,18 +3211,6 @@
     font-size: 10.5px;
     opacity: 0.75;
   }
-  .status {
-    padding: 5px 8px;
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--pick) 18%, transparent);
-    color: var(--pick);
-    font-size: 11.5px;
-    white-space: nowrap;
-  }
-  .status.warn {
-    background: color-mix(in srgb, var(--accent) 20%, transparent);
-    color: var(--accent);
-  }
   .exportOpts {
     position: relative;
     flex: 0 0 auto;
@@ -3146,9 +3300,32 @@
     color: var(--text);
     font-size: 12px;
   }
+  /* A small, non-growing gap between the left cluster (presets + layout) and the
+     right cluster (Preview + Export). Previously flex:1 which shoved Export to the
+     far edge — on a wide pane that left a huge dead gap, and on a tight pane it
+     forced Export to wrap to a second row. A capped gap keeps the controls
+     grouped together and left-aligned instead. */
+  .topGap {
+    flex: 0 1 22px;
+    min-width: 12px;
+  }
   .spacer {
     flex: 1 1 auto;
     min-width: 8px;
+  }
+  /* Render-required marker on the Export button (replaces the old toolbar pill;
+     the full breakdown lives in the export dialog). */
+  .exportBtn.main {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .reDot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent-on);
+    opacity: 0.85;
   }
   .preview {
     position: relative;
@@ -3233,16 +3410,6 @@
     border: 1px solid var(--border);
     color: var(--text-dim);
     font-size: 12px;
-  }
-  /* Warmth can't be a CSS filter — a soft-light tint over the exact video area
-     stands in for it in the preview. */
-  .warmthTint {
-    position: absolute;
-    pointer-events: none;
-    mix-blend-mode: soft-light;
-  }
-  .warmthTint.prod {
-    inset: 0;
   }
   .trimCaption {
     position: absolute;
@@ -3438,22 +3605,6 @@
     color: var(--text-dim);
     line-height: 1.45;
   }
-  .igCompare {
-    display: flex;
-    align-items: stretch;
-    gap: 10px;
-  }
-  .igCol {
-    flex: 1;
-    padding: 10px 12px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: var(--bg-elev);
-  }
-  .igCol.optimised {
-    border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-    background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev));
-  }
   .igColHead {
     display: block;
     font-size: 10.5px;
@@ -3463,28 +3614,129 @@
     color: var(--text-faint);
     margin-bottom: 6px;
   }
-  .igCol ul {
+  /* Aligned Source → Output comparison. A 3-column grid so every property's
+     current value and target line up on one row. */
+  .igGrid {
+    display: grid;
+    grid-template-columns: minmax(84px, auto) 1fr 1.15fr;
+    gap: 1px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--border);
+  }
+  .igGridHead {
+    display: contents;
+  }
+  .igGridHead span {
+    padding: 6px 12px;
+    background: var(--bg-elev);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+  .igGridHead span:last-child {
+    color: color-mix(in srgb, var(--accent) 70%, var(--text-faint));
+  }
+  .igGridRow {
+    display: contents;
+  }
+  .igGridRow > span {
+    padding: 8px 12px;
+    background: var(--bg-panel);
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    justify-content: center;
+  }
+  .igGridRow .k {
+    color: var(--text-faint);
+    font-weight: 600;
+    font-variant-numeric: normal;
+  }
+  .igGridRow .s {
+    color: var(--text-dim);
+  }
+  .igGridRow .o {
+    background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel));
+    color: var(--text);
+  }
+  .igGridRow em {
+    font-style: normal;
+    font-size: 10.5px;
+    color: var(--text-faint);
+  }
+  .igGridRow .s.warn,
+  .igGridRow em.warn {
+    color: var(--accent);
+  }
+  .igGridRow em.ok {
+    color: var(--pick);
+  }
+  .igGridRow em.soft {
+    color: #d9a326;
+  }
+  .igGridRow .o select {
+    width: 100%;
+    font-size: 12px;
+    padding: 4px 6px;
+  }
+  .igGridRow em.dim {
+    line-height: 1.35;
+  }
+  /* Stacked time-cost bar under the estimate. */
+  .costBar {
+    display: flex;
+    height: 12px;
+    margin: 9px 0 8px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--border) 60%, transparent);
+  }
+  .costSeg {
+    height: 100%;
+    min-width: 3px;
+  }
+  .costSeg + .costSeg {
+    border-left: 1px solid var(--bg-elev);
+  }
+  .costLegend {
     margin: 0;
     padding: 0;
     list-style: none;
     display: flex;
-    flex-direction: column;
-    gap: 3px;
-    font-size: 12.5px;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+  }
+  .costLegend li {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11.5px;
+    color: var(--text-dim);
+  }
+  .costKey {
+    width: 9px;
+    height: 9px;
+    border-radius: 3px;
+    flex: 0 0 auto;
+  }
+  .costName {
+    color: var(--text);
+  }
+  .costLegend em {
+    font-style: normal;
+    color: var(--text-faint);
     font-variant-numeric: tabular-nums;
   }
-  .igCol li em {
-    color: var(--text-faint);
-    font-style: normal;
-    font-size: 11px;
-  }
-  .igCol li.warn {
-    color: var(--accent);
-  }
-  .igArrow {
-    align-self: center;
-    color: var(--text-faint);
-    font-size: 18px;
+  .costNone {
+    margin: 8px 0 0;
+    font-size: 11.5px;
+    color: var(--text-dim);
   }
   /* Mode segmented control */
   .dlgModes {
@@ -3575,25 +3827,6 @@
     font-size: 10.5px;
     color: var(--text-faint);
   }
-  .dlgSteps {
-    margin: 8px 0 0;
-    padding: 0;
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-  .dlgSteps li {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    font-size: 11.5px;
-    color: var(--text-dim);
-  }
-  .dlgSteps li em {
-    font-style: normal;
-    color: var(--text-faint);
-  }
   .dlgLoc {
     margin: 0;
     font-size: 11.5px;
@@ -3607,31 +3840,17 @@
     font-style: normal;
     color: var(--accent);
   }
-  /* Output card: editable target settings (the preset only pre-fills them). */
-  .dlgSets {
-    display: flex;
-    flex-direction: column;
-    gap: 7px;
+  .dlgNameTip {
+    margin: 3px 0 0;
+    font-size: 10.5px;
+    line-height: 1.35;
+    color: var(--text-faint);
   }
   .dlgSet {
     display: grid;
     gap: 3px;
     font-size: 11px;
     color: var(--text-faint);
-  }
-  .dlgSet select {
-    font-size: 12px;
-    padding: 4px 6px;
-  }
-  .dlgFormat {
-    margin: 2px 0 0;
-    font-size: 11.5px;
-    color: var(--text);
-  }
-  .dlgFormat.dim {
-    margin: 0;
-    color: var(--text-faint);
-    font-size: 11px;
   }
   /* Traffic-light effort dot beside the time estimate. */
   .effortDot {
@@ -3925,6 +4144,21 @@
   }
   .lookPreset:hover {
     border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  }
+  .lookPreset.active {
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+  /* SVG-only filter host (warmth + split-tone). Never painted itself. */
+  .lookFilterDefs {
+    position: absolute;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+  }
+  /* The per-preset intensity control sits between presets and the divider. */
+  .lookIntensity {
+    margin-top: 8px;
   }
   .lookPreset .swatch {
     height: 26px;

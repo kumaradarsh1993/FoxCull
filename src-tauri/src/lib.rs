@@ -1,8 +1,10 @@
+mod cast;
 mod catalog;
 mod commands;
 mod config;
 mod log;
 mod media;
+mod raw;
 mod thumbs;
 mod video;
 
@@ -108,6 +110,11 @@ pub fn run() {
                 export_gen: Arc::new(AtomicU64::new(0)),
             });
 
+            // Chromecast backend state: the media server + active cast
+            // connection are created lazily on first cast, so this just holds
+            // the empty slots.
+            app.manage(cast::CastState::default());
+
             // Title carries the exact build (stable or nightly) so the user can
             // always tell which version they're testing at a glance.
             if let Some(win) = app.get_webview_window("main") {
@@ -166,6 +173,12 @@ pub fn run() {
             commands::open_external,
             commands::folder_writable,
             commands::log_event,
+            cast::cast_discover,
+            cast::cast_start,
+            cast::cast_stop,
+            cast::cast_status,
+            raw::raw_embedded_probe,
+            raw::export_raw_jpegs,
         ])
         .run(tauri::generate_context!());
 

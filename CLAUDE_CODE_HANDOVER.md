@@ -12,6 +12,60 @@ Claude-built `fox-cull` project.
 > **historical record** of names in effect at the time — left as-is for
 > accuracy; don't "fix" them.
 
+## What landed in v1.1.0-nightly.1 (2026-07-12, one big live-audit batch)
+
+Driven by a long user audit session; stable base remains v1.0.1 (v1.0.0 re-cut
+after a transient publish failure — code-identical). Newest additions:
+
+- **Cast to TV (Chromecast)**: `src-tauri/src/cast.rs` — mDNS discovery
+  (`mdns-sd`), hand-rolled CASTV2 protobuf over `native-tls` (schannel on
+  Windows; deliberately no rust_cast — it drags in aws-lc-rs/C), local
+  Range-enabled `tiny_http` media server with a per-cast token allowlist.
+  Videos stream untranscoded (4K60 HEVC decodes on the TV); photos are capped
+  ~720–1080p by the Default Media Receiver (custom receiver = later work).
+  UI: cast button + device popover in the top-right toolbar (`+page.svelte`).
+- **RAW → JPEG bulk export**: `src-tauri/src/raw.rs` — extracts the camera's
+  full-res embedded JPEG from TIFF-based RAW (NEF/CR2/ARW/DNG) via a full
+  IFD/SubIFD walk (largest FFD8..FFD9 candidate wins; brute-scan fallback);
+  verbatim write when upright, rotate+re-encode(q95)+ICC otherwise; output is
+  `<stem>.JPG` beside the source so it auto-stacks with its RAW. Context-menu
+  "Export JPEG from RAW" + `raw-export-progress` event → ActivityBar.
+- **Scalable stacks**: besides the suffix whitelist, any stem that extends
+  another file's stem across a `[_-. ]` boundary joins that file's stack
+  (`buildRelatedIndex` re-rooting pass). Per-item RAW/JPG corner tags.
+- **Undo/redo for culling marks**: snapshot-based stack (Ctrl+Z / Ctrl+Y /
+  Ctrl+Shift+Z), toast + logfile trail; file operations deliberately excluded.
+- **Filters overhaul**: rating operator ≥/≤/=, Lightroom-style multi-select
+  labels + a proper "None" control, "N of M" shown-count, popover no longer
+  clips. X/P now toggle on multi-selections like the toolbar buttons.
+- **Look presets rebuilt** (EditStudio): The Batman / Noir B&W / Orange&Teal /
+  Vivid drone / Osmo clean / Warm travel, each scaled by an Intensity slider
+  (0–150%). New `splitTone` adjustment: SVG `feComponentTransfer` preview ↔
+  ffmpeg `curves` export from the same control points; brightness/warmth
+  recalibrated (CSS-vs-eq mismatch folded algebraically into `eq`).
+- **Export dialog**: aligned 3-column Property/Source/Output grid; stacked
+  time-cost bar with legend; Quality labeled by CRF (16/18/20/23) with a
+  "High is right for Instagram" note; filename hint about stack-friendly
+  naming. Toolbar: Frame button folded into Export ▾; "Render required" pill
+  → dot on Export; capped gap (no more wrap).
+- **Chrome polish**: taskbar FOX icon enlarged (content zoomed 1.24× inside
+  the tile from `icons/icon.png`, corners re-masked; the icon set is
+  regenerated from the new canonical source `assets/icon-fox-1024.png` — the
+  original fox master PNG was never committed, which is why regenerating from
+  `assets/icon.svg` (geometric motif, favicon/docs only) replaces the fox by
+  mistake. `npx tauri icon assets/icon-fox-1024.png` is the correct command),
+  standard panel glyph for sidebar collapse, gear icon + grouped settings
+  popover (Stacks/Live Scrub live ONLY there now), aligned popover labels,
+  icons on Reject/Clear/Delete, drive list re-enumerates on refresh ↻.
+
+**Local toolchain note (this machine)**: `cargo check` works via
+`D:\dev-tools` (gnu toolchain + winlibs mingw64 for `dlltool`/`gcc`,
+`CARGO_TARGET_DIR=D:\dev-tools\rust\target-shared` because windres chokes on
+the space in "Claude Code Projects"). See `D:\dev-tools\README.md`.
+`cargo test` does NOT run locally: linking the cdylib overflows the 65k DLL
+export-ordinal limit under GNU ld, and even rlib-only test exes die with
+STATUS_ENTRYPOINT_NOT_FOUND. Checks are the local gate; tests are CI/MSVC-only.
+
 ## Current State: Stable FoxCull v1.0.0
 
 - Current main product name: **FoxCull**.

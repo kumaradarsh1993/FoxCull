@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { api } from "$lib/api";
+  import { cast, type CastDevice, type CastStatus } from "$lib/cast";
   import { settings } from "$lib/settings.svelte";
   import { activity } from "$lib/activity.svelte";
   import { resetThumbs, prefetchLoupe, loaderStats } from "$lib/thumbnail-loader";
@@ -62,21 +63,44 @@
   let cutPaths = $state<string[]>([]);
   let movingFiles = $state(false);
 
+  type RatingOp = ">=" | "<=" | "=";
   let minRating = $state(0);
-  let labelFilter = $state<string | null>(null);
+  // Rating comparison mode: ≥ (default), ≤, or = so a set of ratings can be
+  // targeted (e.g. "= 3" isolates exactly-three-star shots). Modifier only —
+  // it never counts toward activeFilterCount on its own.
+  let ratingOp = $state<RatingOp>(">=");
+  // Label filter is Lightroom-style multi-select with OR semantics: any number
+  // of colours toggle on independently, plus a distinct "None" that matches
+  // unlabeled items. Empty set + labelNone=false ⇒ label filter inactive.
+  let labelFilters = $state<Set<string>>(new Set());
+  let labelNone = $state(false);
   let flagFilter = $state<FlagFilter>("all");
   let tagFilter = $state<string | null>(null);
   let allTags = $state<[string, number][]>([]);
   let tagInput = $state("");
 
-  // How many popover filters are active — shown as a badge.
+  let labelFilterActive = $derived(labelFilters.size > 0 || labelNone);
+
+  // How many popover filters are active — shown as a badge. The rating operator
+  // is a modifier, not a filter, so only a chosen star count contributes.
   let activeFilterCount = $derived(
     (settings.s.typeFilter !== "all" ? 1 : 0) +
       (flagFilter !== "all" ? 1 : 0) +
       (minRating > 0 ? 1 : 0) +
-      (labelFilter ? 1 : 0) +
+      (labelFilterActive ? 1 : 0) +
       (tagFilter ? 1 : 0),
   );
+
+  function toggleLabelFilter(key: string) {
+    const next = new Set(labelFilters);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    labelFilters = next;
+  }
+  function clearLabelFilter() {
+    labelFilters = new Set();
+    labelNone = false;
+  }
 
   let dimLevel = $state(0); // 0 normal · 1 dim panels · 2 lights out
   let showInfoOverlay = $state(false);
@@ -84,6 +108,45 @@
   let filtersOpen = $state(false);
   let arrangeOpen = $state(false);
   let clearOpen = $state(false);
+  // ── Cast to TV ────────────────────────────────────────────────────────────
+  let castOpen = $state(false);
+  let castDevices = $state<CastDevice[]>([]);
+  let castDiscovering = $state(false);
+  let castStatus = $state<CastStatus>({ connected: false, deviceName: null, playingPath: null });
+  async function discoverCast() {
+    castDiscovering = true;
+    try {
+      castDevices = await cast.discover();
+    } catch (e) {
+      castDevices = [];
+      activity.error("cast", `Cast discovery failed (${e})`);
+    } finally {
+      castDiscovering = false;
+    }
+  }
+  function toggleCastMenu() {
+    castOpen = !castOpen;
+    // Re-browse on every open: cast devices come and go with TV power state,
+    // and mDNS discovery is cheap (~3s, non-blocking behind the spinner).
+    if (castOpen) void discoverCast();
+  }
+  async function startCast(d: CastDevice) {
+    if (!active) return;
+    try {
+      castStatus = await cast.start(active.path, d);
+      castOpen = false;
+    } catch (e) {
+      activity.error("cast", `Cast failed (${e})`);
+    }
+  }
+  async function stopCast() {
+    try {
+      castStatus = await cast.stop();
+    } catch {
+      castStatus = { connected: false, deviceName: null, playingPath: null };
+    }
+    castOpen = false;
+  }
   let libInfo = $state<LibraryInfo | null>(null);
   let trashOpen = $state(false);
   let trashItems = $state<TrashItem[]>([]);
@@ -341,6 +404,49 @@
 
   function buildRelatedIndex(source: MediaItem[]): RelatedIndex {
     const entries: RelatedEntry[] = source.map((item, order) => ({ item, order, stem: relatedStem(item) }));
+
+    // ── Task 1: scalable stack re-rooting ──────────────────────────────────
+    // The whitelist in relatedStem() only strips KNOWN export suffixes, so a
+    // hand-named derivative like `DJI_0679_IG_reel_nv.mp4` (the `_nv` isn't in
+    // the list) stays a singleton and never nests under `DJI_0679.MP4`. This
+    // folder-wide pass applies the user's own convention: a file whose stem
+    // starts with ANOTHER file's stem + a separator ([_-. ]) belongs to that
+    // file's stack. For every entry whose root is still a singleton (didn't
+    // join a same-root group above), re-root it to the LONGEST sibling root R
+    // in the same parent that it prefix-matches on a separator boundary. The
+    // R.length >= 4 guard avoids degenerate short-prefix collisions.
+    {
+      const rootsByParent = new Map<string, string[]>();
+      const rootCounts = new Map<string, number>(); // parent\0root → files sharing it
+      for (const e of entries) {
+        const list = rootsByParent.get(e.stem.parent) ?? [];
+        if (!list.includes(e.stem.root)) list.push(e.stem.root);
+        rootsByParent.set(e.stem.parent, list);
+        const k = relatedKey(e.stem);
+        rootCounts.set(k, (rootCounts.get(k) ?? 0) + 1);
+      }
+      const isSep = (c: string) => c === "_" || c === "-" || c === "." || c === " ";
+      for (const e of entries) {
+        // Only files that didn't already share their root with a sibling — a
+        // shared root is already a stack anchor and must not be re-parented.
+        if ((rootCounts.get(relatedKey(e.stem)) ?? 0) > 1) continue;
+        const roots = rootsByParent.get(e.stem.parent);
+        if (!roots) continue;
+        let best: string | null = null;
+        for (const R of roots) {
+          if (R.length < 4 || R.length >= e.stem.root.length) continue;
+          if (!e.stem.root.startsWith(R) || !isSep(e.stem.root[R.length])) continue;
+          if (!best || R.length > best.length) best = R;
+        }
+        if (best) {
+          e.stem.root = best;
+          if (e.stem.relation !== "subclip") e.stem.relation = "edit";
+          e.stem.explicit = true;
+          addBadge(e.stem.badges, "Crop/Edit");
+        }
+      }
+    }
+
     const rootBuckets = new Map<string, RelatedEntry[]>();
     for (const e of entries) {
       const key = relatedKey(e.stem);
@@ -461,8 +567,14 @@
     let arr = items;
     const tf = settings.s.typeFilter;
     if (tf !== "all") arr = arr.filter((i) => i.kind === tf);
-    if (minRating > 0) arr = arr.filter((i) => i.rating >= minRating);
-    if (labelFilter) arr = arr.filter((i) => i.label === labelFilter);
+    if (minRating > 0) {
+      if (ratingOp === "<=") arr = arr.filter((i) => i.rating <= minRating);
+      else if (ratingOp === "=") arr = arr.filter((i) => i.rating === minRating);
+      else arr = arr.filter((i) => i.rating >= minRating);
+    }
+    // Multi-select label OR: a colour match OR (labelNone && unlabeled).
+    if (labelFilterActive)
+      arr = arr.filter((i) => (i.label ? labelFilters.has(i.label) : labelNone));
     if (tagFilter) arr = arr.filter((i) => i.tags.includes(tagFilter!));
     if (flagFilter === "reject") arr = arr.filter((i) => i.flag === "reject");
     else if (flagFilter === "pick") arr = arr.filter((i) => i.flag === "pick");
@@ -588,6 +700,14 @@
     } catch {
       /* */
     }
+    // Live progress for the bulk RAW→JPEG export (drives the ActivityBar chip).
+    try {
+      await api.onRawExportProgress((p) =>
+        activity.local("raw-export", "Export JPEG from RAW", p.done, p.total),
+      );
+    } catch {
+      // not inside Tauri (tests) — the awaited result still finalises the job
+    }
     // Reopen the last folder AND land on the last photo we were looking at.
     if (settings.s.lastDir)
       openFolder(settings.s.lastDir, { selectPath: settings.s.lastActivePath });
@@ -649,6 +769,16 @@
     const keepPath = active?.path ?? null;
     const keepIndex = activeIndex;
     try {
+      // Re-enumerate physical drives first, so a just-plugged-in USB/SSD shows up
+      // in the sidebar on manual refresh (there's no OS mount-event listener, so
+      // this button is the discovery path). Never let a listing hiccup wipe the
+      // tree — keep the previous list if the call fails or returns nothing.
+      try {
+        const found = await api.listDrives();
+        if (found.length) drives = found;
+      } catch {
+        /* keep existing drives */
+      }
       await api.clearFolderCounts();
       countsGen++;
       if (dir) {
@@ -1089,39 +1219,139 @@
     }
   }
 
+  // ── undo / redo for culling decisions ─────────────────────────────────────
+  // Snapshot-based (never closures): every mark mutation records the affected
+  // items' FULL mark state before and after, so undo/redo is just "re-apply a
+  // snapshot" — immune to intervening changes and double-application. Scope is
+  // deliberately catalog decisions only (rating / label / flag / tags); file
+  // operations (delete, move, export) stay outside the stack — they have their
+  // own safety nets (in-app Trash, uniquified outputs) and silently undoing
+  // filesystem changes is scarier than helpful.
+  type MarkSnap = { path: string; rating: number; label: string | null; flag: MediaItem["flag"]; tags: string[] };
+  type UndoEntry = { label: string; before: MarkSnap[]; after: MarkSnap[] };
+  const UNDO_CAP = 100;
+  let undoStack = $state<UndoEntry[]>([]);
+  let redoStack = $state<UndoEntry[]>([]);
+  let undoToast = $state<string | null>(null);
+  let undoToastTimer: ReturnType<typeof setTimeout> | undefined;
+  function showUndoToast(msg: string) {
+    undoToast = msg;
+    clearTimeout(undoToastTimer);
+    undoToastTimer = setTimeout(() => (undoToast = null), 2600);
+  }
+  function snapMarks(ts: MediaItem[]): MarkSnap[] {
+    return ts.map((i) => ({ path: i.path, rating: i.rating, label: i.label, flag: i.flag, tags: [...i.tags] }));
+  }
+  /** Call AFTER a mutation, with the pre-mutation snapshot: pushes an undo entry
+   *  (skipping no-ops) and doubles as the action log the user asked for. */
+  function commitUndo(label: string, before: MarkSnap[]) {
+    const byPath = new Map(items.map((i) => [i.path, i]));
+    const after = snapMarks(before.map((s) => byPath.get(s.path)).filter((i): i is MediaItem => !!i));
+    if (JSON.stringify(before) === JSON.stringify(after)) return;
+    undoStack = [...undoStack.slice(-(UNDO_CAP - 1)), { label, before, after }];
+    redoStack = [];
+    api.logEvent(`MARK ${label} (${before.length} item${before.length === 1 ? "" : "s"})`);
+  }
+  /** Re-apply a snapshot: reconcile each item's marks to it and persist only the
+   *  fields that actually differ. Items gone from the open folder are skipped. */
+  async function applySnaps(snaps: MarkSnap[]) {
+    const byPath = new Map(items.map((i) => [i.path, i]));
+    let tagsTouched = false;
+    for (const s of snaps) {
+      const it = byPath.get(s.path);
+      if (!it) continue;
+      if (it.rating !== s.rating) {
+        it.rating = s.rating;
+        api.setRating(s.path, s.rating).catch(() => {});
+      }
+      if (it.label !== s.label) {
+        it.label = s.label;
+        api.setLabel(s.path, s.label).catch(() => {});
+      }
+      if (it.flag !== s.flag) {
+        it.flag = s.flag;
+        api.setFlag(s.path, s.flag).catch(() => {});
+      }
+      const cur = new Set(it.tags);
+      const want = new Set(s.tags);
+      for (const t of want) if (!cur.has(t)) api.addTag([s.path], t).catch(() => {});
+      for (const t of cur) if (!want.has(t)) api.removeTag([s.path], t).catch(() => {});
+      if (cur.size !== want.size || [...cur].some((t) => !want.has(t))) {
+        it.tags = [...s.tags];
+        tagsTouched = true;
+      }
+    }
+    if (tagsTouched) refreshTags();
+  }
+  async function undoLast() {
+    const e = undoStack.at(-1);
+    if (!e) {
+      showUndoToast("Nothing to undo");
+      return;
+    }
+    undoStack = undoStack.slice(0, -1);
+    redoStack = [...redoStack, e];
+    await applySnaps(e.before);
+    showUndoToast(`Undid: ${e.label}`);
+    api.logEvent(`UNDO ${e.label}`);
+  }
+  async function redoLast() {
+    const e = redoStack.at(-1);
+    if (!e) {
+      showUndoToast("Nothing to redo");
+      return;
+    }
+    redoStack = redoStack.slice(0, -1);
+    undoStack = [...undoStack, e];
+    await applySnaps(e.after);
+    showUndoToast(`Redid: ${e.label}`);
+    api.logEvent(`REDO ${e.label}`);
+  }
+
   function rate(r: number) {
     const ts = targets();
+    if (!ts.length) return;
+    const before = snapMarks(ts);
     if (ts.length === 1) {
       ts[0].rating = ts[0].rating === r ? 0 : r;
       api.setRating(ts[0].path, ts[0].rating).catch(() => {});
-    } else if (ts.length > 1) {
+    } else {
       for (const it of ts) it.rating = r;
       api.setRatingMany(ts.map((i) => i.path), r).catch(() => {});
     }
+    commitUndo(r === 0 ? "Clear stars" : `Rate ${"★".repeat(r)}`, before);
   }
   function label(key: string) {
     const ts = targets();
+    if (!ts.length) return;
+    const before = snapMarks(ts);
     if (ts.length === 1) {
       ts[0].label = ts[0].label === key ? null : key;
       api.setLabel(ts[0].path, ts[0].label).catch(() => {});
-    } else if (ts.length > 1) {
+    } else {
       for (const it of ts) it.label = key;
       api.setLabelMany(ts.map((i) => i.path), key).catch(() => {});
     }
+    commitUndo(`Label ${key}`, before);
   }
   function flag(f: "pick" | "reject") {
     const ts = targets();
-    if (ts.length === 1) {
-      ts[0].flag = ts[0].flag === f ? null : f;
-      api.setFlag(ts[0].path, ts[0].flag).catch(() => {});
-    } else if (ts.length > 1) {
-      for (const it of ts) it.flag = f;
-      api.setFlagMany(ts.map((i) => i.path), f).catch(() => {});
-    }
+    if (!ts.length) return;
+    // Toggle semantics that match the Reject/Pick toolbar buttons (rejectSelected):
+    // if EVERY target already carries this flag, pressing the key clears it on all
+    // of them; otherwise it sets the flag on all. This makes X/P un-flag a whole
+    // selection on the second press, not just single items.
+    const before = snapMarks(ts);
+    const next = ts.every((i) => i.flag === f) ? null : f;
+    for (const it of ts) it.flag = next;
+    if (ts.length === 1) api.setFlag(ts[0].path, next).catch(() => {});
+    else api.setFlagMany(ts.map((i) => i.path), next).catch(() => {});
+    commitUndo(next === null ? `Un${f}` : f === "reject" ? "Reject" : "Pick", before);
   }
   function unset() {
     const ts = targets();
     if (!ts.length) return;
+    const before = snapMarks(ts);
     for (const it of ts) {
       it.rating = 0;
       it.label = null;
@@ -1137,40 +1367,49 @@
       api.setLabelMany(paths, null).catch(() => {});
       api.setFlagMany(paths, null).catch(() => {});
     }
+    commitUndo("Clear marks", before);
   }
 
   function clearRatings() {
     const ts = targets();
     if (!ts.length) return;
+    const before = snapMarks(ts);
     for (const it of ts) it.rating = 0;
     const paths = ts.map((i) => i.path);
     (ts.length === 1 ? api.setRating(paths[0], 0) : api.setRatingMany(paths, 0)).catch(() => {});
+    commitUndo("Clear stars", before);
   }
 
   function clearLabels() {
     const ts = targets();
     if (!ts.length) return;
+    const before = snapMarks(ts);
     for (const it of ts) it.label = null;
     const paths = ts.map((i) => i.path);
     (ts.length === 1 ? api.setLabel(paths[0], null) : api.setLabelMany(paths, null)).catch(() => {});
+    commitUndo("Clear labels", before);
   }
 
   function clearFlags() {
     const ts = targets();
     if (!ts.length) return;
+    const before = snapMarks(ts);
     for (const it of ts) it.flag = null;
     const paths = ts.map((i) => i.path);
     (ts.length === 1 ? api.setFlag(paths[0], null) : api.setFlagMany(paths, null)).catch(() => {});
+    commitUndo("Clear flags", before);
   }
 
   async function clearTagsOnTargets() {
     const ts = targets();
     if (!ts.length) return;
+    const before = snapMarks(ts);
     const paths = ts.map((i) => i.path);
     const tags = [...new Set(ts.flatMap((i) => i.tags))];
     for (const it of ts) it.tags = [];
     for (const tag of tags) await api.removeTag(paths, tag).catch(() => {});
     refreshTags();
+    commitUndo("Clear tags", before);
   }
 
   async function clearAllMarks() {
@@ -1183,16 +1422,20 @@
     const tag = tagInput.trim();
     const ts = targets();
     if (!tag || !ts.length) return;
+    const before = snapMarks(ts);
     for (const it of ts) if (!it.tags.includes(tag)) it.tags = [...it.tags, tag];
     tagInput = "";
     await api.addTag(ts.map((i) => i.path), tag).catch(() => {});
     refreshTags();
+    commitUndo(`Tag "${tag}"`, before);
   }
   async function removeTagFromActive(tag: string) {
     if (!active) return;
+    const before = snapMarks([active]);
     active.tags = active.tags.filter((t) => t !== tag);
     await api.removeTag([active.path], tag).catch(() => {});
     refreshTags();
+    commitUndo(`Untag "${tag}"`, before);
   }
 
   function selectAllFiltered() {
@@ -1202,9 +1445,11 @@
   function rejectSelected() {
     const sel = targets();
     if (!sel.length) return;
+    const before = snapMarks(sel);
     const next = sel.every((i) => i.flag === "reject") ? null : "reject";
     for (const it of sel) it.flag = next;
     api.setFlagMany(sel.map((i) => i.path), next).catch(() => {});
+    commitUndo(next === null ? "Unreject" : "Reject", before);
   }
 
   function gridCellClick(e: MouseEvent, i: number) {
@@ -1305,6 +1550,19 @@
         disabled: !ts.some((i) => i.kind === "image" || i.kind === "raw"),
         action: () => exportTargets(),
       },
+      ...(ts.some((i) => i.kind === "raw") || ctx.kind === "raw"
+        ? [
+            {
+              label:
+                "Export JPEG from RAW" +
+                (ts.filter((i) => i.kind === "raw").length > 1
+                  ? ` (${ts.filter((i) => i.kind === "raw").length})`
+                  : ""),
+              icon: "⿻",
+              action: () => exportRawToJpeg(ctx),
+            } as MenuEntry,
+          ]
+        : []),
       { label: "Copy file path", icon: "⧉", action: () => copyPath(ctx.path) },
     ];
   }
@@ -1474,6 +1732,29 @@
     }
   }
 
+  // ── bulk RAW → JPEG (in-place, next to each source) ──────────────────────
+  async function exportRawToJpeg(ctx?: MediaItem) {
+    // Prefer the current selection/active targets; fall back to the right-clicked
+    // item so the context-menu entry works even on an unselected tile.
+    const pool = targets().length ? targets() : ctx ? [ctx] : [];
+    const raws = pool.filter((i) => i.kind === "raw");
+    if (!raws.length) {
+      activity.error("raw-export", "No RAW files to convert");
+      return;
+    }
+    activity.local("raw-export", "Export JPEG from RAW", 0, raws.length);
+    try {
+      const r = await api.exportRawJpegs(raws.map((i) => i.path));
+      activity.end("raw-export");
+      if (r.failed.length)
+        activity.error("raw-export", `RAW→JPEG: ${r.failed.length} of ${raws.length} failed`);
+      // The new JPEGs land beside their NEFs and auto-stack via same-stem grouping.
+      await refreshAfterMediaOutput(active?.path ?? null);
+    } catch (e) {
+      activity.error("raw-export", `RAW→JPEG failed (${e})`);
+    }
+  }
+
   // ── in-app Trash (per-drive recycle folder) ──────────────────────────────
   async function openTrash() {
     try {
@@ -1526,6 +1807,16 @@
         else if (dimLevel > 0) dimLevel = 0;
         else editOpen = false;
       }
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && k === "z") {
+      void (e.shiftKey ? redoLast() : undoLast());
+      e.preventDefault();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && k === "y") {
+      void redoLast();
+      e.preventDefault();
       return;
     }
     if ((e.ctrlKey || e.metaKey) && k === "x") {
@@ -1614,6 +1905,16 @@
     if (/(^|_)trim($|_)/.test(stem)) return "TRIM";
     return null;
   }
+
+  // Per-item RAW/JPG corner tag. A raw file is ALWAYS tagged "RAW" (stacked or
+  // standalone) so raws are recognisable at a glance; a plain image is tagged
+  // "JPG" only when it's the sibling of a raw in a RAW+JPEG stack (otherwise
+  // every ordinary photo in the folder would sprout a redundant tag).
+  function rawKindTag(item: MediaItem, meta = relatedFor(item)): "RAW" | "JPG" | null {
+    if (item.kind === "raw") return "RAW";
+    if (item.kind === "image" && meta?.group.badges.includes("RAW+JPEG")) return "JPG";
+    return null;
+  }
 </script>
 
 <svelte:window {onkeydown} {onmouseup} oncontextmenu={onGlobalContextMenu} />
@@ -1679,6 +1980,7 @@
         {#if item.rating > 0}<span class="stars">{"★".repeat(item.rating)}</span>{/if}
         {#if item.tags.length}<span class="tagdot" title={item.tags.join(", ")}>🏷</span>{/if}
         {#if derivativeBadge(item.name)}<span class="deriv-badge" title="Exported by FoxCull ({derivativeBadge(item.name)})">{derivativeBadge(item.name)}</span>{/if}
+        {#if rawKindTag(item, rel)}<span class="kind-tag" class:raw={item.kind === "raw"} title={item.kind === "raw" ? "RAW file" : "JPEG sibling of a RAW"}>{rawKindTag(item, rel)}</span>{/if}
       </span>
     </div>
   </button>
@@ -1727,6 +2029,7 @@
       {#if item.flag === "reject"}<span class="s-x">✕</span>{/if}
       {#if item.flag === "pick"}<span class="s-pick">✓</span>{/if}
       {#if derivativeBadge(item.name)}<span class="s-deriv">{derivativeBadge(item.name)}</span>{/if}
+      {#if rawKindTag(item, rel)}<span class="s-kind" class:raw={item.kind === "raw"}>{rawKindTag(item, rel)}</span>{/if}
     </div>
   </button>
 {/snippet}
@@ -1737,7 +2040,8 @@
     <aside class="tree" style="width:{settings.s.treeWidth}px">
       <div class="tree-head">
         <button class="ico sm" onclick={() => (treeCollapsed = true)} title="Hide folders" aria-label="Hide folders">
-          <span class="sidebarGlyph" aria-hidden="true"><span></span></span>
+          <!-- Standard "sidebar panel" glyph: rounded frame + left-panel divider. -->
+          <svg class="panelGlyph" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><line x1="9.4" y1="4.6" x2="9.4" y2="19.4"/></svg>
         </button>
         <span class="brand">Folders</span>
         <div class="tree-actions">
@@ -1765,7 +2069,7 @@
     <div class="vsplit" role="separator" tabindex="-1" onpointerdown={startTreeResize}></div>
   {:else}
     <button class="treeRestore ico sm" onclick={() => (treeCollapsed = false)} title="Show folders" aria-label="Show folders">
-      <span class="sidebarGlyph closed" aria-hidden="true"><span></span></span>
+      <svg class="panelGlyph" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><line x1="9.4" y1="4.6" x2="9.4" y2="19.4"/><path d="M13.5 9.5 16 12l-2.5 2.5"/></svg>
     </button>
   {/if}
 
@@ -1794,9 +2098,9 @@
       <div class="grp arrange">
         <button
           class="chip arrangeBtn"
-          class:on={arrangeOpen || settings.s.groupBy !== "none" || settings.s.subgroupBy !== "none" || settings.s.relatedMode === "collapsed"}
+          class:on={arrangeOpen || settings.s.groupBy !== "none" || settings.s.subgroupBy !== "none"}
           onclick={() => (arrangeOpen = !arrangeOpen)}
-          title="Sort, group, subgroup and related-stack display"
+          title="Sort, group and subgroup"
         >
           Arrange
         </button>
@@ -1837,13 +2141,6 @@
                 <option value="week">Week</option>
               </select>
             </div>
-            <div class="fm-row">
-              <span class="fm-lbl">Stacks</span>
-              <div class="seg stackSeg" title="Show detected related files as separate items or folded groups">
-                <button class="chip" class:on={settings.s.relatedMode === "expanded"} disabled={relatedGroupCount === 0} onclick={() => setRelatedMode("expanded")}>Open</button>
-                <button class="chip" class:on={settings.s.relatedMode === "collapsed"} disabled={relatedGroupCount === 0} onclick={collapseAllRelated}>Fold{relatedHiddenCount ? ` ${relatedHiddenCount}` : ""}</button>
-              </div>
-            </div>
           </div>
         {/if}
       </div>
@@ -1855,6 +2152,11 @@
         <button class="chip" class:on={filtersOpen || activeFilterCount > 0} onclick={() => (filtersOpen = !filtersOpen)} title="Media, culling and metadata filters">
           Filters{activeFilterCount ? ` ${activeFilterCount}` : ""}
         </button>
+        <!-- N of M passing filters, pre-stack-folding — always visible while any
+             filter is active (baseView = filtered; items = whole folder view). -->
+        {#if activeFilterCount > 0}
+          <span class="shown-count" title="Items passing the active filters, out of the whole folder">{baseView.length} of {items.length}</span>
+        {/if}
         {#if filtersOpen}
           <div class="filtermenu">
             <div class="fm-row">
@@ -1877,8 +2179,14 @@
             <div class="fm-row">
               <span class="fm-lbl">Rating</span>
               <div class="seg">
+                <!-- Operator: ≥ (default) / ≤ / = so a set of ratings is targetable. -->
+                <div class="opseg" title="Rating comparison: at least / at most / exactly">
+                  {#each [[">=", "≥"], ["<=", "≤"], ["=", "="]] as [op, glyph]}
+                    <button class="opbtn" class:on={ratingOp === op} onclick={() => (ratingOp = op as RatingOp)}>{glyph}</button>
+                  {/each}
+                </div>
                 {#each [1, 2, 3, 4, 5] as n}
-                  <button class="starf" class:on={minRating >= n} onclick={() => (minRating = minRating === n ? 0 : n)} title="{n}+ stars">★</button>
+                  <button class="starf" class:on={minRating >= n} onclick={() => (minRating = minRating === n ? 0 : n)} title="{ratingOp} {n} stars">★</button>
                 {/each}
                 {#if minRating > 0}<button class="fm-clr" onclick={() => (minRating = 0)}>clear</button>{/if}
               </div>
@@ -1886,10 +2194,15 @@
             <div class="fm-row">
               <span class="fm-lbl">Label</span>
               <div class="seg">
-                <button class="dot any" class:on={labelFilter === null} onclick={() => (labelFilter = null)} title="Any label">∅</button>
+                <!-- Any = clear all label criteria. -->
+                <button class="lblchip" class:on={!labelFilterActive} onclick={clearLabelFilter} title="Any label (clear)">Any</button>
                 {#each LABELS as l}
-                  <button class="dot" class:on={labelFilter === l.key} style="background:var({l.varName})" title={l.name} aria-label={l.name} onclick={() => (labelFilter = labelFilter === l.key ? null : l.key)}></button>
+                  <button class="dot" class:on={labelFilters.has(l.key)} style="background:var({l.varName})" title={l.name} aria-label={l.name} onclick={() => toggleLabelFilter(l.key)}></button>
                 {/each}
+                <!-- None = match unlabeled items; a clean outlined dot with a slash. -->
+                <button class="dot none" class:on={labelNone} onclick={() => (labelNone = !labelNone)} title="No label" aria-label="No label">
+                  <svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5.5" fill="none" /><line x1="3.2" y1="10.8" x2="10.8" y2="3.2" /></svg>
+                </button>
               </div>
             </div>
             <div class="fm-row col">
@@ -1933,14 +2246,6 @@
       <div class="spacer"></div>
 
       <div class="rightTools">
-        <button
-          class="chip scrubToggle"
-          class:on={settings.s.liveScrub}
-          onclick={() => settings.set({ liveScrub: !settings.s.liveScrub })}
-          title="Toggle thumbnail and timeline hover scrubbing. Off keeps video previews static and avoids scrub-strip generation."
-        >
-          Live Scrub {settings.s.liveScrub ? "On" : "Off"}
-        </button>
         {#if !editOpen}
         <!-- actions (top-right) -->
         <button
@@ -1959,10 +2264,14 @@
           </span>
         </button>
         <button class="btn sm danger" onclick={rejectSelected} disabled={actionTargets.length === 0} title="Toggle rejected on the active item or selection">
+          <svg class="btn-ico" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
           {allTargetsRejected ? "Unreject" : "Reject"}{selected.size > 1 ? ` ${selected.size}` : ""}
         </button>
         <div class="grp clearWrap">
-          <button class="btn sm" class:on={clearOpen} onclick={() => (clearOpen = !clearOpen)} disabled={actionTargets.length === 0} title="Clear ratings, labels, flags or tags from the active item or selection">Clear</button>
+          <button class="btn sm" class:on={clearOpen} onclick={() => (clearOpen = !clearOpen)} disabled={actionTargets.length === 0} title="Clear ratings, labels, flags or tags from the active item or selection">
+            <svg class="btn-ico" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 8 14 2 3 13l6 6h4l7-7z"/><line x1="9" y1="19" x2="21" y2="19"/></svg>
+            Clear
+          </button>
           {#if clearOpen}
             <div class="clearMenu">
               <button onclick={() => { unset(); clearOpen = false; }}>Marks only</button>
@@ -1984,32 +2293,71 @@
           title="Hold to delete all {rejectedCount} rejected"
         >
           <span class="hold-fill" style="width:{(holdMs / HOLD_MS) * 100}%"></span>
-          <span class="hold-lbl">Delete{rejectedCount ? ` ${rejectedCount}` : ""}</span>
+          <span class="hold-lbl">
+            <svg class="btn-ico" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/><line x1="10" y1="11" x2="10" y2="16"/><line x1="14" y1="11" x2="14" y2="16"/></svg>
+            Delete{rejectedCount ? ` ${rejectedCount}` : ""}
+          </span>
         </button>
         {/if}
+        <!-- Cast to TV: discovery popover; the chip doubles as the connected
+             indicator (name shown while casting). -->
+        <div class="grp castWrap">
+          <button
+            class="ico castBtn"
+            class:on={castOpen || castStatus.connected}
+            onclick={toggleCastMenu}
+            title={castStatus.connected ? `Casting to ${castStatus.deviceName} — click to manage` : "Cast the current photo/video to a TV (Chromecast)"}
+            aria-label="Cast to TV"
+          >
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 20h.01"/><path d="M2 16.5a3.5 3.5 0 0 1 3.5 3.5"/><path d="M2 13a7 7 0 0 1 7 7"/><path d="M2 9.5V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-8.5"/></svg>
+          </button>
+          {#if castOpen}
+            <div class="castMenu">
+              {#if castStatus.connected}
+                <div class="castNow">Casting to <strong>{castStatus.deviceName}</strong></div>
+                <button class="castRow stop" onclick={() => void stopCast()}>Stop casting</button>
+                <div class="menuSep"></div>
+              {/if}
+              {#if castDiscovering}
+                <div class="castHint">Searching for Cast devices…</div>
+              {:else if castDevices.length}
+                {#each castDevices as d (d.id)}
+                  <button class="castRow" disabled={!active} onclick={() => void startCast(d)} title={active ? `Cast ${active.name} to ${d.name}` : "Select a photo/video first"}>
+                    <strong>{d.name}</strong><span>{d.addr}</span>
+                  </button>
+                {/each}
+              {:else}
+                <div class="castHint">No Cast devices found. TV on? Same Wi-Fi? <button class="linklike" onclick={() => void discoverCast()}>Search again</button></div>
+              {/if}
+              {#if castDevices.length && !castDiscovering}
+                <button class="castRow sub" onclick={() => void discoverCast()}>Search again</button>
+              {/if}
+            </div>
+          {/if}
+        </div>
         <div class="modeToggle" title="Workspace mode">
           <button class:on={!editOpen} onclick={() => (editOpen = false)}>Library</button>
           <button class:on={editOpen} onclick={openEditMode} disabled={!currentDir}>Edit</button>
         </div>
-        <button class="ico gear" class:on={settingsOpen} onclick={() => (settingsOpen = !settingsOpen)} title="Settings">...</button>
+        <button class="ico gear" class:on={settingsOpen} onclick={() => (settingsOpen = !settingsOpen)} title="Settings" aria-label="Settings">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.03-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.56-1.03 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1.02-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.56 1.02H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.56 1.03z"/></svg>
+        </button>
       </div>
     </div>
 
     <!-- settings popover -->
     {#if settingsOpen}
       <div class="pop">
+        <!-- Grouped into three plain sections (the user's ask: settings live in
+             ONE place, logically bunched, no scattered duplicates). Stacks and
+             Live Scrub have no other home — this popover is it. -->
+        <div class="grpHead">Appearance</div>
         <div class="row"><span>Theme</span>
           <div class="seg">
             <button class="chip" class:on={settings.s.theme === "dark"} onclick={() => settings.set({ theme: "dark" })}>Dark</button>
             <button class="chip" class:on={settings.s.theme === "neutral"} onclick={() => settings.set({ theme: "neutral" })} title="Lightroom-like neutral graphite chrome; the photo stage stays neutral">Neutral</button>
             <button class="chip" class:on={settings.s.theme === "warm"} onclick={() => settings.set({ theme: "warm" })} title="Warm late-night graphite chrome for yellow-lamp work">Warm</button>
             <button class="chip" class:on={settings.s.theme === "light"} onclick={() => settings.set({ theme: "light" })}>Light</button>
-          </div>
-        </div>
-        <div class="row"><span>Video autoplay</span>
-          <div class="seg">
-            <button class="chip" class:on={settings.s.videoAutoplay} onclick={() => settings.set({ videoAutoplay: true })}>On</button>
-            <button class="chip" class:on={!settings.s.videoAutoplay} onclick={() => settings.set({ videoAutoplay: false })}>Off</button>
           </div>
         </div>
         <div class="row"><span>Filmstrip</span>
@@ -2019,10 +2367,11 @@
             {/each}
           </div>
         </div>
-        <div class="row"><span>Related groups</span>
+        <div class="grpHead">Browsing</div>
+        <div class="row"><span>Stacks</span>
           <div class="seg">
             <button class="chip" class:on={settings.s.relatedMode === "expanded"} onclick={() => setRelatedMode("expanded")}>Open</button>
-            <button class="chip" class:on={settings.s.relatedMode === "collapsed"} onclick={collapseAllRelated}>Fold</button>
+            <button class="chip" class:on={settings.s.relatedMode === "collapsed"} onclick={collapseAllRelated}>Fold{relatedHiddenCount ? ` ${relatedHiddenCount}` : ""}</button>
           </div>
         </div>
         <div class="row"><span>Live Scrub</span>
@@ -2031,6 +2380,13 @@
             <button class="chip" class:on={!settings.s.liveScrub} onclick={() => settings.set({ liveScrub: false })}>Off</button>
           </div>
         </div>
+        <div class="row"><span>Video autoplay</span>
+          <div class="seg">
+            <button class="chip" class:on={settings.s.videoAutoplay} onclick={() => settings.set({ videoAutoplay: true })}>On</button>
+            <button class="chip" class:on={!settings.s.videoAutoplay} onclick={() => settings.set({ videoAutoplay: false })}>Off</button>
+          </div>
+        </div>
+        <div class="grpHead">Files</div>
         <div class="row"><span>On delete</span>
           <div class="seg">
             <button class="chip" class:on={settings.s.deleteMode === "folder"} onclick={() => settings.set({ deleteMode: "folder" })} title="Move to this drive's _FoxCull recycle folder - recoverable in the in-app Trash">In-app Trash</button>
@@ -2062,6 +2418,10 @@
         onrestore={restoreFromTrash}
         onpurge={purgeFromTrash}
       />
+    {/if}
+
+    {#if undoToast}
+      <div class="undoToast" aria-live="polite">{undoToast}</div>
     {/if}
 
     <!-- body: viewport (+ optional right filmstrip) -->
@@ -2228,29 +2588,7 @@
   .ico { width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-elev); font-size: 14px; line-height: 1; }
   .ico:hover { background: var(--bg-hover); }
   .ico.on { border-color: var(--accent); color: var(--accent); }
-  .sidebarGlyph {
-    position: relative;
-    display: block;
-    width: 15px;
-    height: 14px;
-    border-left: 2px solid currentColor;
-    opacity: 0.9;
-  }
-  .sidebarGlyph::before,
-  .sidebarGlyph::after,
-  .sidebarGlyph span {
-    content: "";
-    position: absolute;
-    left: 5px;
-    right: 0;
-    height: 2px;
-    border-radius: 2px;
-    background: currentColor;
-  }
-  .sidebarGlyph::before { top: 1px; }
-  .sidebarGlyph span { top: 6px; }
-  .sidebarGlyph::after { bottom: 1px; }
-  .sidebarGlyph.closed { transform: scaleX(-1); }
+  .panelGlyph { display: block; opacity: 0.9; }
   .refreshGlyph {
     position: relative;
     display: block;
@@ -2277,11 +2615,9 @@
   .chip.on { background: var(--accent); color: var(--accent-on); }
   .chip.rej.on { background: var(--reject); border-color: var(--reject); }
   .chip.pick.on { background: var(--pick); border-color: var(--pick); }
-  .scrubToggle { border-color: var(--border); background: var(--bg-elev); }
   .starf { font-size: 14px; color: var(--text-faint); padding: 0 1px; }
   .starf.on { color: var(--star); }
   .dot { width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(0,0,0,0.25); opacity: 0.5; }
-  .dot.any { background: var(--bg-elev); color: var(--text-faint); font-size: 10px; line-height: 12px; opacity: 1; }
   .dot.sm { width: 13px; height: 13px; }
   .dot.on { opacity: 1; outline: 2px solid var(--accent); outline-offset: 1px; }
   .zoom { gap: 6px; }
@@ -2307,12 +2643,38 @@
   .arrange,
   .filterwrap { position: relative; }
   .arrangeMenu,
-  .filtermenu { position: absolute; top: 34px; left: 0; z-index: 30; width: 290px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 11px; display: flex; flex-direction: column; gap: 11px; }
+  /* Sized so the widest row (Status: All/Picks/Rejected/Unflagged) fits, and
+     rows WRAP as a backstop — a chip must never clip past the popover edge. */
+  .filtermenu { position: absolute; top: 34px; left: 0; z-index: 30; width: 316px; max-width: min(316px, 90vw); background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 11px; display: flex; flex-direction: column; gap: 11px; }
+  .filtermenu .seg { flex-wrap: wrap; min-width: 0; }
+  /* "N of M" passing the active filters — lives beside the Filters chip. */
+  .shown-count {
+    font-size: 11.5px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    padding: 0 2px;
+  }
+  /* Rating comparison operator (≥ / ≤ / =). */
+  .opseg { display: flex; gap: 1px; padding: 1px; margin-right: 4px; border: 1px solid var(--border); border-radius: 6px; }
+  .opbtn { width: 20px; padding: 1px 0; font-size: 12px; line-height: 1.3; color: var(--text-faint); border-radius: 4px; }
+  .opbtn.on { background: var(--accent); color: var(--accent-on); }
+  .opbtn:hover:not(.on) { color: var(--text); background: var(--bg-hover); }
+  /* "Any" label chip (clears the multi-select). */
+  .lblchip { font-size: 11px; padding: 1px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-dim); }
+  .lblchip.on { border-color: var(--accent); color: var(--accent); }
+  /* "None" (unlabeled) — outlined dot with a slash, drawn crisply as SVG
+     strokes instead of the old misaligned ∅ glyph. */
+  .dot.none { display: inline-flex; align-items: center; justify-content: center; background: var(--bg-elev); opacity: 1; padding: 0; }
+  .dot.none svg { width: 12px; height: 12px; display: block; }
+  .dot.none svg circle, .dot.none svg line { stroke: var(--text-faint); stroke-width: 1.4; }
+  .dot.none.on svg circle, .dot.none.on svg line { stroke: var(--accent); }
   .arrangeMenu { width: 315px; }
-  .stackSeg { padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-panel); }
   .fm-row { display: flex; align-items: center; gap: 10px; }
   .fm-row.col { flex-direction: column; align-items: stretch; gap: 5px; }
-  .fm-lbl { flex: 0 0 46px; font-size: 12px; color: var(--text-dim); }
+  /* Wide enough for the longest label ("Subgroup") so every row's control
+     column starts at the same x — mismatched indents read as misalignment. */
+  .fm-lbl { flex: 0 0 58px; font-size: 12px; color: var(--text-dim); }
   .fm-tags { display: flex; flex-direction: column; gap: 2px; max-height: 200px; overflow-y: auto; }
   .fm-clr { font-size: 11px; color: var(--text-faint); padding: 0 4px; margin-left: 4px; }
   .fm-clr:hover { color: var(--text); }
@@ -2331,8 +2693,45 @@
   .clearMenu button { text-align: left; padding: 7px 9px; border-radius: 6px; color: var(--text-dim); font-size: 12px; }
   .clearMenu button:hover { background: var(--bg-hover); color: var(--text); }
   .clearMenu .dangerText { color: var(--reject); }
+  /* Inline icon inside a toolbar text button — optically aligned with the label. */
+  .btn-ico { vertical-align: -1px; margin-right: 4px; }
+  .hold-lbl .btn-ico { margin-right: 3px; }
+  /* Cast to TV */
+  .castWrap { position: relative; }
+  .castBtn.on { color: var(--accent); border-color: var(--accent); }
+  .castMenu { position: absolute; top: 32px; right: 0; z-index: 35; width: 230px; padding: 6px; display: grid; gap: 2px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-elev); box-shadow: var(--shadow); }
+  .castRow { display: flex; flex-direction: column; gap: 1px; text-align: left; padding: 7px 9px; border-radius: 6px; color: var(--text); font-size: 12.5px; }
+  .castRow span { font-size: 10.5px; color: var(--text-faint); }
+  .castRow:hover:not(:disabled) { background: var(--bg-hover); }
+  .castRow:disabled { opacity: 0.5; }
+  .castRow.stop { color: var(--reject); font-weight: 600; }
+  .castRow.sub { color: var(--text-faint); font-size: 11.5px; }
+  .castNow { padding: 6px 9px 4px; font-size: 11.5px; color: var(--text-dim); }
+  .castNow strong { color: var(--text); }
+  .castHint { padding: 8px 9px; font-size: 11.5px; color: var(--text-dim); line-height: 1.45; }
+  .linklike { display: inline; padding: 0; color: var(--accent); text-decoration: underline; font-size: inherit; }
+  .menuSep { height: 1px; margin: 3px 4px; background: var(--border); }
+  /* Undo/redo feedback (Ctrl+Z / Ctrl+Y): transient, bottom-center, never
+     intercepts the pointer. */
+  .undoToast {
+    position: fixed;
+    left: 50%;
+    bottom: 74px;
+    transform: translateX(-50%);
+    z-index: 300;
+    padding: 7px 14px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-elev);
+    color: var(--text);
+    font-size: 12.5px;
+    box-shadow: var(--shadow);
+    pointer-events: none;
+  }
 
   .pop { position: absolute; right: 10px; top: 46px; z-index: 30; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 12px; width: 340px; display: flex; flex-direction: column; gap: 10px; }
+  .pop .grpHead { margin-top: 2px; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); padding-bottom: 3px; }
+  .pop .grpHead:first-child { margin-top: 0; }
   .pop .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; }
   .pop .row.sub { padding-left: 6px; flex-wrap: nowrap; }
   .pop .path { flex: 1; min-width: 0; color: var(--text-dim); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2446,6 +2845,22 @@
     box-shadow: 0 1px 2px rgba(0,0,0,0.5);
   }
   .cell.related .deriv-badge { top: 22px; }
+  /* RAW / JPG kind tag: bottom-left over the thumbnail. RAW gets a distinct
+     slate pill (it's an attribute of the file, not a FoxCull export, so it must
+     not read like the accent deriv-badge); the JPG sibling tag echoes it dimmer. */
+  .kind-tag {
+    position: absolute; bottom: 21px; left: 6px;
+    padding: 1px 5px;
+    font-size: 9px; font-weight: 800; letter-spacing: 0.04em;
+    color: #dfe6ea;
+    background: rgba(40, 58, 70, 0.9);
+    border: 1px solid rgba(255,255,255,0.22);
+    border-radius: 4px;
+    text-shadow: none;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.5);
+  }
+  .kind-tag.raw { background: rgba(96, 66, 22, 0.92); }
+  .cell.related .kind-tag { bottom: 40px; }
   .rel-badges { position: absolute; top: 5px; left: 5px; right: 24px; display: flex; gap: 3px; overflow: hidden; }
   .rel-badges span,
   .rel-role,
@@ -2491,6 +2906,17 @@
     background: color-mix(in srgb, var(--accent) 88%, #000);
     border-radius: 3px;
   }
+  .s-kind {
+    /* Bottom-right, stacked just above .s-deriv (top-right belongs to the
+       colour-label dot on these small tiles). */
+    position: absolute; bottom: 15px; right: 3px;
+    padding: 0 3px;
+    font-size: 8px; font-weight: 800;
+    color: #dfe6ea;
+    background: rgba(40, 58, 70, 0.9);
+    border-radius: 3px;
+  }
+  .s-kind.raw { background: rgba(96, 66, 22, 0.92); }
   .s-stars { position: absolute; bottom: 2px; left: 3px; font-size: 10px; color: var(--star); text-shadow: 0 1px 2px rgba(0,0,0,0.6); }
   .s-x { position: absolute; top: 2px; left: 4px; color: var(--reject); font-weight: 700; text-shadow: 0 1px 2px rgba(0,0,0,0.6); }
   .s-pick { position: absolute; top: 2px; left: 4px; color: var(--pick); font-weight: 700; text-shadow: 0 1px 2px rgba(0,0,0,0.6); }

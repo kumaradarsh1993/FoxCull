@@ -62,6 +62,30 @@ export const api = {
   /** Export files into `dest`: RAW → camera-rendered JPEG, images copied. */
   exportJpegs: (paths: string[], dest: string) =>
     invoke<ExportOutcome>("export_jpegs", { paths, dest }),
+  /** Dimensions/size of a RAW's embedded camera JPEG, without writing anything. */
+  rawEmbeddedProbe: (path: string) =>
+    invoke<{ width: number; height: number; bytes: number; needs_rotate: boolean }>(
+      "raw_embedded_probe",
+      { path },
+    ),
+  /** Bulk RAW → JPEG: extract each RAW's embedded camera JPEG (the out-of-camera
+   *  look) and write it as `<stem>.JPG` next to the source, never overwriting —
+   *  so the export stacks with its RAW in the grid. Progress via
+   *  `onRawExportProgress`. */
+  exportRawJpegs: (paths: string[]) =>
+    invoke<{
+      written: string[];
+      skipped: [string, string][];
+      failed: [string, string][];
+    }>("export_raw_jpegs", { paths }),
+  /** Per-file progress stream for the in-flight bulk RAW → JPEG export. */
+  onRawExportProgress: (
+    cb: (p: { done: number; total: number; current: string }) => void,
+  ): Promise<UnlistenFn> =>
+    listen<{ done: number; total: number; current: string }>(
+      "raw-export-progress",
+      (e) => cb(e.payload),
+    ),
   moveMediaFiles: (paths: string[], dest: string) =>
     invoke<MoveOutcome>("move_media_files", { paths, dest }),
   getTrim: (path: string) => invoke<[number, number] | null>("get_trim", { path }),

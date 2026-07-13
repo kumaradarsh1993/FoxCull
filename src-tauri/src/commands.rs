@@ -1816,10 +1816,14 @@ pub struct EditAdjustments {
     pub contrast: f64,
     /// ffmpeg eq saturation multiplier, 1.0 = neutral.
     pub saturation: f64,
-    /// Warm/cool tint, roughly -0.2..0.2.
+    /// Warm/cool tint, roughly -0.5..0.5.
     pub warmth: f64,
     /// Unsharp amount, 0 = off.
     pub sharpen: f64,
+    /// Orange & teal split-tone strength, 0 = off. Defaulted so requests built
+    /// before this field existed still deserialize.
+    #[serde(default, rename = "splitTone")]
+    pub split_tone: f64,
 }
 
 #[derive(Deserialize)]
@@ -1901,6 +1905,67 @@ fn neutral_adjustments(a: &EditAdjustments) -> bool {
         && (a.saturation - 1.0).abs() < 0.001
         && a.warmth.abs() < 0.001
         && a.sharpen.abs() < 0.001
+        && a.split_tone.abs() < 0.001
+}
+
+// The colour block below is duplicated between the video pipeline and the
+// single-frame snapshot path, so the three primitives that must stay pixel-for-
+// pixel identical to the EditStudio preview live here.
+
+// Brightness is a multiplicative gain (1+b), matching CSS `brightness(1+b)`.
+// Folding it into eq's contrast+brightness reproduces `brightness(1+b) contrast(c)`
+// exactly: out = ((in*(1+b)) - 0.5)*c + 0.5 == contrast=(1+b)*c, brightness=0.5*c*b.
+fn eq_folded(a: &EditAdjustments) -> String {
+    let b = a.brightness.clamp(-0.5, 0.5);
+    let c = a.contrast.clamp(0.2, 3.0);
+    let g = 1.0 + b;
+    format!(
+        "eq=brightness={:.4}:contrast={:.4}:saturation={:.4}",
+        0.5 * c * b,
+        (g * c).clamp(0.0, 3.0),
+        a.saturation.clamp(0.0, 3.0)
+    )
+}
+
+// Warmth as a per-channel gain (red up / blue down for warm) so it mirrors the
+// preview's SVG feColorMatrix instead of the old shadows/mids colorbalance shift.
+fn warmth_filter(w: f64) -> Option<String> {
+    if w.abs() < 0.001 {
+        return None;
+    }
+    let w = w.clamp(-0.5, 0.5);
+    Some(format!(
+        "colorchannelmixer=rr={:.4}:gg=1.0:bb={:.4}",
+        1.0 + 0.4 * w,
+        1.0 - 0.4 * w
+    ))
+}
+
+// Orange & teal split-tone: warm highlights, cool/teal shadows. The control
+// points mirror the preview's feComponentTransfer tableValues; ffmpeg splines
+// them where the SVG ramps linearly, a negligible difference at these deltas.
+fn splittone_filter(a: f64) -> Option<String> {
+    if a < 0.001 {
+        return None;
+    }
+    let a = a.clamp(0.0, 1.5);
+    let xs = [0.0, 0.25, 0.5, 0.75, 1.0];
+    let rd = [-0.06, -0.02, 0.04, 0.09, 0.06];
+    let gd = [0.03, 0.02, 0.0, -0.02, -0.03];
+    let bd = [0.09, 0.05, 0.0, -0.05, -0.08];
+    let pts = |d: &[f64; 5]| -> String {
+        xs.iter()
+            .zip(d)
+            .map(|(x, dv)| format!("{x:.3}/{:.4}", (x + a * dv).clamp(0.0, 1.0)))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    Some(format!(
+        "curves=r='{}':g='{}':b='{}'",
+        pts(&rd),
+        pts(&gd),
+        pts(&bd)
+    ))
 }
 
 fn edit_requires_reencode(req: &EditExportRequest) -> bool {
@@ -2274,24 +2339,12 @@ fn build_video_filter(
         }
         let a = &req.adjustments;
         if !neutral_adjustments(a) {
-            filters.push(format!(
-                "eq=brightness={:.4}:contrast={:.4}:saturation={:.4}",
-                a.brightness.clamp(-0.4, 0.4),
-                a.contrast.clamp(0.2, 3.0),
-                a.saturation.clamp(0.0, 3.0)
-            ));
-            if a.warmth.abs() >= 0.001 {
-                // Warmth spread across shadows/mids/highlights so it's actually
-                // visible (shadows-only was imperceptible at the old ±0.25 range).
-                let w = a.warmth.clamp(-0.3, 0.3);
-                filters.push(format!(
-                    "colorbalance=rs={w:.4}:bs={:.4}:rm={:.4}:bm={:.4}:rh={:.4}:bh={:.4}",
-                    -w,
-                    0.6 * w,
-                    -0.6 * w,
-                    0.3 * w,
-                    -0.3 * w
-                ));
+            filters.push(eq_folded(a));
+            if let Some(f) = warmth_filter(a.warmth) {
+                filters.push(f);
+            }
+            if let Some(f) = splittone_filter(a.split_tone) {
+                filters.push(f);
             }
             if a.sharpen > 0.001 {
                 filters.push(format!("unsharp=5:5:{:.3}", a.sharpen.clamp(0.0, 1.5)));
@@ -2364,24 +2417,12 @@ fn build_single_frame_filter(
         filters.push(format!("scale={output_w}:{output_h}:flags=lanczos"));
     }
     if !neutral_adjustments(adjustments) {
-        filters.push(format!(
-            "eq=brightness={:.4}:contrast={:.4}:saturation={:.4}",
-            adjustments.brightness.clamp(-0.4, 0.4),
-            adjustments.contrast.clamp(0.2, 3.0),
-            adjustments.saturation.clamp(0.0, 3.0)
-        ));
-        if adjustments.warmth.abs() >= 0.001 {
-            // Warmth spread across shadows/mids/highlights so it's actually visible
-            // (matches the video path).
-            let w = adjustments.warmth.clamp(-0.3, 0.3);
-            filters.push(format!(
-                "colorbalance=rs={w:.4}:bs={:.4}:rm={:.4}:bm={:.4}:rh={:.4}:bh={:.4}",
-                -w,
-                0.6 * w,
-                -0.6 * w,
-                0.3 * w,
-                -0.3 * w
-            ));
+        filters.push(eq_folded(adjustments));
+        if let Some(f) = warmth_filter(adjustments.warmth) {
+            filters.push(f);
+        }
+        if let Some(f) = splittone_filter(adjustments.split_tone) {
+            filters.push(f);
         }
         if adjustments.sharpen > 0.001 {
             filters.push(format!("unsharp=5:5:{:.3}", adjustments.sharpen.clamp(0.0, 1.5)));
