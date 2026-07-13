@@ -43,6 +43,18 @@ rayon = "1"
 
 parking_lot = "0.12"
 
+# ── Cast to TV (src/cast.rs) — all three deliberately C-toolchain-free ──────
+# mDNS discovery of Google Cast devices (pure Rust).
+mdns-sd = "0.20"
+# Local Range-enabled media server the TV fetches originals from (pure Rust;
+# no TLS feature — the receiver talks plain HTTP to us on the LAN).
+tiny_http = "0.12"
+# TLS channel for the CASTV2 control connection (port 8009, self-signed cert).
+# Uses the OS stack: schannel on Windows, Security.framework on macOS — chosen
+# over rustls because rustls' crypto backends (aws-lc-rs/ring) need a C
+# toolchain, which the local gnu check setup doesn't have.
+native-tls = "0.2"
+
 [target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
 tauri-plugin-single-instance = "2"
 
