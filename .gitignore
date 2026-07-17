@@ -13,6 +13,11 @@ node_modules/
 /src-tauri/binaries/
 
 # env / editor
+# Vite loads .env, .env.local and .env.<mode>. FoxCull uses none today, but an
+# untracked-yet-unignored .env is how secrets leak — ignore the whole family.
+.env.*
+!.env.example
+.env
 .DS_Store
 *.log
 *.local
