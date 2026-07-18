@@ -402,6 +402,12 @@ fn collect_edit_sources(dir: &Path, recursive: bool, out: &mut Vec<(PathBuf, i64
             }
             collect_edit_sources(&entry.path(), true, out);
         } else if ft.is_file() {
+            // Skip dotfiles — chiefly macOS AppleDouble sidecars ("._IMG.JPG")
+            // written to exFAT/NTFS drives, which carry a media extension but
+            // are resource-fork junk, not media.
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
             let path = entry.path();
             if is_edit_source_file(&path) {
                 let md = entry.metadata().ok();
@@ -632,6 +638,11 @@ fn collect(dir: &Path, recursive: bool, out: &mut Vec<(PathBuf, i64, u64)>) {
             }
             collect(&entry.path(), true, out);
         } else if ft.is_file() {
+            // Skip dotfiles (macOS "._*" AppleDouble sidecars on shared
+            // exFAT/NTFS drives look like media by extension but aren't).
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
             let path = entry.path();
             if media::is_media(&path) {
                 // metadata() is cached from the dir enumeration on Windows (free).
@@ -679,7 +690,10 @@ fn count_media(dir: &Path) -> usize {
                 }
             }
             n += count_media(&entry.path());
-        } else if ft.is_file() && media::is_media(&entry.path()) {
+        } else if ft.is_file()
+            && !entry.file_name().to_string_lossy().starts_with('.')
+            && media::is_media(&entry.path())
+        {
             n += 1;
         }
     }
