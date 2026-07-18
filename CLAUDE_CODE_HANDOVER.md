@@ -12,6 +12,68 @@ Claude-built `fox-cull` project.
 > **historical record** of names in effect at the time — left as-is for
 > accuracy; don't "fix" them.
 
+## 2026-07-18: Holistic audit (branch `claude/fox-cull-audit-kc8iwu`, PR #1)
+
+A separate Claude Code session (running remotely, not this machine) did a
+full-codebase audit — architecture, performance (perf focus: Alienware 15 R4 /
+GTX 1070 and XPS 13), memory, code quality, security, and macOS compatibility.
+**If you're picking this repo up fresh, read this section before touching
+performance, caching, or the warm/Prepare pipeline — some of it just changed.**
+
+Full writeup: [`docs/AUDIT-2026-07.md`](docs/AUDIT-2026-07.md). Prioritized
+worklist: [`BACKLOG.md`](BACKLOG.md) (P0 = do next, P1 = high value soon,
+P2 = scheduled incl. all Mac items, P3 = nice-to-have).
+
+**Landed** (on the audit branch — merge or cherry-pick before continuing local
+work, so the two lines of history don't diverge on the same files):
+
+- CI now stamps the release tag's version into `Cargo.toml` too, not just
+  `tauri.conf.json` — tagged builds previously showed the wrong version in the
+  window title (it reads `CARGO_PKG_VERSION` at compile time).
+- `warm_thumbnails` gained an opt-in `heavy` flag. **Prepare was silently a
+  no-op on RAW/video folders** — the backend filtered its work down to plain
+  JPEGs regardless of what Prepare asked for. Automatic folder-open warming is
+  unchanged (still images-only, same bounded pool).
+- Edit-mode source-pane probing throttled to 4 concurrent ffmpeg processes
+  (was unbounded — up to 80 sources meant up to 80 forked processes on Edit
+  open, a real stall on 4-core machines).
+- `buildRelatedIndex` (the stacks grouping) no longer re-spreads arrays per
+  entry while filling buckets — it rebuilds on every mark keystroke, so this
+  was quadratic on large related-groups.
+- `move_media_files`'s cross-volume fallback no longer leaves a duplicate file
+  at the destination if removing the source fails partway through.
+- All three folder walkers (`collect`, `collect_edit_sources`, `count_media`)
+  skip dotfiles now — macOS's `._*` AppleDouble sidecars on shared exFAT/NTFS
+  drives were showing up as broken media items.
+- New `.github/workflows/check.yml`: svelte-check + frontend build +
+  `cargo check`/`cargo test` on every push/PR. Nothing compiled the code
+  before a release tag until now, and the Rust unit tests had never run
+  anywhere (they can't run on this project's local Windows/GNU toolchain).
+- `@types/node` added as a dev dependency — the long-standing svelte-check
+  Node-types warning is gone; checks are 0 errors / 0 warnings for the first
+  time.
+
+**Not done — top of the backlog** (see `BACKLOG.md` for the rest):
+
+- **P0**: preview-cache keys hash the *absolute* path, so the cache does NOT
+  actually travel between machines sharing a drive (Alienware `E:\` vs XPS
+  maybe `D:\` vs a future Mac `/Volumes/...`) despite that being the documented
+  design intent — needs a switch to library-relative-path keys + a stable
+  hash, plus GC (the cache currently never shrinks).
+- **P0**: filmstrip/scrub-strip generation fully software-decodes clips to
+  sample ~40-100 frames — add `-hwaccel auto` + keyframe-only sampling; this
+  is the single biggest perf win identified, especially on the XPS 13.
+- **P1**: try `hevc_nvenc` for Keep-HDR exports on the Alienware's GTX 1070
+  (currently CPU-only `libx265 medium`, the slowest path in the app).
+- **P2 (Mac)**: `window.confirm()` gating the JPEG export isn't reliable in
+  WKWebView — can silently no-op on macOS; needs an in-app dialog instead.
+- Everything else (search, catalog backup, cast hardening, monolith
+  splitting, etc.) is scoped in the backlog with reasoning.
+
+If you (the agent reading this) are about to touch caching, Prepare, the edit
+probe path, or the folder walkers, check whether the audit branch has already
+merged first — redoing this work independently will conflict.
+
 ## What landed in v1.1.0-nightly.1 (2026-07-12, one big live-audit batch)
 
 Driven by a long user audit session; stable base remains v1.0.1 (v1.0.0 re-cut
