@@ -150,7 +150,13 @@ jobs:
         shell: bash
         run: |
           VER="${GITHUB_REF_NAME#v}"
-          node -e "const fs=require('fs');const p='src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.version='${VER}';fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n');console.log('Stamped version =>',c.version);"
+          node -e "const fs=require('fs');const p='src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.version='${VER}';fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n');console.log('Stamped tauri.conf.json =>',c.version);"
+          # Cargo.toml must carry the same version: the runtime window title is
+          # built from CARGO_PKG_VERSION at compile time, so stamping only the
+          # Tauri config left tagged builds titled with the stale committed
+          # version (e.g. a v1.1.0-nightly.1 build showing "FoxCull v1.0.1").
+          perl -0pi -e "s/^version = \"[^\"]+\"/version = \"${VER}\"/m" src-tauri/Cargo.toml
+          grep '^version' src-tauri/Cargo.toml
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:

@@ -845,16 +845,37 @@
     return out;
   }
 
+  // Every probe spawns an ffmpeg process on the backend, so the source-pane
+  // sweep (up to 80 files) must not fire them all at once — an unthrottled
+  // burst forks dozens of ffmpeg processes and pins a thin laptop. A small
+  // queue keeps a few in flight and drains in request order.
+  const PROBE_PARALLEL = 4;
+  const probeQueue: EditSourceItem[] = [];
+  let probesInFlight = 0;
+
+  function pumpProbes() {
+    while (probesInFlight < PROBE_PARALLEL && probeQueue.length) {
+      const src = probeQueue.shift()!;
+      probesInFlight++;
+      api
+        .probeMediaInfo(src.path)
+        .then((p) => {
+          probes = { ...probes, [src.path]: p };
+        })
+        .catch(() => {})
+        .finally(() => {
+          probing.delete(src.path);
+          probesInFlight--;
+          pumpProbes();
+        });
+    }
+  }
+
   function ensureProbe(src: EditSourceItem) {
     if (probes[src.path] || probing.has(src.path)) return;
     probing.add(src.path);
-    api
-      .probeMediaInfo(src.path)
-      .then((p) => {
-        probes = { ...probes, [src.path]: p };
-      })
-      .catch(() => {})
-      .finally(() => probing.delete(src.path));
+    probeQueue.push(src);
+    pumpProbes();
   }
 
   async function durationFor(src: EditSourceItem): Promise<number> {

@@ -447,10 +447,15 @@
       }
     }
 
+    // Mutate-in-place bucket fill: this index rebuilds on every mark keystroke
+    // (ratings feed the stack scoring), so per-entry array respreads would make
+    // big stacks quadratic.
     const rootBuckets = new Map<string, RelatedEntry[]>();
     for (const e of entries) {
       const key = relatedKey(e.stem);
-      rootBuckets.set(key, [...(rootBuckets.get(key) ?? []), e]);
+      const bucket = rootBuckets.get(key);
+      if (bucket) bucket.push(e);
+      else rootBuckets.set(key, [e]);
     }
 
     const groups: RelatedGroup[] = [];
@@ -467,7 +472,9 @@
       if (used.has(e.item.path)) continue;
       const c = burstCandidate(e);
       if (!c) continue;
-      burstBuckets.set(c.key, [...(burstBuckets.get(c.key) ?? []), { e, n: c.n }]);
+      const bucket = burstBuckets.get(c.key);
+      if (bucket) bucket.push({ e, n: c.n });
+      else burstBuckets.set(c.key, [{ e, n: c.n }]);
     }
     for (const [key, bucket] of burstBuckets) {
       const ordered = [...bucket].sort((a, b) => a.n - b.n);
@@ -1200,7 +1207,9 @@
     try {
       for (let i = 0; i < paths.length; i += CHUNK) {
         if (currentDir !== dir) break; // folder switched — abandon
-        await api.warmThumbnails(paths.slice(i, i + CHUNK), LOUPE_MAX);
+        // heavy=true: Prepare explicitly includes RAW previews and video
+        // posters (the automatic folder-open warmer skips them by design).
+        await api.warmThumbnails(paths.slice(i, i + CHUNK), LOUPE_MAX, true);
         prepDone = Math.min(paths.length, i + CHUNK);
         const elapsed = performance.now() - t0;
         const remain = (elapsed / prepDone) * (paths.length - prepDone);

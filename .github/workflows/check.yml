@@ -1,0 +1,49 @@
+# Fast sanity gate on every push/PR: type-check the frontend, build it, and
+# type-check the Rust backend. No bundling, no installers — the release
+# workflow (release.yml, tag-driven) owns those. Runs on Linux only; it's a
+# compile gate, not a platform matrix.
+
+name: Check
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+      - name: Install Linux webview deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev pkg-config
+      - name: Install npm deps
+        run: npm ci
+      - name: svelte-check
+        run: npm run check
+      - name: Frontend build
+        run: npm run build
+      # tauri-build's resource check requires the ffmpeg sidecar path to exist;
+      # a stub is enough for `cargo check` (no bundle is produced here).
+      - name: Stub ffmpeg sidecar
+        run: |
+          mkdir -p src-tauri/binaries
+          cp /bin/true src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --locked
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --locked --lib
