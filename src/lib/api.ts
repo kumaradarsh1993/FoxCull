@@ -38,9 +38,11 @@ export const api = {
     invoke<MediaProbe>("probe_media_info", { path }),
   thumbnail: (path: string, max: number) =>
     invoke<string>("thumbnail", { path, max }),
-  /** Fire-and-forget: pre-warm the whole folder's thumbnails in parallel. */
-  warmThumbnails: (paths: string[], max: number) =>
-    invoke<void>("warm_thumbnails", { paths, max }).catch(() => {}),
+  /** Fire-and-forget: pre-warm the whole folder's thumbnails in parallel.
+   *  `heavy` opts in to RAW previews + video posters (the explicit Prepare
+   *  button only — automatic folder-open warming stays images-only). */
+  warmThumbnails: (paths: string[], max: number, heavy = false) =>
+    invoke<void>("warm_thumbnails", { paths, max, heavy }).catch(() => {}),
   /** Abandon in-flight background warming (free the SSD for previews/playback). */
   cancelWarm: () => invoke<void>("cancel_warm").catch(() => {}),
   loupeSrc: (path: string) => invoke<string>("loupe_src", { path }),

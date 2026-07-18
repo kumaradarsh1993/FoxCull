@@ -27,9 +27,9 @@ const LOUPE_MAX: u32 = 1920;
 /// machine-aware: v0.3.0 warmed across ALL cores, and a dozen simultaneous
 /// multi-MB reads thrashed the external SSD so badly that individual reads
 /// stalled 50+ seconds and starved the photo the user was looking at. We cap at
-/// ~half the cores, clamped to 2..=4 — leaving the foreground (loupe + visible
-/// cells) plenty of CPU, and keeping the USB-SSD read queue shallow. On the thin
-/// XPS 13 (4 cores) this is 2; on the Alienware (12) it's 4.
+/// a quarter of the cores, clamped to 1..=2 — leaving the foreground (loupe +
+/// visible cells) plenty of CPU, and keeping the USB-SSD read queue shallow. On
+/// the thin XPS 13 (4 cores) this is 1; on the Alienware (12) it's 2.
 fn warm_threads() -> usize {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -1273,37 +1273,52 @@ const WARM_CAP: usize = 600;
 /// cursor. Fire-and-forget from the frontend right after a folder loads; cancels
 /// itself when the user switches folders (the generation token moved on).
 ///
-/// CRITICAL: this only warms ordinary images, and only the first `WARM_CAP` of
-/// them. Videos (ffmpeg poster extraction) and RAW (whole-file ~25 MB reads) are
-/// deliberately LEFT to on-demand loading — pre-reading a whole folder of those
-/// pinned the USB SSD's serial command queue for ~a minute and starved the
-/// foreground thumbnails you were actually looking at (the "not responding that
-/// recovers if you wait" bug). On-demand stays bounded to the viewport, so heavy
-/// reads only happen for the handful of RAW/video cells actually on screen.
+/// CRITICAL: by default this only warms ordinary images, and only the first
+/// `WARM_CAP` of them. Videos (ffmpeg poster extraction) and RAW (whole-file
+/// ~25 MB reads) are deliberately LEFT to on-demand loading — pre-reading a
+/// whole folder of those pinned the USB SSD's serial command queue for ~a minute
+/// and starved the foreground thumbnails you were actually looking at (the "not
+/// responding that recovers if you wait" bug). On-demand stays bounded to the
+/// viewport, so heavy reads only happen for the handful of RAW/video cells
+/// actually on screen.
+///
+/// `heavy` opts in to RAW previews and video posters — used ONLY by the explicit
+/// "Prepare folder" button, where the user has asked for the up-front disk work
+/// (it runs in small chunks on the same bounded pool, so it still can't flood
+/// the drive). Without it, preparing a RAW/video folder was silently a no-op.
 #[tauri::command]
 pub async fn warm_thumbnails(
     app: AppHandle,
     state: State<'_, AppState>,
     paths: Vec<String>,
     max: u32,
+    heavy: Option<bool>,
 ) -> Result<(), String> {
     let my_gen = state.warm_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let gen = state.warm_gen.clone();
     let cache_dir = state.cache_dir.lock().clone();
-    // Only the cheap kind (ordinary images), only the first WARM_CAP.
-    let work: Vec<PathBuf> = paths
+    let ffmpeg = state.ffmpeg.clone();
+    let heavy = heavy.unwrap_or(false);
+    // Only the cheap kind (ordinary images) unless heavy; only the first WARM_CAP.
+    let work: Vec<(PathBuf, Kind)> = paths
         .iter()
         .map(PathBuf::from)
-        .filter(|p| matches!(media::classify(p), Kind::Image))
+        .map(|p| { let k = media::classify(&p); (p, k) })
+        .filter(|(_, k)| match k {
+            Kind::Image => true,
+            Kind::Raw | Kind::Video => heavy,
+            Kind::Other => false,
+        })
         .take(WARM_CAP)
         .collect();
     let total = work.len();
     let t0 = Instant::now();
     crate::log::line(&format!(
-        "WARM start images={} (of {} files) max={} gen={}",
+        "WARM start items={} (of {} files) max={} heavy={} gen={}",
         total,
         paths.len(),
         max,
+        heavy,
         my_gen
     ));
     // Surface big warming passes in the activity indicator. Small batches (the
@@ -1319,12 +1334,21 @@ pub async fn warm_thumbnails(
         // Run on the small dedicated pool so we never monopolize the cores the
         // foreground (loupe + visible cells) needs.
         warm_pool().install(|| {
-            work.par_iter().for_each(|p| {
+            work.par_iter().for_each(|(p, kind)| {
                 // Abandon the moment a newer folder selection supersedes us.
                 if gen.load(Ordering::SeqCst) != my_gen {
                     return;
                 }
-                if thumbs::ensure(&cache_dir, p, Kind::Image, max).is_ok() {
+                let ok = match kind {
+                    // Videos get their grid/strip poster; images and RAW get
+                    // the requested-size preview (the RAW path extracts the
+                    // embedded camera JPEG, same as loupe_src).
+                    Kind::Video => {
+                        video::ensure_poster(&cache_dir, ffmpeg.as_deref(), p).is_ok()
+                    }
+                    kind => thumbs::ensure(&cache_dir, p, *kind, max).is_ok(),
+                };
+                if ok {
                     let n = count.fetch_add(1, Ordering::Relaxed) + 1;
                     if announce && n % 16 == 0 {
                         emit_activity(
@@ -2921,8 +2945,17 @@ pub fn move_media_files(
         };
         let target = uniquify(dest_dir.join(name));
         let caches = cache_files_for(&cache_dir, &src.to_string_lossy());
-        let moved = std::fs::rename(&src, &target).is_ok()
-            || (std::fs::copy(&src, &target).is_ok() && std::fs::remove_file(&src).is_ok());
+        let moved = std::fs::rename(&src, &target).is_ok() || {
+            // Cross-volume fallback: copy, then remove the source. If the
+            // source removal fails the "move" must not leave a stray duplicate
+            // at the destination — delete the copy before reporting failure.
+            let copied = std::fs::copy(&src, &target).is_ok();
+            let removed = copied && std::fs::remove_file(&src).is_ok();
+            if copied && !removed {
+                let _ = std::fs::remove_file(&target);
+            }
+            removed
+        };
         if moved {
             for c in caches {
                 let _ = std::fs::remove_file(c);
