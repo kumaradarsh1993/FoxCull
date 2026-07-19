@@ -4,7 +4,7 @@
   import { api } from "$lib/api";
   import { cast, type CastDevice, type CastStatus } from "$lib/cast";
   import { settings } from "$lib/settings.svelte";
-  import { activity } from "$lib/activity.svelte";
+  import { activity, fmtEta } from "$lib/activity.svelte";
   import { resetThumbs, prefetchLoupe, loaderStats } from "$lib/thumbnail-loader";
   import {
     LABELS,
@@ -104,6 +104,16 @@
     labelNone = false;
   }
 
+  /** One-click reset of every popover filter (the "no results" escape hatch). */
+  function clearAllFilters() {
+    settings.set({ typeFilter: "all" });
+    flagFilter = "all";
+    minRating = 0;
+    ratingOp = ">=";
+    tagFilter = null;
+    clearLabelFilter();
+  }
+
   let dimLevel = $state(0); // 0 normal · 1 dim panels · 2 lights out
   let showInfoOverlay = $state(false);
   let settingsOpen = $state(false);
@@ -154,6 +164,28 @@
   let trashItems = $state<TrashItem[]>([]);
   let controllerOpen = $state(false);
   let padHelpOpen = $state(false);
+  let shortcutsOpen = $state(false);
+
+  /** True while any toolbar popover/menu is open (they share light-dismiss). */
+  function anyPopoverOpen(): boolean {
+    return settingsOpen || filtersOpen || arrangeOpen || clearOpen || castOpen;
+  }
+  function closeAllPopovers() {
+    settingsOpen = false;
+    filtersOpen = false;
+    arrangeOpen = false;
+    clearOpen = false;
+    castOpen = false;
+  }
+  // Light dismiss, the way every native menu works: pressing anywhere outside
+  // an open popover (or its toggle) closes it. Toggles keep working because
+  // their wrapping group is excluded from the dismissal test.
+  function onGlobalPointerDown(e: PointerEvent) {
+    if (!anyPopoverOpen()) return;
+    const t = e.target as HTMLElement | null;
+    if (t?.closest(".pop, .filtermenu, .arrangeMenu, .clearMenu, .castMenu, .arrange, .filterwrap, .clearWrap, .castWrap, .gear")) return;
+    closeAllPopovers();
+  }
   let editOpen = $state(false);
   let treeCollapsed = $state(false);
   // Bumped by the tree's ↻ button to make expanded folders recount their badges.
@@ -1200,26 +1232,53 @@
     prepared = false;
     const dir = currentDir;
     // Focus previews are the big (1920px) renders; the small grid thumbs are
-    // already warmed on folder-open. We chunk the work so the button can show
-    // real progress + a time estimate instead of an opaque spinner.
-    const paths = baseView.filter((i) => i.kind !== "other").map((i) => i.path);
-    prepTotal = paths.length;
+    // already warmed on folder-open. Photos/RAW run FIRST (fast, and the most
+    // common reason to Prepare), then videos (posters + hover scrub strips —
+    // seconds each, not milliseconds). Keeping the phases separate is what
+    // makes the ETA honest: one blended per-item rate over a folder that's
+    // 90% photos and 10% long videos claims "5 minutes" for a 20-minute job.
+    const photoPaths = baseView.filter((i) => i.kind === "image" || i.kind === "raw").map((i) => i.path);
+    const videoPaths = baseView.filter((i) => i.kind === "video").map((i) => i.path);
+    prepTotal = photoPaths.length + videoPaths.length;
     prepDone = 0;
     prepEta = "";
-    const t0 = performance.now();
+    // Per-kind ms/item: measured once that phase has data; until then a prior
+    // from the target machines (photo previews ~0.3s; video poster + scrub
+    // strip ~4s with keyframe-seek extraction).
+    const PHOTO_PRIOR_MS = 300;
+    const VIDEO_PRIOR_MS = 4000;
+    let photoMs: number | null = null;
+    let videoMs: number | null = null;
+    const updateEta = () => {
+      const photosLeft = Math.max(0, photoPaths.length - Math.min(prepDone, photoPaths.length));
+      const videosLeft = Math.max(0, prepTotal - Math.max(prepDone, photoPaths.length));
+      const remainMs =
+        photosLeft * (photoMs ?? PHOTO_PRIOR_MS) + videosLeft * (videoMs ?? VIDEO_PRIOR_MS);
+      prepEta = remainMs > 1500 ? fmtEta(remainMs / 1000) : "almost done";
+    };
     const CHUNK = 16;
-    try {
-      for (let i = 0; i < paths.length; i += CHUNK) {
-        if (currentDir !== dir) break; // folder switched — abandon
+    const runPhase = async (phase: string[], setRate: (msPerItem: number) => void) => {
+      let phaseDone = 0;
+      const t0 = performance.now();
+      for (let i = 0; i < phase.length; i += CHUNK) {
+        if (currentDir !== dir) return false; // folder switched — abandon
         // heavy=true: Prepare explicitly includes RAW previews and video
-        // posters (the automatic folder-open warmer skips them by design).
-        await api.warmThumbnails(paths.slice(i, i + CHUNK), LOUPE_MAX, true);
-        prepDone = Math.min(paths.length, i + CHUNK);
-        const elapsed = performance.now() - t0;
-        const remain = (elapsed / prepDone) * (paths.length - prepDone);
-        prepEta = remain > 1500 ? `~${Math.ceil(remain / 1000)}s` : "almost done";
+        // posters/scrub strips (the automatic folder-open warmer skips them
+        // by design).
+        await api.warmThumbnails(phase.slice(i, i + CHUNK), LOUPE_MAX, true);
+        phaseDone = Math.min(phase.length, i + CHUNK);
+        prepDone += Math.min(CHUNK, phase.length - i);
+        setRate((performance.now() - t0) / phaseDone);
+        updateEta();
         // Mirror into the global activity chip (visible from any view).
-        activity.local("prepare", "Preparing full-size previews", prepDone, prepTotal);
+        activity.local("prepare", "Preparing previews & scrub strips", prepDone, prepTotal);
+      }
+      return true;
+    };
+    updateEta();
+    try {
+      if (await runPhase(photoPaths, (ms) => (photoMs = ms))) {
+        await runPhase(videoPaths, (ms) => (videoMs = ms));
       }
     } finally {
       preparing = false;
@@ -1535,7 +1594,7 @@
         ? [
             {
               label: "Open in Edit",
-              icon: "E",
+              icon: "✎",
               action: openEditMode,
             },
           ]
@@ -1571,7 +1630,7 @@
                 (ts.filter((i) => i.kind === "raw").length > 1
                   ? ` (${ts.filter((i) => i.kind === "raw").length})`
                   : ""),
-              icon: "⿻",
+              icon: "⤓",
               action: () => exportRawToJpeg(ctx),
             } as MenuEntry,
           ]
@@ -1792,6 +1851,25 @@
     const t = e.target as HTMLElement;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
     const k = e.key.toLowerCase();
+    // Overlays and popovers first, in every mode: ? toggles the shortcut guide,
+    // Escape closes the topmost open thing before doing anything else.
+    if (e.key === "?") {
+      shortcutsOpen = !shortcutsOpen;
+      e.preventDefault();
+      return;
+    }
+    if (e.key === "Escape" && shortcutsOpen) {
+      shortcutsOpen = false;
+      return;
+    }
+    if (e.key === "Escape" && padHelpOpen) {
+      padHelpOpen = false;
+      return;
+    }
+    if (e.key === "Escape" && anyPopoverOpen()) {
+      closeAllPopovers();
+      return;
+    }
     if (editOpen) {
       // Delete/cut the selection, or the clip under the playhead. editComp's
       // deleteSelected/cutAtPlayhead exports land alongside this change (see
@@ -1998,7 +2076,7 @@
   }
 </script>
 
-<svelte:window {onkeydown} {onmouseup} oncontextmenu={onGlobalContextMenu} />
+<svelte:window {onkeydown} {onmouseup} oncontextmenu={onGlobalContextMenu} onpointerdown={onGlobalPointerDown} />
 
 {#snippet gridCell(item: MediaItem, i: number)}
   {@const rel = relatedFor(item)}
@@ -2167,9 +2245,9 @@
       <div class="tool-group viewGroup">
         <span class="ctl-label">View</span>
         <div class="seg modes" title="View">
-          <button class="chip" class:on={viewMode === "grid" && !editOpen} onclick={() => setView("grid")}>Grid</button>
-          <button class="chip" class:on={viewMode === "details" && !editOpen} onclick={() => setView("details")}>Details</button>
-          <button class="chip" class:on={viewMode === "loupe" && !editOpen} onclick={() => setView("loupe")}>Focus</button>
+          <button class="chip" class:on={viewMode === "grid" && !editOpen} onclick={() => setView("grid")} title="Grid (G)">Grid</button>
+          <button class="chip" class:on={viewMode === "details" && !editOpen} onclick={() => setView("details")} title="Details list (D)">Details</button>
+          <button class="chip" class:on={viewMode === "loupe" && !editOpen} onclick={() => setView("loupe")} title="Focus — one item large (Enter)">Focus</button>
         </div>
       </div>
 
@@ -2334,7 +2412,7 @@
           class:on={preparing || prepared}
           onclick={prepareFolder}
           disabled={!baseView.length || preparing}
-          title={"Prepare · full-quality Focus previews for this whole folder.\n\nWhat it does: decodes and caches every shot's large preview up front.\nWhen to use it: before reviewing a folder in Focus view, so flipping shot-to-shot is instant with no loading blur.\nHow: click once — it runs in the background (progress shown here) and only needs doing once per folder. Grid thumbnails are already cached when a folder opens; this is the extra step for the big Focus previews."}
+          title={"Prepare · make this whole folder instant.\n\nPhotos & RAW: caches every shot's full-size Focus preview (no loading blur).\nVideos: caches the poster frame AND the hover scrub strip, so skimming works immediately.\n\nPhotos run first, then videos; progress and a time estimate show here and in the activity chip. One click, once per folder — safe to keep working meanwhile."}
         >
           {#if preparing}<span class="prep-fill" style="width:{prepPct}%"></span>{/if}
           <span class="prep-lbl">
@@ -2344,7 +2422,7 @@
             {#if preparing}{prepPct}%{prepEta ? ` ${prepEta}` : ""}{:else if prepared}Ready{:else}Prepare{/if}
           </span>
         </button>
-        <button class="btn sm danger" onclick={rejectSelected} disabled={actionTargets.length === 0} title="Toggle rejected on the active item or selection">
+        <button class="btn sm danger" onclick={rejectSelected} disabled={actionTargets.length === 0} title="Toggle rejected on the active item or selection (X)">
           <svg class="btn-ico" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
           {allTargetsRejected ? "Unreject" : "Reject"}{selected.size > 1 ? ` ${selected.size}` : ""}
         </button>
@@ -2472,6 +2550,9 @@
             🎮 {pad.connected ? "Connected — set up…" : "Set up…"}
           </button>
         </div>
+        <div class="row"><span>Shortcuts</span>
+          <button class="btn sm" onclick={() => { settingsOpen = false; shortcutsOpen = true; }} title="Every keyboard shortcut, grouped (?)">⌨ Show all… </button>
+        </div>
         <div class="grpHead">Files</div>
         <div class="row"><span>On delete</span>
           <div class="seg">
@@ -2493,7 +2574,7 @@
             <span class="tag">{libInfo.on_drive ? "on drive" : "app-data (read-only mount)"}</span>
           </div>
         {/if}
-        <div class="row hintrow">Each drive keeps its own catalog, preview cache &amp; recycle in a <code>_FoxCull</code> folder. Press <kbd>F</kbd> full screen · <kbd>L</kbd> dim · <kbd>G</kbd> grid · <kbd>D</kbd> details.</div>
+        <div class="row hintrow">Each drive keeps its own catalog, preview cache &amp; recycle in a <code>_FoxCull</code> folder. Press <kbd>?</kbd> for all shortcuts · <kbd>F</kbd> play mode · <kbd>L</kbd> dim.</div>
       </div>
     {/if}
 
@@ -2508,6 +2589,51 @@
 
     {#if controllerOpen}
       <ControllerPanel onclose={() => (controllerOpen = false)} />
+    {/if}
+
+    <!-- Keyboard shortcut guide (?): the one place every key lives, grouped the
+         way the app thinks — nothing to memorize up front. -->
+    {#if shortcutsOpen}
+      <button class="kbBackdrop" aria-label="Close shortcuts" onclick={() => (shortcutsOpen = false)}></button>
+      <div class="kbGuide" role="dialog" aria-label="Keyboard shortcuts">
+        <div class="kbHead"><span>⌨ Keyboard shortcuts</span><button class="kbClose" onclick={() => (shortcutsOpen = false)} title="Close (Esc)">✕</button></div>
+        <div class="kbCols">
+          <div>
+            <div class="kbGroup">Navigate</div>
+            <div class="kbRow"><span class="keys"><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd></span><span>Move between items</span></div>
+            <div class="kbRow"><span class="keys"><kbd>Shift</kbd>+<kbd>←/→</kbd></span><span>Extend selection</span></div>
+            <div class="kbRow"><span class="keys"><kbd>Enter</kbd></span><span>Focus view ⇄ grid</span></div>
+            <div class="kbRow"><span class="keys"><kbd>Esc</kbd></span><span>Close / back out</span></div>
+            <div class="kbGroup">Views</div>
+            <div class="kbRow"><span class="keys"><kbd>G</kbd></span><span>Grid</span></div>
+            <div class="kbRow"><span class="keys"><kbd>D</kbd></span><span>Details</span></div>
+            <div class="kbRow"><span class="keys"><kbd>F</kbd></span><span>Play mode (fullscreen + strip)</span></div>
+            <div class="kbRow"><span class="keys"><kbd>L</kbd></span><span>Dim lights (cycle)</span></div>
+            <div class="kbRow"><span class="keys"><kbd>I</kbd></span><span>Info overlay</span></div>
+            <div class="kbGroup">Files</div>
+            <div class="kbRow"><span class="keys"><kbd>Ctrl</kbd>+<kbd>X</kbd> <kbd>Ctrl</kbd>+<kbd>V</kbd></span><span>Move files (cut → paste in folder)</span></div>
+            <div class="kbRow"><span class="keys"><kbd>Ctrl</kbd>+<kbd>A</kbd></span><span>Select all (filtered)</span></div>
+          </div>
+          <div>
+            <div class="kbGroup">Culling</div>
+            <div class="kbRow"><span class="keys"><kbd>P</kbd></span><span>Pick</span></div>
+            <div class="kbRow"><span class="keys"><kbd>X</kbd></span><span>Reject</span></div>
+            <div class="kbRow"><span class="keys"><kbd>U</kbd></span><span>Clear marks</span></div>
+            <div class="kbRow"><span class="keys"><kbd>1</kbd>–<kbd>5</kbd></span><span>Star rating</span></div>
+            <div class="kbRow"><span class="keys"><kbd>`</kbd></span><span>Clear stars</span></div>
+            <div class="kbRow"><span class="keys"><kbd>6</kbd>–<kbd>9</kbd></span><span>Color label</span></div>
+            <div class="kbRow"><span class="keys"><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Y</kbd></span><span>Undo / redo marks</span></div>
+            <div class="kbGroup">Video (Focus)</div>
+            <div class="kbRow"><span class="keys"><kbd>Space</kbd></span><span>Play / pause</span></div>
+            <div class="kbRow"><span class="keys"><kbd>,</kbd> <kbd>.</kbd></span><span>Step 5 s back / forward</span></div>
+            <div class="kbRow"><span class="keys"><kbd>[</kbd> <kbd>]</kbd></span><span>Set in / out point</span></div>
+            <div class="kbGroup">Beyond the keyboard</div>
+            <div class="kbRow"><span class="keys">🖱</span><span>Right-click anything for its menu; mouse Back/Forward are remappable</span></div>
+            <div class="kbRow"><span class="keys">🎮</span><span>PS5/PS4 pad — Settings → Controller (Create/Share shows its guide)</span></div>
+          </div>
+        </div>
+        <div class="kbFoot">Press <kbd>?</kbd> anytime to show this.</div>
+      </div>
     {/if}
 
     <!-- Controller button guide: toggled by the bound "help" action (default
@@ -2546,13 +2672,25 @@
           <div class="welcome"><p>Scanning {currentDir ? basename(currentDir) : ""}…</p></div>
         {:else if !currentDir}
           <div class="welcome">
+            <img class="wIcon" src="/favicon.png" alt="" width="72" height="72" />
             <h1>FoxCull</h1>
             <p>Pick a folder on the left to start culling. Browse-in-place — nothing is imported or changed.</p>
+            <p class="wHints">
+              <kbd>?</kbd> shortcuts · <kbd>P</kbd> pick · <kbd>X</kbd> reject · <kbd>F</kbd> play mode ·
+              right-click anything for its menu
+            </p>
           </div>
         {:else if editOpen}
           <EditStudio {active} {selectedItems} sourceItems={items} currentDir={currentDir} recursive={settings.s.includeSub} refreshKey={folderRefreshKey} onexported={() => void refreshAfterMediaOutput()} bind:this={editComp} />
         {:else if view.length === 0}
-          <div class="welcome"><p>Nothing here matches the current filters.</p></div>
+          <div class="welcome">
+            {#if items.length > 0 && activeFilterCount > 0}
+              <p>No items match the current filters ({items.length} in the folder).</p>
+              <button class="btn" onclick={clearAllFilters}>Clear filters</button>
+            {:else}
+              <p>No photos or videos in this folder{settings.s.includeSub ? " or its subfolders" : ""}.</p>
+            {/if}
+          </div>
         {:else if viewMode === "loupe"}
           <Loupe item={active} showInfo={showInfoOverlay} onchanged={refreshAfterMediaOutput} bind:this={loupeComp} />
         {:else if viewMode === "details"}
@@ -2562,6 +2700,7 @@
             {selected}
             onrowclick={gridCellClick}
             onrowdblclick={(i) => { setActiveTo(i); setView("loupe"); }}
+            onrowcontext={(e, item, i) => openContextMenu(e, item, i)}
             onrowdragstart={beginMediaDrag}
             onrowdragend={endMediaDrag}
           />
@@ -2592,7 +2731,7 @@
       <div class="info">
         <span class="name" title={active.path}>{active.name}</span>
         <span class="meta">{active.kind} · {activeIndex + 1}/{view.length}</span>
-        <div class="rate">
+        <div class="rate" title="Star rating (1–5 · ` clears)">
           {#each [1, 2, 3, 4, 5] as n}
             <button class="star" class:on={active.rating >= n} onclick={() => rate(n)}>★</button>
           {/each}
@@ -2600,8 +2739,8 @@
         {#each LABELS as l}
           <button class="dot sm" class:on={active.label === l.key} style="background:var({l.varName})" title={l.name} aria-label={l.name} onclick={() => label(l.key)}></button>
         {/each}
-        <button class="btn sm" class:on={active.flag === "pick"} onclick={() => flag("pick")}>Pick</button>
-        <button class="btn sm danger" class:on={active.flag === "reject"} onclick={() => flag("reject")}>{active.flag === "reject" ? "Unreject" : "Reject"}</button>
+        <button class="btn sm" class:on={active.flag === "pick"} onclick={() => flag("pick")} title="Pick (P)">Pick</button>
+        <button class="btn sm danger" class:on={active.flag === "reject"} onclick={() => flag("reject")} title="Reject (X)">{active.flag === "reject" ? "Unreject" : "Reject"}</button>
 
         <!-- tags -->
         <div class="tags">
@@ -2838,6 +2977,99 @@
     pointer-events: none;
   }
 
+  /* Keyboard shortcut guide (?): centered card over a dim backdrop. */
+  .kbBackdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 294;
+    background: rgba(0, 0, 0, 0.45);
+    border: none;
+    cursor: default;
+  }
+  .kbGuide {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 295;
+    width: min(760px, calc(100vw - 60px));
+    max-height: calc(100vh - 80px);
+    overflow-y: auto;
+    padding: 16px 20px 14px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--bg-elev);
+    box-shadow: var(--shadow);
+  }
+  .kbHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-weight: 700;
+    font-size: 14.5px;
+    margin-bottom: 8px;
+  }
+  .kbClose {
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    color: var(--text-dim);
+  }
+  .kbClose:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+  }
+  .kbCols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 28px;
+  }
+  @media (max-width: 720px) {
+    .kbCols { grid-template-columns: 1fr; }
+  }
+  .kbGroup {
+    margin: 10px 0 4px;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+  .kbRow {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    font-size: 12.5px;
+    line-height: 1.9;
+    color: var(--text-dim);
+  }
+  .kbRow .keys {
+    flex: 0 0 128px;
+    white-space: nowrap;
+    color: var(--text);
+  }
+  .kbGuide kbd,
+  .kbFoot kbd {
+    display: inline-block;
+    min-width: 17px;
+    padding: 0 5px;
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    background: var(--bg-panel);
+    font-family: inherit;
+    font-size: 11px;
+    line-height: 1.6;
+    text-align: center;
+  }
+  .kbFoot {
+    margin-top: 12px;
+    padding-top: 9px;
+    border-top: 1px solid var(--border);
+    font-size: 11.5px;
+    color: var(--text-faint);
+  }
+
   /* Controller button-guide overlay: readable from TV distance, never blocks
      input (the pad keeps working while it's up). */
   .padGuide {
@@ -2907,6 +3139,21 @@
 
   .welcome { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--text-dim); text-align: center; padding: 24px; }
   .welcome h1 { font-size: 28px; margin: 0; }
+  .welcome .wIcon { border-radius: 16px; opacity: 0.95; }
+  .welcome .wHints { margin: 4px 0 0; font-size: 12px; color: var(--text-faint); }
+  .welcome kbd {
+    display: inline-block;
+    min-width: 16px;
+    padding: 0 4px;
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    background: var(--bg-panel);
+    font-family: inherit;
+    font-size: 10.5px;
+    line-height: 1.6;
+    text-align: center;
+  }
 
   /* Every tile reserves a thin top band so the golden stack line (when present)
      sits above the thumbnail without shrinking it unevenly across a row.

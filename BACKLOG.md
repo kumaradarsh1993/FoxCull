@@ -73,6 +73,12 @@ Priorities: **P0** do next · **P1** high value soon · **P2** scheduled ·
       doesn't recursively count Windows/Program Files on the warm pool.
 - [ ] **Loupe cap from display size** (PERF-8): derive the 1920 preview cap
       from the largest connected monitor (4K external looks soft today).
+- [ ] **Loupe photo zoom** (UX-audit 2026-07-19): 1:1 / zoom+pan in Focus
+      (scroll-zoom around cursor, Z toggle) — the main Lightroom-parity gap
+      left in the viewer.
+- [ ] **Responsive toolbar collapse** (UX-audit 2026-07-19): below ~900 px
+      the nowrap toolbar can clip the right action cluster; collapse labeled
+      groups into menus. Needs real window-size testing on the XPS half-snap.
 - [ ] **Blur-up placeholder uses the grid tier** instead of always 320px
       (avoids an extra cache variant per photo).
 - [ ] **Trash auto-expiry option** (e.g. purge items older than 30 days, off

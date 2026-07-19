@@ -17,7 +17,9 @@
   function detail(j: Job): string {
     if (j.state === "error") return "failed";
     if (j.state === "done") return "done";
-    return j.total > 0 ? `${j.done.toLocaleString()} / ${j.total.toLocaleString()}` : "working…";
+    if (j.total <= 0) return "working…";
+    const eta = activity.eta(j.id);
+    return `${j.done.toLocaleString()} / ${j.total.toLocaleString()}${eta ? ` · ${eta}` : ""}`;
   }
   // Collapse the detail list when everything finishes.
   $effect(() => {
@@ -35,7 +37,9 @@
       <span class="lbl" class:err={primary.state === "error"}>{primary.label}</span>
       {#if running.length > 1}<span class="more">+{running.length - 1}</span>{/if}
       <span class="num">
-        {#if primary.state === "running" && primary.total > 0}{pct(primary)}%{/if}
+        {#if primary.state === "running" && primary.total > 0}
+          {pct(primary)}%{#if activity.eta(primary.id)}<span class="eta"> · {activity.eta(primary.id)}</span>{/if}
+        {/if}
       </span>
       <span class="bar">
         <span
@@ -105,6 +109,9 @@
     font-size: 10.5px;
     color: var(--text-faint);
     font-variant-numeric: tabular-nums;
+  }
+  .num .eta {
+    color: var(--text-dim);
   }
   .bar {
     flex: 0 0 100%;

@@ -9,6 +9,7 @@
     selected,
     onrowclick,
     onrowdblclick,
+    onrowcontext,
     onrowdragstart,
     onrowdragend,
   }: {
@@ -17,6 +18,8 @@
     selected: Set<string>;
     onrowclick: (e: MouseEvent, i: number) => void;
     onrowdblclick: (i: number) => void;
+    /** Right-click a row → the same media context menu as grid/filmstrip. */
+    onrowcontext?: (e: MouseEvent, item: MediaItem, i: number) => void;
     onrowdragstart?: (e: DragEvent, item: MediaItem, i: number) => void;
     onrowdragend?: () => void;
   } = $props();
@@ -202,6 +205,13 @@
   }
 </script>
 
+<svelte:window
+  onpointerdown={(e) => {
+    // Light-dismiss for the Columns menu: any press outside the toolbar closes it.
+    if (columnsOpen && !(e.target as HTMLElement | null)?.closest(".details .toolbar")) columnsOpen = false;
+  }}
+/>
+
 <div class="details">
   <div class="toolbar">
     <span>{items.length} items</span>
@@ -242,6 +252,7 @@
           style="transform:translateY({v.y}px); grid-template-columns:{gridTemplate}"
           onclick={(e) => onrowclick(e, v.index)}
           ondblclick={() => onrowdblclick(v.index)}
+          oncontextmenu={(e) => onrowcontext?.(e, v.item, v.index)}
           draggable={!!onrowdragstart}
           ondragstart={(e) => onrowdragstart?.(e, v.item, v.index)}
           ondragend={() => onrowdragend?.()}
@@ -252,7 +263,7 @@
               <span class="c-thumb"><Thumb item={v.item} size={320} /></span>
             {:else if col.id === "marks"}
               <span class="c-marks">
-                {#if v.item.rating > 0}<span class="stars">{"*".repeat(v.item.rating)}</span>{/if}
+                {#if v.item.rating > 0}<span class="stars">{"★".repeat(v.item.rating)}</span>{/if}
                 {#if v.item.label}<span class="dot" style="background:var({labelColor(v.item.label)})"></span>{/if}
                 {#if v.item.flag === "pick"}<span class="fl pick">Pick</span>{/if}
                 {#if v.item.flag === "reject"}<span class="fl rej">Reject</span>{/if}
