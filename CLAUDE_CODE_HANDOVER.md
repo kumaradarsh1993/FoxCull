@@ -12,6 +12,47 @@ Claude-built `fox-cull` project.
 > **historical record** of names in effect at the time — left as-is for
 > accuracy; don't "fix" them.
 
+## 2026-07-19 (later session): UX/UI audit + Look-panel overhaul (v1.1.0-nightly.4, on main)
+
+Same remote Fable session, second pass at the user's request: an
+independent-auditor sweep of every UI surface, then the overhaul. Full
+findings ledger (fixed vs deferred, with reasoning):
+[`docs/UX-AUDIT-2026-07-19.md`](docs/UX-AUDIT-2026-07-19.md). Highlights:
+
+- **Light dismiss everywhere**: all toolbar popovers + the Details Columns
+  menu close on outside click and Escape (they previously only closed by
+  re-clicking their toggle). Escape now closes overlays/popovers before any
+  other Escape behavior.
+- **`?` shortcut guide**: every keyboard shortcut in one grouped overlay;
+  tooltips on view chips / Pick / Reject / stars teach their keys; welcome
+  and filtered-empty states are actionable (Clear filters button).
+- **Honest ETAs**: `activity.svelte.ts` computes sliding-window rate ETAs
+  (`etaSeconds`/`fmtEta`; shown only after ~2.5 s of stable data, never on
+  indeterminate jobs) and the chip shows `n / m · ~4m 30s`. **Prepare now
+  runs photos first, then videos, with per-phase measured rates + priors**
+  (photo ~0.3 s, video ~4 s) — the fix for blended-rate estimates lying on
+  mixed folders.
+- Details rows gained the media context menu; ★ glyph consistency; global
+  `:focus-visible` ring; safer context-menu glyphs.
+- **Look panel overhauled** (Opus subagent, verified + committed by the
+  session): root cause of "presets do nothing" was timid coefficients —
+  warmth strengthened 0.4→0.5 (±25% R/B at full range) and split-tone deltas
+  widened ~40% in BOTH the preview math and the export filters (parity is
+  the invariant; cross-referencing comments added on both sides).
+  12 presets in 5 collapsible groups: Vlog & Portrait (Warm Portrait, Soft
+  Skin, Golden Hour) · Drone & Landscape (Vivid Landscape, Orange & Teal) ·
+  B&W (Mono, Noir) · Cinematic (Teal & Orange, The Batman, Moody Film) ·
+  Clean & Correction (Osmo Clean, De-Log Boost — for future D-Log footage).
+  Group open-state persists per app session; active preset's group carries a
+  dot; "Reset look" in the header. Brightness/contrast/saturation verified
+  algebraically fine and untouched. Known limitation, by design: **sharpen
+  has no live preview** (export-only unsharp; SVG feConvolveMatrix is the
+  candidate if it ever bites — noted in BACKLOG P3).
+
+Deferred with reasoning (see the audit doc): responsive toolbar collapse
+below ~900 px, Focus-view photo zoom (both in BACKLOG as P2), Trash per-item
+context menu, unified SVG icon set.
+
 ## 2026-07-19: Video preview rework + controller culling (v1.1.0-nightly.3, on main)
 
 A remote Fable session did the user-requested deep pass on the video preview

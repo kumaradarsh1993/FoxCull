@@ -1,6 +1,9 @@
 <script module lang="ts">
   type TrimMemory = { inS: number; outS: number };
   const sessionTrimMemory = new Map<string, TrimMemory>();
+  // Which Look preset groups are expanded, remembered for the whole app session
+  // (survives leaving and re-entering the edit studio). Missing key = default open.
+  const sessionLookGroupOpen: Record<string, boolean> = {};
 </script>
 
 <script lang="ts">
@@ -39,7 +42,20 @@
 
   type PresetId = "original" | "landscape" | "square" | "reels" | "mobile";
   type ExportTarget = "instagram_reels" | "instagram_square" | "instagram_landscape" | "whatsapp" | "archive";
-  type LookPresetId = "neutral" | "batman" | "noir" | "orangeteal" | "vivid" | "osmo" | "sunset";
+  type LookPresetId =
+    | "warmportrait"
+    | "softskin"
+    | "goldenhour"
+    | "vivid"
+    | "orangeteal"
+    | "mono"
+    | "noir"
+    | "tealorange"
+    | "batman"
+    | "moody"
+    | "osmo"
+    | "delog";
+  type LookGroupId = "portrait" | "landscape" | "bw" | "cinematic" | "clean";
   type Encoder = "auto" | "x264" | "nvenc";
   type Quality = "best" | "high" | "standard" | "small";
   type SourceView = "details" | "list" | "thumbs";
@@ -115,20 +131,55 @@
 
   // Parameter-set presets: each is a full EditAdjustments, so the intensity
   // slider can scale any of them uniformly as neutral + (preset − neutral)×t.
+  // Values are tuned so each look is CLEARLY visible at intensity 100% and still
+  // tasteful at 50%. Warmth ±0.5 = ±25% R/B channel gain; splitTone 1.0 = a full
+  // orange-highlight / teal-shadow separation (see lookMatrix / lookSplit below,
+  // which the ffmpeg export mirrors channel-for-channel).
   const LOOK_PRESETS: Record<LookPresetId, { label: string; hint: string; values: EditAdjustments }> = {
-    neutral: { label: "Neutral", hint: "Reset", values: { brightness: 0, contrast: 1, saturation: 1, warmth: 0, sharpen: 0, splitTone: 0 } },
-    // The Batman (2022): underexposed but lifted (low-contrast) blacks, heavily
-    // desaturated, cool/teal-leaning — Fraser/Cole's grade approximated globally.
-    batman: { label: "The Batman", hint: "Dark, cool, gritty", values: { brightness: 0.06, contrast: 0.88, saturation: 0.6, warmth: -0.24, sharpen: 0.05, splitTone: 0 } },
-    // Proper monochrome, kept on the brighter side (blacks lifted, mild punch).
-    noir: { label: "Noir B&W", hint: "Bright monochrome", values: { brightness: 0.08, contrast: 1.14, saturation: 0, warmth: 0, sharpen: 0.1, splitTone: 0 } },
-    // The travel/drone split-tone — curves do the teal/orange, params add polish.
-    orangeteal: { label: "Orange & Teal", hint: "Travel split-tone", values: { brightness: 0.02, contrast: 1.06, saturation: 1.1, warmth: 0.05, sharpen: 0.12, splitTone: 1 } },
-    // Punchy "vivid drone" look: saturation + contrast lift for Mavic footage.
-    vivid: { label: "Vivid drone", hint: "Mavic Mini pop", values: { brightness: 0.04, contrast: 1.16, saturation: 1.42, warmth: 0.03, sharpen: 0.2, splitTone: 0 } },
-    osmo: { label: "Osmo clean", hint: "Pocket 3 natural", values: { brightness: 0.01, contrast: 1.06, saturation: 1.08, warmth: 0.04, sharpen: 0.14, splitTone: 0 } },
-    sunset: { label: "Warm travel", hint: "Golden hour", values: { brightness: 0.02, contrast: 1.08, saturation: 1.14, warmth: 0.18, sharpen: 0.12, splitTone: 0 } },
+    // — Vlog & Portrait — skin-friendly warmth, soft contrast.
+    // Gentle lift + real warmth, saturation barely up so skin stays believable.
+    warmportrait: { label: "Warm Portrait", hint: "Flattering skin warmth", values: { brightness: 0.03, contrast: 1.06, saturation: 1.05, warmth: 0.16, sharpen: 0.1, splitTone: 0 } },
+    // Beauty look: blacks lifted (contrast < 1), soft, a touch of warm/teal glow.
+    softskin: { label: "Soft Skin", hint: "Soft, lifted, gentle", values: { brightness: 0.05, contrast: 0.94, saturation: 0.98, warmth: 0.1, sharpen: 0.06, splitTone: 0.18 } },
+    // Golden hour: strong warmth + a hint of orange/teal for that sunset glow.
+    goldenhour: { label: "Golden Hour", hint: "Warm sunset glow", values: { brightness: 0.03, contrast: 1.08, saturation: 1.12, warmth: 0.3, sharpen: 0.1, splitTone: 0.22 } },
+
+    // — Drone & Landscape — punchy clarity, vivid but not neon.
+    // Big saturation + contrast + sharpen lift for Mavic / drone footage.
+    vivid: { label: "Vivid Landscape", hint: "Punchy drone pop", values: { brightness: 0.02, contrast: 1.18, saturation: 1.4, warmth: 0.05, sharpen: 0.22, splitTone: 0 } },
+    // The travel split-tone — curves do the teal/orange, params add saturation polish.
+    orangeteal: { label: "Orange & Teal", hint: "Travel split-tone", values: { brightness: 0.02, contrast: 1.1, saturation: 1.16, warmth: 0.06, sharpen: 0.14, splitTone: 1 } },
+
+    // — Black & White — a clean neutral and a hard noir.
+    // Neutral monochrome, mild contrast, gentle clarity.
+    mono: { label: "Mono", hint: "Classic neutral B&W", values: { brightness: 0.02, contrast: 1.12, saturation: 0, warmth: 0, sharpen: 0.12, splitTone: 0 } },
+    // High-contrast noir: crushed blacks, hard whites.
+    noir: { label: "Noir", hint: "High-contrast mono", values: { brightness: -0.02, contrast: 1.42, saturation: 0, warmth: 0, sharpen: 0.16, splitTone: 0 } },
+
+    // — Cinematic — teal shadows, orange highlights, moody low sat.
+    // Blockbuster grade: full orange/teal split, saturation pulled back for film feel.
+    tealorange: { label: "Teal & Orange", hint: "Blockbuster grade", values: { brightness: 0, contrast: 1.06, saturation: 0.9, warmth: 0.08, sharpen: 0.1, splitTone: 1.25 } },
+    // The Batman (2022): underexposed-but-lifted blacks, heavily desaturated,
+    // cool/teal-leaning — Fraser/Cole's grade approximated globally.
+    batman: { label: "The Batman", hint: "Dark, cool, gritty", values: { brightness: 0.05, contrast: 0.9, saturation: 0.58, warmth: -0.26, sharpen: 0.06, splitTone: 0.3 } },
+    // Faded matte film: low contrast, low sat, slightly cool, soft split.
+    moody: { label: "Moody Film", hint: "Faded matte film", values: { brightness: 0.06, contrast: 0.88, saturation: 0.8, warmth: -0.05, sharpen: 0.05, splitTone: 0.42 } },
+
+    // — Clean & Correction — natural, and a rescue for flat footage.
+    // Osmo Pocket 3 natural: barely-there polish that keeps colours true.
+    osmo: { label: "Osmo Clean", hint: "Pocket 3 natural", values: { brightness: 0.01, contrast: 1.06, saturation: 1.08, warmth: 0.05, sharpen: 0.14, splitTone: 0 } },
+    // De-log: strong contrast + saturation recovery for flat / log-ish footage.
+    delog: { label: "De-Log Boost", hint: "Revive flat footage", values: { brightness: -0.02, contrast: 1.32, saturation: 1.3, warmth: 0.06, sharpen: 0.16, splitTone: 0 } },
   };
+
+  // Presets, organised into the collapsible groups shown in the Look panel.
+  const LOOK_GROUPS: { id: LookGroupId; label: string; presets: LookPresetId[] }[] = [
+    { id: "portrait", label: "Vlog & Portrait", presets: ["warmportrait", "softskin", "goldenhour"] },
+    { id: "landscape", label: "Drone & Landscape", presets: ["vivid", "orangeteal"] },
+    { id: "bw", label: "Black & White", presets: ["mono", "noir"] },
+    { id: "cinematic", label: "Cinematic", presets: ["tealorange", "batman", "moody"] },
+    { id: "clean", label: "Clean & Correction", presets: ["osmo", "delog"] },
+  ];
 
   const VIDEO_LANES = [0, 1, 2];
   const AUDIO_LANES = [0, 1, 2];
@@ -252,6 +303,17 @@
   // while an untouched preset is live.
   let activeLook = $state<LookPresetId | null>(null);
   let lookIntensity = $state(1);
+  // Expanded/collapsed state per preset group. Groups default open; the session
+  // record above remembers a user's collapse choices across edit-studio visits.
+  let lookGroupOpen = $state<Record<string, boolean>>(
+    Object.fromEntries(LOOK_GROUPS.map((g) => [g.id, sessionLookGroupOpen[g.id] ?? true])),
+  );
+
+  function toggleLookGroup(id: LookGroupId) {
+    const next = !lookGroupOpen[id];
+    lookGroupOpen[id] = next;
+    sessionLookGroupOpen[id] = next;
+  }
 
   let activeVideo = $derived(active?.kind === "video" ? active : null);
   let selectedVideos = $derived(selectedItems.filter((i) => i.kind === "video"));
@@ -367,19 +429,24 @@
       (lookNeedsSvg ? " url(#foxLook)" : ""),
   );
   // feColorMatrix diagonal for warmth: red-gain up / blue-gain down, matching the
-  // export's colorchannelmixer=rr:gg:bb.
+  // export's colorchannelmixer=rr:gg:bb. The 0.5 coefficient makes full-range
+  // warmth an unmistakable ±25% R/B swing (e.g. mid-grey → warm amber at +0.5);
+  // KEEP IT EQUAL to warmth_filter() in commands.rs or preview ≠ export.
   let lookMatrix = $derived.by(() => {
     const w = Math.max(-0.5, Math.min(0.5, adjustments.warmth));
-    return `${(1 + 0.4 * w).toFixed(4)} 0 0 0 0  0 1 0 0 0  0 0 ${(1 - 0.4 * w).toFixed(4)} 0 0  0 0 0 1 0`;
+    return `${(1 + 0.5 * w).toFixed(4)} 0 0 0 0  0 1 0 0 0  0 0 ${(1 - 0.5 * w).toFixed(4)} 0 0  0 0 0 1 0`;
   });
   // Per-channel split-tone tables mirroring the export's ffmpeg curves control
   // points (evenly spaced at 0/.25/.5/.75/1 — the SVG ramps them linearly).
+  // Deltas strengthened so splitTone=1 reads as a clear orange-highlight /
+  // teal-shadow separation (shadows gain ~+0.13 blue, highlights lose ~-0.12 blue
+  // and gain red). KEEP THESE EQUAL to splittone_filter() in commands.rs.
   let lookSplit = $derived.by(() => {
     const a = Math.max(0, Math.min(1.5, adjustments.splitTone));
     const xs = [0, 0.25, 0.5, 0.75, 1];
-    const rd = [-0.06, -0.02, 0.04, 0.09, 0.06];
-    const gd = [0.03, 0.02, 0, -0.02, -0.03];
-    const bd = [0.09, 0.05, 0, -0.05, -0.08];
+    const rd = [-0.08, -0.03, 0.05, 0.13, 0.09];
+    const gd = [0.04, 0.02, 0, -0.03, -0.05];
+    const bd = [0.13, 0.07, 0, -0.07, -0.12];
     const tbl = (d: number[]) => xs.map((x, i) => Math.max(0, Math.min(1, x + a * d[i])).toFixed(4)).join(" ");
     return { r: tbl(rd), g: tbl(gd), b: tbl(bd) };
   });
@@ -1444,13 +1511,12 @@
   }
 
   function applyLook(id: LookPresetId) {
-    if (id === "neutral") {
-      resetColor();
-      return;
-    }
     activeLook = id;
     lookIntensity = 1;
     adjustments = scaleAdj(LOOK_PRESETS[id].values, lookIntensity);
+    // Keep the active preset visible even if its group was collapsed.
+    const g = LOOK_GROUPS.find((grp) => grp.presets.includes(id));
+    if (g && !lookGroupOpen[g.id]) toggleLookGroup(g.id);
   }
 
   // Re-derive the live look from the active preset at the new strength.
@@ -2601,21 +2667,45 @@
         <h3>Look</h3>
         <span>Hide</span>
       </button>
-      <p class="groupLabel">Presets</p>
-      <div class="lookPresets">
-        {#each Object.entries(LOOK_PRESETS) as [id, look]}
-          <button
-            class="lookPreset"
-            class:active={activeLook === id || (id === "neutral" && neutralLook)}
-            onclick={() => applyLook(id as LookPresetId)}
-            title={look.hint}
-          >
-            <span class="swatch" style="filter:{lookFilter(look.values)}"></span>
-            <span class="lpText">
-              <strong>{look.label}</strong>
-              <span>{look.hint}</span>
-            </span>
-          </button>
+      <div class="lookGroupsHead">
+        <p class="groupLabel">Presets</p>
+        <button class="miniBtn ghost" onclick={resetColor} title="Clear the look — back to the untouched image" disabled={neutralLook}>Reset look</button>
+      </div>
+      <div class="lookGroups">
+        {#each LOOK_GROUPS as group (group.id)}
+          {@const activeInGroup = group.presets.some((id) => id === activeLook)}
+          <section class="lookGroup" class:open={lookGroupOpen[group.id]}>
+            <button
+              class="lookGroupHead"
+              onclick={() => toggleLookGroup(group.id)}
+              aria-expanded={lookGroupOpen[group.id]}
+              title={lookGroupOpen[group.id] ? `Collapse ${group.label}` : `Expand ${group.label}`}
+            >
+              <span class="lgCaret" aria-hidden="true">▸</span>
+              <span class="lgTitle">{group.label}</span>
+              {#if activeInGroup}<span class="lgDot" title="A look in this group is active"></span>{/if}
+              <span class="lgCount">{group.presets.length}</span>
+            </button>
+            {#if lookGroupOpen[group.id]}
+              <div class="lookPresets">
+                {#each group.presets as id (id)}
+                  {@const look = LOOK_PRESETS[id]}
+                  <button
+                    class="lookPreset"
+                    class:active={activeLook === id}
+                    onclick={() => applyLook(id)}
+                    title={look.hint}
+                  >
+                    <span class="swatch" style="filter:{lookFilter(look.values)}"></span>
+                    <span class="lpText">
+                      <strong>{look.label}</strong>
+                      <span>{look.hint}</span>
+                    </span>
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </section>
         {/each}
       </div>
       {#if activeLook}
@@ -4169,6 +4259,72 @@
   .lookPreset.active {
     border-color: var(--accent);
     box-shadow: inset 0 0 0 1px var(--accent);
+  }
+  /* Collapsible preset groups. */
+  .lookGroupsHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .lookGroups {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .lookGroup {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg-elev) 55%, transparent);
+    overflow: hidden;
+  }
+  .lookGroup.open {
+    background: color-mix(in srgb, var(--bg-elev) 30%, transparent);
+  }
+  .lookGroupHead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 9px;
+    background: transparent;
+    color: var(--text);
+    text-align: left;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .lookGroupHead:hover {
+    background: var(--bg-hover);
+  }
+  .lgCaret {
+    color: var(--text-faint);
+    font-size: 10px;
+    transition: transform 0.14s ease;
+  }
+  .lookGroup.open .lgCaret {
+    transform: rotate(90deg);
+  }
+  .lgTitle {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .lgDot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex: 0 0 auto;
+  }
+  .lgCount {
+    color: var(--text-faint);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .lookGroup .lookPresets {
+    padding: 0 7px 8px;
   }
   /* SVG-only filter host (warmth + split-tone). Never painted itself. */
   .lookFilterDefs {

@@ -95,6 +95,9 @@ Priorities: **P0** do next · **P1** high value soon · **P2** scheduled ·
       shared helpers; single `ffmpeg_cmd()` constructor (also the natural home
       for `-hwaccel auto`).
 - [ ] Volume/mute control on the Focus video player.
+- [ ] Live sharpen preview in Edit (SVG feConvolveMatrix) — sharpen is the
+      one slider that only shows on export today (by design; flagged in the
+      2026-07-19 Look-panel overhaul).
 - [ ] Cache-size + library stats panel (files, ratings coverage) in Settings.
 - [ ] Auto-updater (tauri-plugin-updater) once builds are signed.
 - [ ] Crop keyframes ("moving portrait window following a subject") — the

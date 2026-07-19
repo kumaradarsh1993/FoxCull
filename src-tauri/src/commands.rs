@@ -2070,6 +2070,8 @@ fn eq_folded(a: &EditAdjustments) -> String {
 
 // Warmth as a per-channel gain (red up / blue down for warm) so it mirrors the
 // preview's SVG feColorMatrix instead of the old shadows/mids colorbalance shift.
+// The 0.5 coefficient (a ±25% R/B swing at full range) must stay identical to the
+// preview's lookMatrix in EditStudio.svelte — that parity is the whole point.
 fn warmth_filter(w: f64) -> Option<String> {
     if w.abs() < 0.001 {
         return None;
@@ -2077,8 +2079,8 @@ fn warmth_filter(w: f64) -> Option<String> {
     let w = w.clamp(-0.5, 0.5);
     Some(format!(
         "colorchannelmixer=rr={:.4}:gg=1.0:bb={:.4}",
-        1.0 + 0.4 * w,
-        1.0 - 0.4 * w
+        1.0 + 0.5 * w,
+        1.0 - 0.5 * w
     ))
 }
 
@@ -2091,9 +2093,11 @@ fn splittone_filter(a: f64) -> Option<String> {
     }
     let a = a.clamp(0.0, 1.5);
     let xs = [0.0, 0.25, 0.5, 0.75, 1.0];
-    let rd = [-0.06, -0.02, 0.04, 0.09, 0.06];
-    let gd = [0.03, 0.02, 0.0, -0.02, -0.03];
-    let bd = [0.09, 0.05, 0.0, -0.05, -0.08];
+    // These deltas must stay identical to lookSplit in EditStudio.svelte so the
+    // exported orange/teal split matches the preview channel-for-channel.
+    let rd = [-0.08, -0.03, 0.05, 0.13, 0.09];
+    let gd = [0.04, 0.02, 0.0, -0.03, -0.05];
+    let bd = [0.13, 0.07, 0.0, -0.07, -0.12];
     let pts = |d: &[f64; 5]| -> String {
         xs.iter()
             .zip(d)
