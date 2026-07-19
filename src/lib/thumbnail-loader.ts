@@ -86,6 +86,10 @@ export function resetThumbs() {
   // Release the warm Focus previews from the folder we're leaving.
   loupeDecoded.clear();
   loupeInflight.clear();
+  // And tell the backend to abandon any sprite build already running — without
+  // this, hover-scrub work for the folder you just LEFT kept the disk busy
+  // while the new folder tried to load its thumbnails.
+  api.cancelAllSprites();
 }
 
 /** Drop a single not-yet-started request (a grid/strip cell scrolled out of
@@ -231,7 +235,9 @@ function enqueueStrip(key: string, fetchInfo: () => Promise<FilmstripInfo>): Pro
         .catch(() => resolve(null))
         .finally(() => {
           inflight--;
-          stripPending.delete(key);
+          // Only clear our own registration — a cancelled build's promise may
+          // outlive it while a FRESH request for the same clip is registered.
+          if (stripPending.get(key) === promise) stripPending.delete(key);
           pump();
         });
     };
@@ -262,6 +268,16 @@ export function cancelVideoPoster(path: string): void {
 export function loadVideoScrubstrip(path: string): Promise<FilmstripInfo | null> {
   return enqueueStrip(`scrub:${path}`, () => api.videoScrubstrip(path));
 }
+/** Cancel a hover-strip request. Queued-not-started requests are dropped
+ *  locally; a build already RUNNING on the backend is told to stop (it aborts
+ *  between frame extractions), and its doomed promise is forgotten so a
+ *  re-hover starts a fresh request instead of latching onto the cancelled one. */
 export function cancelVideoScrubstrip(path: string): void {
-  cancel(`scrub:${path}`);
+  const key = `scrub:${path}`;
+  const wasQueued = queue.some((q) => q.key === key);
+  cancel(key);
+  if (!wasQueued && stripPending.has(key)) {
+    stripPending.delete(key);
+    api.cancelSprite(path, "scrub");
+  }
 }

@@ -10,6 +10,7 @@
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::UNIX_EPOCH;
 
 /// Resolve the bundled ffmpeg sitting beside our executable (Tauri strips the
@@ -57,8 +58,12 @@ pub fn make_poster(ffmpeg: &Path, src: &Path, out: &Path) -> Result<(), String> 
     if out.exists() {
         return Ok(());
     }
+    // `-skip_frame nokey` means the decoder only touches the keyframe at/before
+    // the seek point instead of decoding forward frame-by-frame to exactly 1.0s —
+    // on 4K60 HEVC that's one frame decoded instead of ~60, and visually the
+    // poster is the same shot. The retry below stays exact for odd containers.
     let mut cmd = Command::new(ffmpeg);
-    cmd.args(["-v", "error", "-ss", "1", "-i"])
+    cmd.args(["-v", "error", "-ss", "1", "-skip_frame", "nokey", "-i"])
         .arg(src)
         .args([
             "-frames:v",
@@ -232,8 +237,11 @@ pub fn ensure_proxy(
     let part = out.with_extension("part.mp4");
     let _ = std::fs::remove_file(&part);
 
+    // `-hwaccel auto` offloads the DECODE side (NVDEC on the GTX 1070, D3D11VA /
+    // VideoToolbox elsewhere) and silently falls back to software when no
+    // accelerator fits — the HEVC→H.264 proxy build was fully CPU-bound before.
     let mut cmd = Command::new(ff);
-    cmd.args(["-v", "error", "-i"])
+    cmd.args(["-v", "error", "-hwaccel", "auto", "-i"])
         .arg(src)
         .args([
             "-map", "0:v:0", "-map", "0:a:0?",
@@ -301,14 +309,40 @@ pub fn ensure_poster(cache_dir: &Path, ffmpeg: Option<&Path>, src: &Path) -> Res
 // shows the frame under the scrub cursor instantly by offsetting a CSS sprite —
 // no per-frame decode in the player, so scrubbing is smooth even on HEVC the
 // webview can't natively decode (the Osmo Pocket 3 footage). Generated lazily on
-// first loupe open, then reused on every machine that reads the SSD.
+// first hover/loupe open, then reused on every machine that reads the SSD.
+//
+// HOW frames are pulled matters enormously (the 2026-07 rework): the original
+// implementation ran ONE ffmpeg pass with an `fps=` filter, which DECODES EVERY
+// FRAME of the clip to keep ~40 of them — on a 5-minute 4K60 HEVC Osmo clip
+// that's ~18,000 frames of software HEVC decode to build one hover strip
+// (minutes on the XPS 13; the "Live Scrub hangs forever" complaint). Now each
+// sampled frame is its own keyframe-seek: `-ss T` before `-i` jumps straight
+// through the container index, `-skip_frame nokey` makes the decoder emit just
+// the ONE keyframe there. ~40 frames costs ~40 keyframe decodes total, so a
+// strip builds in a couple of seconds regardless of clip length, and the build
+// can be CANCELLED between frames (hover moved on / folder switched).
 
 const FILMSTRIP_COLS: u32 = 10;
 const SCRUBSTRIP_COLS: u32 = 8;
 /// Pixel width each frame is scaled to inside the sprite (height follows aspect,
-/// so portrait phone clips stay portrait).
-const FILMSTRIP_TILE_W: u32 = 160;
-const SCRUBSTRIP_TILE_W: u32 = 128;
+/// so portrait phone clips stay portrait). The filmstrip tile is sized for the
+/// Focus drag overlay (a full-canvas frame while you scrub); the scrub tile only
+/// ever paints inside a grid cell.
+const FILMSTRIP_TILE_W: u32 = 240;
+const SCRUBSTRIP_TILE_W: u32 = 160;
+/// Concurrent per-frame extractions inside ONE sprite build. Two keeps the USB
+/// SSD's read queue shallow (same doctrine as the warm pool) while roughly
+/// halving wall time; sprite builds themselves are serialized process-wide.
+const SPRITE_PARALLEL: u32 = 2;
+
+/// Error string a cancelled sprite build returns — callers match on it to stay
+/// quiet (a cancelled hover is not a failure).
+pub const SPRITE_CANCELLED: &str = "sprite build cancelled";
+
+/// Builds are serialized process-wide: a second hover queues behind the current
+/// build instead of racing it for the disk, and a cancelled build drains within
+/// one frame-extraction (~100–300 ms) so the queue moves quickly.
+static SPRITE_BUILD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Geometry of a generated filmstrip, persisted in a tiny sidecar so we don't
 /// re-probe the clip on every loupe open.
@@ -425,11 +459,12 @@ fn parse_iso(s: &str) -> Option<i64> {
     Some(crate::media::civil_to_unix(y, mo, d, h, mi, se))
 }
 
-/// Render the sprite: `count` frames evenly spread across the clip (`fps` filter),
-/// each scaled to FILMSTRIP_TILE_W wide, tiled into a `cols x rows` grid. The
-/// `tile` filter flushes a partial last frame at EOF, so short clips still yield
-/// one image (trailing cells blank — never addressed by the frontend).
-fn make_filmstrip(
+/// Fallback sprite render for containers whose index can't be seeked (rare —
+/// broken AVIs, raw streams): ONE ffmpeg pass with an `fps=` filter, which
+/// decodes every frame. `-hwaccel auto` + `-skip_frame nokey` keep even that
+/// pass bearable: only keyframes are actually decoded, in hardware when the
+/// machine has a decoder for the codec.
+fn make_filmstrip_fullscan(
     ffmpeg: &Path,
     src: &Path,
     out: &Path,
@@ -437,17 +472,13 @@ fn make_filmstrip(
     rows: u32,
     fps: f64,
     tile_w: u32,
-    threads: Option<u32>,
 ) -> Result<(), String> {
     let vf = format!(
         "fps={fps:.6},scale={tile_w}:-2,tile={cols}x{rows}:padding=0:margin=0"
     );
     let mut cmd = Command::new(ffmpeg);
-    cmd.args(["-v", "error"]);
-    if let Some(n) = threads {
-        cmd.args(["-threads", &n.to_string()]);
-    }
-    cmd.arg("-i")
+    cmd.args(["-v", "error", "-hwaccel", "auto", "-skip_frame", "nokey"])
+        .arg("-i")
         .arg(src)
         .args(["-vf", &vf, "-frames:v", "1", "-q:v", "5", "-an", "-y"])
         .arg(out)
@@ -468,15 +499,80 @@ fn make_filmstrip(
     }
 }
 
+/// Extract the single frame nearest `at` seconds into `out`, scaled to `tile_w`
+/// wide. `keyframe_only` = the fast path (decode exactly one keyframe);
+/// without it the decoder walks from the previous keyframe to the exact time
+/// (used as a retry for containers where the fast path yields nothing).
+fn extract_frame_at(
+    ffmpeg: &Path,
+    src: &Path,
+    at: f64,
+    tile_w: u32,
+    keyframe_only: bool,
+    out: &Path,
+) -> bool {
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(["-v", "error", "-ss", &format!("{at:.3}")]);
+    if keyframe_only {
+        cmd.args(["-skip_frame", "nokey"]);
+    }
+    cmd.arg("-i")
+        .arg(src)
+        .args([
+            "-frames:v",
+            "1",
+            "-vf",
+            &format!("scale={tile_w}:-2"),
+            "-q:v",
+            "4",
+            "-an",
+            "-y",
+        ])
+        .arg(out)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    matches!(cmd.status(), Ok(s) if s.success())
+        && std::fs::metadata(out).map(|m| m.len() > 0).unwrap_or(false)
+}
+
+/// Read the cached sprite geometry for `src` WITHOUT building anything.
+/// `film` selects the dense Focus filmstrip; false = the lighter hover strip.
+/// Lets the Focus view show a coarse-but-instant strip that the grid hover /
+/// Prepare already built while the dense one renders.
+pub fn sprite_cached(cache_dir: &Path, src: &Path, film: bool) -> Option<(PathBuf, Filmstrip)> {
+    let sprite = if film {
+        filmstrip_path(cache_dir, src)
+    } else {
+        scrubstrip_path(cache_dir, src)
+    };
+    let meta_path = sprite.with_extension("json");
+    if !sprite.exists() {
+        return None;
+    }
+    let txt = std::fs::read_to_string(&meta_path).ok()?;
+    let fs = serde_json::from_str::<Filmstrip>(&txt).ok()?;
+    Some((sprite, fs))
+}
+
 /// Ensure a filmstrip sprite + its geometry sidecar exist for `src`; returns the
 /// sprite path and geometry. Cached (sprite `f<hash>.jpg` + `f<hash>.json`).
+/// `cancel` is polled between frame extractions; `on_progress(done, total)`
+/// fires as frames land.
 pub fn ensure_filmstrip(
     cache_dir: &Path,
     ffmpeg: Option<&Path>,
     src: &Path,
+    cancel: &(dyn Fn() -> bool + Sync),
+    on_progress: &(dyn Fn(u32, u32) + Sync),
 ) -> Result<(PathBuf, Filmstrip), String> {
     ensure_sprite(
-        cache_dir,
         ffmpeg,
         src,
         filmstrip_path(cache_dir, src),
@@ -484,20 +580,21 @@ pub fn ensure_filmstrip(
         FILMSTRIP_TILE_W,
         16,
         100,
-        None,
+        cancel,
+        on_progress,
     )
 }
 
-/// Ensure the lighter grid-hover sprite exists. It samples fewer, smaller frames
-/// and caps ffmpeg threads so sweeping across many large HEVC clips cannot grab
-/// the whole machine.
+/// Ensure the lighter grid-hover sprite exists: fewer, smaller frames, so a
+/// hover pays for its first frames in well under a second of extraction.
 pub fn ensure_scrubstrip(
     cache_dir: &Path,
     ffmpeg: Option<&Path>,
     src: &Path,
+    cancel: &(dyn Fn() -> bool + Sync),
+    on_progress: &(dyn Fn(u32, u32) + Sync),
 ) -> Result<(PathBuf, Filmstrip), String> {
     ensure_sprite(
-        cache_dir,
         ffmpeg,
         src,
         scrubstrip_path(cache_dir, src),
@@ -505,12 +602,13 @@ pub fn ensure_scrubstrip(
         SCRUBSTRIP_TILE_W,
         12,
         40,
-        Some(2),
+        cancel,
+        on_progress,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ensure_sprite(
-    _cache_dir: &Path,
     ffmpeg: Option<&Path>,
     src: &Path,
     sprite: PathBuf,
@@ -518,31 +616,152 @@ fn ensure_sprite(
     tile_w: u32,
     min_frames: u32,
     max_frames: u32,
-    threads: Option<u32>,
+    cancel: &(dyn Fn() -> bool + Sync),
+    on_progress: &(dyn Fn(u32, u32) + Sync),
 ) -> Result<(PathBuf, Filmstrip), String> {
     let meta_path = sprite.with_extension("json");
-    if sprite.exists() && meta_path.exists() {
-        if let Ok(txt) = std::fs::read_to_string(&meta_path) {
-            if let Ok(fs) = serde_json::from_str::<Filmstrip>(&txt) {
-                return Ok((sprite, fs));
-            }
+    let read_cached = || -> Option<Filmstrip> {
+        if !sprite.exists() {
+            return None;
         }
+        let txt = std::fs::read_to_string(&meta_path).ok()?;
+        serde_json::from_str::<Filmstrip>(&txt).ok()
+    };
+    if let Some(fs) = read_cached() {
+        return Ok((sprite, fs));
     }
     let ff = ffmpeg.ok_or("ffmpeg not available")?;
     let duration = probe_duration(ff, src).ok_or("could not read video duration")?;
     // ~1 frame/second, clamped so short clips stay dense and long ones do not
-    // blow up cache or keep ffmpeg busy longer than a preview should.
+    // blow up cache or keep the extractor busy longer than a preview should.
     let count = (duration.round() as u32).clamp(min_frames, max_frames);
     let rows = count.div_ceil(cols);
-    let fps = count as f64 / duration;
-    make_filmstrip(ff, src, &sprite, cols, rows, fps, tile_w, threads)?;
-    let (w, h) = image::image_dimensions(&sprite).map_err(|e| e.to_string())?;
+
+    // One build at a time process-wide; re-check the cache and the cancel token
+    // after the wait (the previous holder may have built this very sprite, or
+    // the hover may have moved on while we queued).
+    let _guard = SPRITE_BUILD_LOCK
+        .lock()
+        .map_err(|_| "sprite lock poisoned".to_string())?;
+    if let Some(fs) = read_cached() {
+        return Ok((sprite, fs));
+    }
+    if cancel() {
+        return Err(SPRITE_CANCELLED.into());
+    }
+
+    // Per-frame JPEGs land in a scratch dir (local temp, not the media SSD),
+    // then composite into the sprite with the `image` crate.
+    let scratch = std::env::temp_dir().join(format!(
+        "foxcull-sprite-{}-{}",
+        std::process::id(),
+        sprite
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("sprite")
+    ));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
+    let cleanup = || {
+        let _ = std::fs::remove_dir_all(&scratch);
+    };
+
+    let next = AtomicU32::new(0);
+    let done = AtomicU32::new(0);
+    let aborted = AtomicBool::new(false);
+    std::thread::scope(|s| {
+        for _ in 0..SPRITE_PARALLEL.min(count) {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                if i >= count || aborted.load(Ordering::Relaxed) {
+                    break;
+                }
+                if cancel() {
+                    aborted.store(true, Ordering::Relaxed);
+                    break;
+                }
+                // Mid-cell timestamps so the first/last frames aren't the (often
+                // black) container edges.
+                let at = (i as f64 + 0.5) * duration / count as f64;
+                let out = scratch.join(format!("{i:03}.jpg"));
+                if !extract_frame_at(ff, src, at, tile_w, true, &out) {
+                    // Odd container / no keyframe found there — decode exactly.
+                    extract_frame_at(ff, src, at, tile_w, false, &out);
+                }
+                let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+                on_progress(d, count);
+            });
+        }
+    });
+    if aborted.load(Ordering::Relaxed) || cancel() {
+        cleanup();
+        return Err(SPRITE_CANCELLED.into());
+    }
+
+    // Composite. All frames of one clip share dimensions (same rotation applied
+    // by ffmpeg each time); the first decoded frame defines the tile box and any
+    // stray mismatch is resized to fit. Missing frames stay black cells.
+    let mut frames: Vec<Option<image::RgbImage>> = Vec::with_capacity(count as usize);
+    let mut tile_dims: Option<(u32, u32)> = None;
+    for i in 0..count {
+        let p = scratch.join(format!("{i:03}.jpg"));
+        match image::open(&p) {
+            Ok(img) => {
+                let rgb = img.to_rgb8();
+                if tile_dims.is_none() {
+                    tile_dims = Some((rgb.width(), rgb.height()));
+                }
+                frames.push(Some(rgb));
+            }
+            Err(_) => frames.push(None),
+        }
+    }
+    let Some((tw, th)) = tile_dims else {
+        // Not one frame came out via seeking — an unseekable container. Fall
+        // back to the single-pass keyframe scan (slow but universal).
+        cleanup();
+        let fps = count as f64 / duration;
+        make_filmstrip_fullscan(ff, src, &sprite, cols, rows, fps, tile_w)?;
+        let (w, h) = image::image_dimensions(&sprite).map_err(|e| e.to_string())?;
+        let fs = Filmstrip {
+            cols,
+            rows,
+            count,
+            tile_w: (w / cols).max(1),
+            tile_h: (h / rows).max(1),
+            duration,
+        };
+        if let Ok(txt) = serde_json::to_string(&fs) {
+            let _ = std::fs::write(&meta_path, txt);
+        }
+        return Ok((sprite, fs));
+    };
+    let mut canvas = image::RgbImage::new(tw * cols, th * rows);
+    for (i, frame) in frames.into_iter().enumerate() {
+        let Some(frame) = frame else { continue };
+        let frame = if frame.dimensions() == (tw, th) {
+            frame
+        } else {
+            image::imageops::resize(&frame, tw, th, image::imageops::FilterType::Triangle)
+        };
+        let x = (i as u32 % cols) * tw;
+        let y = (i as u32 / cols) * th;
+        image::imageops::replace(&mut canvas, &frame, x as i64, y as i64);
+    }
+    cleanup();
+    let file = std::fs::File::create(&sprite).map_err(|e| e.to_string())?;
+    let mut writer = std::io::BufWriter::new(file);
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, 82)
+        .encode_image(&canvas)
+        .map_err(|e| e.to_string())?;
+    std::io::Write::flush(&mut writer).map_err(|e| e.to_string())?;
+    drop(writer);
     let fs = Filmstrip {
         cols,
         rows,
         count,
-        tile_w: (w / cols).max(1),
-        tile_h: (h / rows).max(1),
+        tile_w: tw,
+        tile_h: th,
         duration,
     };
     if let Ok(txt) = serde_json::to_string(&fs) {

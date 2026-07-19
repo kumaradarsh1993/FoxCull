@@ -29,6 +29,14 @@ export interface AppSettings {
   includeSub: boolean;
   liveScrub: boolean;
   videoAutoplay: boolean;
+  /** Game-controller culling (PS5/PS4 pad over Bluetooth/USB). */
+  padEnabled: boolean;
+  /** Controller action-id → button-index overrides; unset actions use the
+   *  defaults in gamepad.svelte.ts. */
+  padBindings: Record<string, number>;
+  /** What the mouse's extra Back/Forward buttons do (action ids). */
+  mouseBack: string;
+  mouseForward: string;
   relatedMode: RelatedMode;
   relatedStrip: boolean;
   deleteMode: DeleteMode;
@@ -52,6 +60,10 @@ const DEFAULTS: AppSettings = {
   includeSub: true,
   liveScrub: false,
   videoAutoplay: false,
+  padEnabled: true,
+  padBindings: {},
+  mouseBack: "viewBack",
+  mouseForward: "viewForward",
   relatedMode: "expanded",
   relatedStrip: true,
   deleteMode: "folder",

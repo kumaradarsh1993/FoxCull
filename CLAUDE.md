@@ -29,6 +29,7 @@ frozen history — never edit it.
 | `docs/ROADMAP.md` | Product direction. |
 | `docs/INSTAGRAM_EXPORT_PLAYBOOK.md` | The IG export pipeline's reasoning. |
 | `STORAGE.md` | On-disk layout of `_FoxCull/` per-drive data. |
+| `RELEASE_NOTES.md` | User-facing notes for the NEXT tag — release.yml prepends it to the release body. Refresh per tag. |
 
 **Convention: everything about FoxCull lives in this repo** — design notes,
 internal discussion, handover docs, roadmap, playbooks. Only secrets stay out

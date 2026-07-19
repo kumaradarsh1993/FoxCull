@@ -8,6 +8,7 @@
     cancelVideoScrubstrip,
   } from "$lib/thumbnail-loader";
   import { settings } from "$lib/settings.svelte";
+  import { activity } from "$lib/activity.svelte";
   import type { FilmstripInfo, MediaItem } from "$lib/types";
 
   let { item, size = 320 }: { item: MediaItem; size?: number } = $props();
@@ -120,9 +121,21 @@
     if (scrubTimer) {
       clearTimeout(scrubTimer);
       scrubTimer = null;
-      if (item.kind === "video") cancelVideoScrubstrip(item.path);
     }
+    // Cancel whether the request is still queued OR already extracting frames
+    // on the backend — leaving the tile must always stop the disk work. (The
+    // old code only cancelled inside the 140 ms debounce window, so any build
+    // that had actually started kept running to completion.)
+    if (isVideo && !strip) cancelVideoScrubstrip(item.path);
   }
+
+  // Live build feedback while the hover strip is being extracted: the backend
+  // streams per-frame progress through the activity store.
+  let scrubJob = $derived.by(() => {
+    if (!isVideo || strip || scrub == null) return null;
+    const j = activity.jobs[`scrub:${item.path}`];
+    return j && j.state === "running" ? j : null;
+  });
 
   function mediaLoaded(e: Event) {
     loaded = true;
@@ -155,6 +168,11 @@
     {#if isVideo && settings.s.liveScrub && scrub != null}
       <span class="scrubRail"><span style="width:{scrub * 100}%"></span></span>
       {#if !strip}<span class="scrubHint" style="left:{scrub * 100}%"></span>{/if}
+      {#if scrubJob}
+        <span class="scrubBuild">
+          {scrubJob.total > 0 ? `scrub ${Math.round((scrubJob.done / scrubJob.total) * 100)}%` : "scrub…"}
+        </span>
+      {/if}
     {/if}
     {#if isVideo}<span class="play">▶</span>{/if}
   {:else if isVideo}
@@ -259,6 +277,20 @@
     transform: translateX(-50%);
     background: var(--accent);
     box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.28);
+    pointer-events: none;
+  }
+  /* Tiny build-progress tag while the hover strip is being extracted. */
+  .scrubBuild {
+    position: absolute;
+    top: 5px;
+    right: 6px;
+    z-index: 3;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.62);
+    color: #fff;
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
     pointer-events: none;
   }
   .play {

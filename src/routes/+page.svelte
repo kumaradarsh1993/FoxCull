@@ -26,6 +26,8 @@
   import TrashPanel from "$lib/components/TrashPanel.svelte";
   import ActivityBar from "$lib/components/ActivityBar.svelte";
   import EditStudio from "$lib/components/EditStudio.svelte";
+  import ControllerPanel from "$lib/components/ControllerPanel.svelte";
+  import { pad, PAD_ACTIONS, buttonName, type PadActionId } from "$lib/gamepad.svelte";
 
   type FlagFilter = "all" | "pick" | "reject" | "unflagged";
   type ViewMode = "grid" | "details" | "loupe";
@@ -150,6 +152,8 @@
   let libInfo = $state<LibraryInfo | null>(null);
   let trashOpen = $state(false);
   let trashItems = $state<TrashItem[]>([]);
+  let controllerOpen = $state(false);
+  let padHelpOpen = $state(false);
   let editOpen = $state(false);
   let treeCollapsed = $state(false);
   // Bumped by the tree's ↻ button to make expanded folders recount their badges.
@@ -1889,16 +1893,84 @@
     if (k === "u") { unset(); return; }
   }
 
-  // Mouse back/forward buttons → a simple Focus⇄grid toggle (no history stack):
-  // Forward (button 4) on a selected shot opens Focus; Back (button 3) from Focus
-  // returns to the grid (which scroll-restores to that shot). preventDefault stops
-  // the webview trying to navigate its history and blanking the single-page app.
+  // ── game-controller culling (PS5/PS4 pad; see gamepad.svelte.ts) ─────────
+  // One dispatcher turns remappable action ids into the SAME functions the
+  // keyboard uses. The mouse's extra buttons route through it too, so both
+  // input surfaces share the mapper in the Controller panel.
+  function handlePadAction(a: PadActionId | string, strength = 1) {
+    if (editOpen) return; // the pad drives the culling views only
+    switch (a) {
+      case "prev": move(-1); break;
+      case "next": move(1); break;
+      case "up": move(navDelta("ArrowUp")); break;
+      case "down": move(navDelta("ArrowDown")); break;
+      case "pick": flag("pick"); break;
+      case "reject": flag("reject"); break;
+      case "clearMarks": unset(); break;
+      case "rate1": case "rate2": case "rate3": case "rate4": case "rate5":
+        rate(Number(a.slice(4)));
+        break;
+      case "playPause":
+        if (viewMode === "loupe" && active?.kind === "video") loupeComp?.togglePlay();
+        break;
+      case "seekBack":
+      case "seekFwd": {
+        const dir = a === "seekFwd" ? 1 : -1;
+        if (viewMode === "loupe" && active?.kind === "video") {
+          // Analog shuttle: a light trigger squeeze nudges ~1s per tick, a full
+          // pull sweeps ~5s per tick (the tick rate lives in gamepad.svelte.ts).
+          loupeComp?.seekBy(dir * (1 + 4 * Math.min(1, Math.max(0, strength))));
+        } else {
+          move(dir * 10); // photos: triggers leaf through the folder fast
+        }
+        break;
+      }
+      case "gridView": setView("grid"); break;
+      case "focusView": if (active) setView("loupe"); break;
+      case "viewBack": if (viewMode === "loupe") setView("grid"); break;
+      case "viewForward": if (viewMode !== "loupe" && active) setView("loupe"); break;
+      case "fullscreen": void toggleFullscreen(); break;
+      case "info": showInfoOverlay = !showInfoOverlay; break;
+      case "help": padHelpOpen = !padHelpOpen; break;
+    }
+  }
+
+  $effect(() => {
+    pad.start((a, strength) => handlePadAction(a, strength));
+    return () => pad.stop();
+  });
+
+  // Toast when a controller joins/leaves, so pairing feedback is visible from
+  // across the room (the whole point of pad culling is TV distance).
+  let padWasConnected = false;
+  $effect(() => {
+    const c = pad.connected;
+    if (c && !padWasConnected) {
+      showUndoToast(`🎮 ${pad.name.replace(/\s*\(.*\)$/, "") || "Controller"} connected — Create/Share shows the button guide`);
+    } else if (!c && padWasConnected) {
+      showUndoToast("🎮 Controller disconnected");
+      padHelpOpen = false;
+    }
+    padWasConnected = c;
+  });
+
+  /** Rows for the button-guide overlay: only actions that have a binding. */
+  let padGuideRows = $derived(
+    PAD_ACTIONS.map((a) => ({ ...a, btn: pad.buttonFor(a.id) })).filter((a) => a.btn >= 0),
+  );
+
+  // Mouse back/forward buttons, remappable in the Controller panel (defaults
+  // keep the original behavior: Back leaves Focus, Forward enters it).
+  // preventDefault stops the webview trying to navigate its history and
+  // blanking the single-page app.
   function onmouseup(e: MouseEvent) {
     if (editOpen) return;
     if (e.button === 3) {
-      if (viewMode === "loupe") { setView("grid"); e.preventDefault(); }
+      handlePadAction(settings.s.mouseBack);
+      e.preventDefault();
     } else if (e.button === 4) {
-      if (viewMode !== "loupe" && active) { setView("loupe"); e.preventDefault(); }
+      handlePadAction(settings.s.mouseForward);
+      e.preventDefault();
     }
   }
 
@@ -2395,6 +2467,11 @@
             <button class="chip" class:on={!settings.s.videoAutoplay} onclick={() => settings.set({ videoAutoplay: false })}>Off</button>
           </div>
         </div>
+        <div class="row"><span>Controller</span>
+          <button class="btn sm" onclick={() => { settingsOpen = false; controllerOpen = true; }} title="Pair a PS5/PS4 controller and map its buttons (mouse extras too)">
+            🎮 {pad.connected ? "Connected — set up…" : "Set up…"}
+          </button>
+        </div>
         <div class="grpHead">Files</div>
         <div class="row"><span>On delete</span>
           <div class="seg">
@@ -2427,6 +2504,28 @@
         onrestore={restoreFromTrash}
         onpurge={purgeFromTrash}
       />
+    {/if}
+
+    {#if controllerOpen}
+      <ControllerPanel onclose={() => (controllerOpen = false)} />
+    {/if}
+
+    <!-- Controller button guide: toggled by the bound "help" action (default
+         Create/Share) so a new player can learn the layout from the couch. -->
+    {#if padHelpOpen}
+      <div class="padGuide" role="dialog" aria-label="Controller buttons">
+        <div class="pgHead">🎮 {pad.name.replace(/\s*\(.*\)$/, "") || "Controller"}</div>
+        {#each ["Navigate", "Mark", "View", "Video"] as g (g)}
+          {@const rows = padGuideRows.filter((r) => r.group === g)}
+          {#if rows.length}
+            <div class="pgGroup">{g}</div>
+            {#each rows as r (r.id)}
+              <div class="pgRow"><span class="pgBtn">{buttonName(r.btn)}</span><span>{r.label}</span></div>
+            {/each}
+          {/if}
+        {/each}
+        <div class="pgFoot">Remap in Settings → Controller</div>
+      </div>
     {/if}
 
     {#if undoToast}
@@ -2544,15 +2643,16 @@
 
 <style>
   .app { position: relative; display: flex; height: 100vh; overflow: hidden; }
-  /* Full-screen mode (F): nothing but the photo stage — every panel, bar and
-     strip disappears and the viewport fills the (OS-fullscreened) window. */
+  /* Full-screen "play mode" (F): every panel and bar disappears EXCEPT the
+     bottom filmstrip — the photo stage plus the strip is the couch/TV review
+     layout (set Filmstrip to Off in Settings for a bare photo). The right-side
+     strip still hides: it competes with the photo for width. */
   .app.fs .tree,
   .app.fs .vsplit,
   .app.fs .hsplit,
   .app.fs .bar,
   .app.fs .banner,
   .app.fs .info,
-  .app.fs .bstrip,
   .app.fs .rstrip,
   .app.fs .pop,
   .app.fs .treeRestore { display: none; }
@@ -2736,6 +2836,54 @@
     font-size: 12.5px;
     box-shadow: var(--shadow);
     pointer-events: none;
+  }
+
+  /* Controller button-guide overlay: readable from TV distance, never blocks
+     input (the pad keeps working while it's up). */
+  .padGuide {
+    position: fixed;
+    right: 26px;
+    top: 62px;
+    z-index: 290;
+    width: 300px;
+    max-height: calc(100vh - 120px);
+    overflow-y: auto;
+    padding: 14px 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
+    box-shadow: var(--shadow);
+    pointer-events: none;
+  }
+  .padGuide .pgHead {
+    font-weight: 700;
+    font-size: 14px;
+    margin-bottom: 4px;
+  }
+  .padGuide .pgGroup {
+    margin: 9px 0 3px;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+  .padGuide .pgRow {
+    display: flex;
+    align-items: baseline;
+    gap: 9px;
+    font-size: 13px;
+    line-height: 1.75;
+  }
+  .padGuide .pgBtn {
+    flex: 0 0 118px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  .padGuide .pgFoot {
+    margin-top: 10px;
+    font-size: 11px;
+    color: var(--text-faint);
   }
 
   .pop { position: absolute; right: 10px; top: 46px; z-index: 30; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 12px; width: 340px; display: flex; flex-direction: column; gap: 10px; }

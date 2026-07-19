@@ -1199,11 +1199,76 @@ pub struct FilmstripInfo {
     pub duration: f64,
 }
 
+fn filmstrip_info(sprite: PathBuf, fs: video::Filmstrip) -> FilmstripInfo {
+    FilmstripInfo {
+        src: sprite.to_string_lossy().to_string(),
+        cols: fs.cols,
+        rows: fs.rows,
+        count: fs.count,
+        tile_w: fs.tile_w,
+        tile_h: fs.tile_h,
+        duration: fs.duration,
+    }
+}
+
+// ── sprite build cancellation ────────────────────────────────────────────────
+// Every filmstrip/scrubstrip request registers a cancel token keyed by
+// `<kind>:<path>`. Hover-away calls `cancel_sprite`; a folder switch calls
+// `cancel_all_sprites`; a NEW request for the same clip supersedes (cancels)
+// the old one. The build polls its token between frame extractions, so a
+// cancelled hover stops burning the disk within a frame or two — the fix for
+// "sweep across a row of clips and the app chews for minutes".
+
+fn sprite_tokens() -> &'static Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>> {
+    static TOKENS: std::sync::OnceLock<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>> =
+        std::sync::OnceLock::new();
+    TOKENS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn new_sprite_token(kind: &str, path: &str) -> Arc<std::sync::atomic::AtomicBool> {
+    let token = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut m = sprite_tokens().lock();
+    if let Some(old) = m.insert(format!("{kind}:{path}"), token.clone()) {
+        old.store(true, Ordering::SeqCst);
+    }
+    token
+}
+
+fn drop_sprite_token(kind: &str, path: &str, token: &Arc<std::sync::atomic::AtomicBool>) {
+    let mut m = sprite_tokens().lock();
+    let key = format!("{kind}:{path}");
+    if m.get(&key).is_some_and(|cur| Arc::ptr_eq(cur, token)) {
+        m.remove(&key);
+    }
+}
+
+/// Cancel the in-flight/queued sprite build for one clip. `kind` is "film"
+/// (Focus filmstrip) or "scrub" (grid hover strip).
+#[tauri::command]
+pub fn cancel_sprite(kind: String, path: String) {
+    let k = if kind == "film" { "f" } else { "s" };
+    if let Some(t) = sprite_tokens().lock().get(&format!("{k}:{path}")) {
+        t.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Cancel every pending sprite build — called on folder switch so the old
+/// folder's hover backlog can't sit on the disk while the new folder loads.
+#[tauri::command]
+pub fn cancel_all_sprites() {
+    let mut m = sprite_tokens().lock();
+    for t in m.values() {
+        t.store(true, Ordering::SeqCst);
+    }
+    m.clear();
+}
+
 /// Build (or fetch the cached) filmstrip sprite for a video — a tiled grid of
 /// frames the loupe shows under the scrub cursor for instant, decode-free
 /// scrubbing. Generated lazily on first open; cached beside the poster on the
 /// SSD. Errors (no ffmpeg, unreadable duration) leave the timeline as a plain
-/// seek bar with no hover preview.
+/// seek bar with no hover preview; a cancelled build surfaces as an error the
+/// frontend silently ignores.
 #[tauri::command]
 pub async fn video_filmstrip(
     app: AppHandle,
@@ -1213,29 +1278,35 @@ pub async fn video_filmstrip(
     let cache_dir = state.cache_dir.lock().clone();
     let ffmpeg = state.ffmpeg.clone();
     let src = PathBuf::from(&path);
+    let token = new_sprite_token("f", &path);
     tauri::async_runtime::spawn_blocking(move || {
-        // First open of a clip extracts ~dozens of frames — can take a few
-        // seconds on long footage, so show an indeterminate activity entry.
         let cached = video::filmstrip_path(&cache_dir, &src).exists();
         let act_id = format!("strip:{}", src.to_string_lossy());
         if !cached {
-            emit_activity(&app, &act_id, "Building video scrub strip", 0, 0, "running");
+            emit_activity(&app, &act_id, "Building scrub filmstrip", 0, 0, "running");
         }
-        let res = video::ensure_filmstrip(&cache_dir, ffmpeg.as_deref(), &src);
-        if !cached {
-            emit_activity(&app, &act_id, "Building video scrub strip", 1, 1, "done");
-        }
-        res.map(|(sprite, fs)| {
-            FilmstripInfo {
-                src: sprite.to_string_lossy().to_string(),
-                cols: fs.cols,
-                rows: fs.rows,
-                count: fs.count,
-                tile_w: fs.tile_w,
-                tile_h: fs.tile_h,
-                duration: fs.duration,
+        let cancel = {
+            let t = token.clone();
+            move || t.load(Ordering::SeqCst)
+        };
+        let progress = |done: u32, total: u32| {
+            if done % 5 == 0 || done == total {
+                emit_activity(
+                    &app,
+                    &act_id,
+                    "Building scrub filmstrip",
+                    done as u64,
+                    total as u64,
+                    "running",
+                );
             }
-        })
+        };
+        let res = video::ensure_filmstrip(&cache_dir, ffmpeg.as_deref(), &src, &cancel, &progress);
+        if !cached {
+            emit_activity(&app, &act_id, "Building scrub filmstrip", 1, 1, "done");
+        }
+        drop_sprite_token("f", &src.to_string_lossy(), &token);
+        res.map(|(sprite, fs)| filmstrip_info(sprite, fs))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1253,28 +1324,44 @@ pub async fn video_scrubstrip(
     let cache_dir = state.cache_dir.lock().clone();
     let ffmpeg = state.ffmpeg.clone();
     let src = PathBuf::from(&path);
+    let token = new_sprite_token("s", &path);
     tauri::async_runtime::spawn_blocking(move || {
         let cached = video::scrubstrip_path(&cache_dir, &src).exists();
         let act_id = format!("scrub:{}", src.to_string_lossy());
         if !cached {
-            emit_activity(&app, &act_id, "Building quick scrub preview", 0, 0, "running");
+            emit_activity(&app, &act_id, "Building hover scrub", 0, 0, "running");
         }
-        let res = video::ensure_scrubstrip(&cache_dir, ffmpeg.as_deref(), &src);
+        let cancel = {
+            let t = token.clone();
+            move || t.load(Ordering::SeqCst)
+        };
+        let progress = |done: u32, total: u32| {
+            if done % 4 == 0 || done == total {
+                emit_activity(&app, &act_id, "Building hover scrub", done as u64, total as u64, "running");
+            }
+        };
+        let res = video::ensure_scrubstrip(&cache_dir, ffmpeg.as_deref(), &src, &cancel, &progress);
         if !cached {
-            emit_activity(&app, &act_id, "Building quick scrub preview", 1, 1, "done");
+            emit_activity(&app, &act_id, "Building hover scrub", 1, 1, "done");
         }
-        res.map(|(sprite, fs)| FilmstripInfo {
-            src: sprite.to_string_lossy().to_string(),
-            cols: fs.cols,
-            rows: fs.rows,
-            count: fs.count,
-            tile_w: fs.tile_w,
-            tile_h: fs.tile_h,
-            duration: fs.duration,
-        })
+        drop_sprite_token("s", &src.to_string_lossy(), &token);
+        res.map(|(sprite, fs)| filmstrip_info(sprite, fs))
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// The hover strip's geometry IF it's already cached — never builds. The Focus
+/// view uses this as an instant coarse scrub layer while the dense filmstrip
+/// renders in the background.
+#[tauri::command]
+pub fn video_scrubstrip_cached(
+    state: State<'_, AppState>,
+    path: String,
+) -> Option<FilmstripInfo> {
+    let cache_dir = state.cache_dir.lock().clone();
+    video::sprite_cached(&cache_dir, Path::new(&path), false)
+        .map(|(sprite, fs)| filmstrip_info(sprite, fs))
 }
 
 /// How many items the background warmer pre-generates per folder. Bounded so a
@@ -1356,9 +1443,25 @@ pub async fn warm_thumbnails(
                 let ok = match kind {
                     // Videos get their grid/strip poster; images and RAW get
                     // the requested-size preview (the RAW path extracts the
-                    // embedded camera JPEG, same as loupe_src).
+                    // embedded camera JPEG, same as loupe_src). Videos only
+                    // reach here via heavy (Prepare), which ALSO pre-builds the
+                    // hover scrub strip — a prepared folder skims instantly,
+                    // Final Cut-style, with zero on-hover work. Keyframe-seek
+                    // extraction keeps this ~seconds per clip; the warm-gen
+                    // check makes a folder switch abandon it mid-strip.
                     Kind::Video => {
-                        video::ensure_poster(&cache_dir, ffmpeg.as_deref(), p).is_ok()
+                        let ok = video::ensure_poster(&cache_dir, ffmpeg.as_deref(), p).is_ok();
+                        if ok {
+                            let cancel = || gen.load(Ordering::SeqCst) != my_gen;
+                            let _ = video::ensure_scrubstrip(
+                                &cache_dir,
+                                ffmpeg.as_deref(),
+                                p,
+                                &cancel,
+                                &|_, _| {},
+                            );
+                        }
+                        ok
                     }
                     kind => thumbs::ensure(&cache_dir, p, *kind, max).is_ok(),
                 };

@@ -53,6 +53,14 @@ export const api = {
     invoke<FilmstripInfo>("video_filmstrip", { path }),
   videoScrubstrip: (path: string) =>
     invoke<FilmstripInfo>("video_scrubstrip", { path }),
+  /** The hover strip IF already cached — never triggers a build. */
+  videoScrubstripCached: (path: string) =>
+    invoke<FilmstripInfo | null>("video_scrubstrip_cached", { path }).catch(() => null),
+  /** Stop an in-flight sprite build ("film" = Focus filmstrip, "scrub" = hover strip). */
+  cancelSprite: (path: string, kind: "film" | "scrub") =>
+    invoke<void>("cancel_sprite", { kind, path }).catch(() => {}),
+  /** Cancel every pending sprite build (folder switch). */
+  cancelAllSprites: () => invoke<void>("cancel_all_sprites").catch(() => {}),
   /** Real capture timestamps (EXIF/creation_time), cached; for sort + grouping. */
   captureDates: (dir: string, paths: string[]) =>
     invoke<{ path: string; captured: number }[]>("capture_dates", { dir, paths }),

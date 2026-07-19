@@ -45,7 +45,13 @@ jobs:
             const channelHeader = isPrerelease
               ? '> Pre-release / nightly build. Not the latest stable.\n\n'
               : '';
-            const body = channelHeader + [
+            // Human-written notes for THIS build: RELEASE_NOTES.md at the repo
+            // root (committed alongside the tagged work) leads the body, so the
+            // release page says what actually changed, not just how to install.
+            const fs = require('fs');
+            let notes = '';
+            try { notes = fs.readFileSync('RELEASE_NOTES.md', 'utf8').trim() + '\n\n---\n\n'; } catch {}
+            const body = channelHeader + notes + [
               `Built from commit ${context.sha}.`,
               '',
               '**Pick your installer:**',

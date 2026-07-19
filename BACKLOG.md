@@ -19,10 +19,12 @@ Priorities: **P0** do next · **P1** high value soon · **P2** scheduled ·
 - [ ] **Thumbs-cache garbage collection + size visibility** (PERF-2): sweep
       unreferenced/stale entries (esp. H.264 proxies), show cache size and a
       Clear button in Settings. Unbounded growth on the user's photo SSD.
-- [ ] **Hardware-accelerated / keyframe-only sprite generation** (PERF-3): add
-      `-hwaccel auto` and sample keyframes instead of full-decode for
-      filmstrip + scrub strips. Biggest single CPU win on the XPS 13; also
-      speeds Prepare and Live Scrub on the Alienware via NVDEC.
+- [x] **Hardware-accelerated / keyframe-only sprite generation** (PERF-3):
+      DONE 2026-07-19, and further than proposed — sprites are now built by
+      per-timestamp keyframe SEEKS (~40 single-keyframe decodes instead of a
+      full decode of the clip), with cancellation, progress events, and a
+      `-hwaccel auto` full-scan fallback for unseekable containers. Proxy
+      builds also decode via `-hwaccel auto` now (NVDEC on the 1070).
 
 ## P1 — high value
 
@@ -93,6 +95,21 @@ Priorities: **P0** do next · **P1** high value soon · **P2** scheduled ·
       long-standing roadmap idea; sits on top of the existing per-clip crop.
 - [ ] Custom Cast receiver for true full-res photo casting (Default Media
       Receiver caps stills ~720–1080p).
+
+## Done (2026-07-19 video-preview rework session)
+
+- [x] PERF-3 (see above): keyframe-seek sprite extraction + cancellation +
+      hwaccel; the single biggest Live Scrub / seek-latency fix.
+- [x] Live Scrub hover builds are cancellable end-to-end (pointer-leave stops
+      the backend mid-build; folder switch cancels ALL sprite work).
+- [x] Prepare also pre-builds video hover scrub strips (posters already were).
+- [x] Focus video: cached poster paints instantly; the seek bar always gets a
+      filmstrip (coarse cached strip first, dense one replaces it); drag-scrub
+      shows a full-canvas sprite frame while the decoder chases; step/shuttle
+      seeks are optimistic + throttled with a trailing accurate seek.
+- [x] PS5/PS4 controller culling: remappable bindings (press-to-bind panel,
+      pairing guide, button-guide overlay), mouse extra-button mapper, and
+      fullscreen "play mode" now keeps the bottom filmstrip.
 
 ## Done (this audit)
 

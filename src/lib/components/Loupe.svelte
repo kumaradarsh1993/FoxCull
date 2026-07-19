@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api } from "$lib/api";
   import { activity } from "$lib/activity.svelte";
-  import { loadThumb } from "$lib/thumbnail-loader";
+  import { loadThumb, loadVideoPoster } from "$lib/thumbnail-loader";
   import { settings } from "$lib/settings.svelte";
   import type { MediaItem, FilmstripInfo, MediaProbe, VideoSegment } from "$lib/types";
 
@@ -78,6 +78,7 @@
   // ── filmstrip scrub state ──
   let strip = $state<FilmstripInfo | null>(null);
   let stripSrc = $derived(strip ? api.fileSrc(strip.src) : null);
+  let posterSrc = $state<string | null>(null); // cached poster: instant first paint
   let preview = $state<number | null>(null); // fraction 0..1 to preview, or null
   let scrubbing = $state(false);
   let trackEl = $state<HTMLDivElement | null>(null);
@@ -86,15 +87,41 @@
   let seekRAF = 0;
   let resumeAfterScrub = false;
   let lastSeekAt = 0;
+  let seekIdleTimer: ReturnType<typeof setTimeout> | undefined;
   const SEEK_THROTTLE_MS = 55;
   const PREVIEW_W = 200;
   let previewH = $derived(
     strip ? Math.round((PREVIEW_W * strip.tile_h) / strip.tile_w) : 0,
   );
 
+  // Full-canvas scrub overlay geometry: the sprite cell keeps the clip's aspect
+  // inside whatever the video stage measures (same approach as Thumb's scrubBox).
+  let stageEl = $state<HTMLDivElement | null>(null);
+  let stageW = $state(1);
+  let stageH = $state(1);
+  $effect(() => {
+    const el = stageEl;
+    if (!el) return;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      stageW = Math.max(1, r.width);
+      stageH = Math.max(1, r.height);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+  let stageFrame = $derived.by(() => {
+    if (!strip) return { w: 0, h: 0 };
+    const aspect = strip.tile_w / Math.max(1, strip.tile_h);
+    const boxAspect = stageW / stageH;
+    if (aspect >= boxAspect) return { w: stageW, h: stageW / aspect };
+    return { w: stageH * aspect, h: stageH };
+  });
+
   $effect(() => {
     const it = item;
-    const liveScrub = settings.s.liveScrub;
     const my = ++epoch;
     failed = false;
     videoErr = false;
@@ -123,6 +150,7 @@
     if (it.kind === "video") {
       curSrc = null;
       vsrc = null;
+      posterSrc = null;
       api.getTrim(it.path).then((t) => {
         if (my === epoch && t) {
           inS = t[0];
@@ -135,16 +163,26 @@
       api.probeMediaInfo(it.path).then((p) => {
         if (my === epoch) probe = p;
       }).catch(() => {});
-      // Build/fetch the scrub filmstrip only when Live Scrub is enabled. Failure
-      // leaves the timeline as a plain seek bar with no frame preview.
-      if (liveScrub) {
-        api
-          .videoFilmstrip(it.path)
-          .then((f) => {
-            if (my === epoch && settings.s.liveScrub) strip = f;
-          })
-          .catch(() => {});
-      }
+      // Poster first: the cached frame paints the stage instantly while the
+      // real <video> element is still opening the file.
+      loadVideoPoster(it.path).then((s) => {
+        if (my === epoch && s) posterSrc = s;
+      });
+      // Scrub filmstrip: ALWAYS built for the active clip (this is what makes
+      // the seek bar previewable and drag-scrub fluid — one clip at a time is
+      // cheap with keyframe-seek extraction). If the lighter hover strip is
+      // already cached (grid hover / Prepare), show it immediately as a coarse
+      // scrub layer while the dense one renders. Failure quietly leaves a
+      // plain seek bar.
+      api.videoScrubstripCached(it.path).then((s) => {
+        if (my === epoch && s && !strip) strip = s;
+      });
+      api
+        .videoFilmstrip(it.path)
+        .then((f) => {
+          if (my === epoch) strip = f;
+        })
+        .catch(() => {});
       api
         .loupeSrc(it.path)
         .then((p) => {
@@ -153,7 +191,11 @@
         .catch(() => {
           if (my === epoch) failed = true;
         });
-      return;
+      // Moving to another item cancels this clip's filmstrip build mid-flight —
+      // flipping quickly through a folder of videos must not stack up builds.
+      return () => {
+        api.cancelSprite(it.path, "film");
+      };
     }
     if (it.kind === "other") {
       curSrc = null;
@@ -222,11 +264,19 @@
   export function seekBy(d: number) {
     if (!vid) return;
     const max = dur || strip?.duration || vid.duration || 0;
-    let t = vid.currentTime + d;
+    if (max <= 0) return;
+    // Optimistic: step from the last COMMANDED position (`cur`), not the
+    // decoder's current frame — holding the key / controller trigger then
+    // shuttles smoothly instead of stalling on each slow HEVC seek. Fast
+    // (keyframe) seeks paint while moving; a trailing accurate seek lands the
+    // exact frame when the presses stop.
+    let t = cur + d;
     if (t < 0) t = 0;
-    if (max > 0 && t > max) t = max;
-    vid.currentTime = t;
+    if (t > max) t = max;
     cur = t;
+    seekTo(t / max);
+    clearTimeout(seekIdleTimer);
+    seekIdleTimer = setTimeout(() => seekTo(t / max, true), 240);
   }
   export function setInPoint() {
     setIn();
@@ -249,7 +299,9 @@
       const now = performance.now();
       if (!final && now - lastSeekAt < SEEK_THROTTLE_MS) return;
       lastSeekAt = now;
-      if ("fastSeek" in vid && typeof vid.fastSeek === "function") {
+      // While MOVING, keyframe-fast seeks keep the picture flowing; the FINAL
+      // seek (drag release / presses stopped) is frame-accurate.
+      if (!final && "fastSeek" in vid && typeof vid.fastSeek === "function") {
         try {
           vid.fastSeek(t);
           return;
@@ -470,12 +522,14 @@
       </div>
     {:else if vsrc}
       <div class="vwrap">
+        <div class="stagewrap" bind:this={stageEl}>
         <!-- svelte-ignore a11y_media_has_caption -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <video
           bind:this={vid}
           src={vsrc}
+          poster={posterSrc ?? undefined}
           autoplay={settings.s.videoAutoplay}
           preload="auto"
           playsinline
@@ -510,6 +564,23 @@
             }
           }}
         ></video>
+        {#if scrubbing && preview != null && strip && stripSrc}
+          <!-- Final Cut-style drag scrub: the sprite frame under the cursor
+               paints the WHOLE stage instantly (decode-free) while the real
+               decoder chases underneath; releasing lands the accurate frame. -->
+          {@const c = cellPos(preview)}
+          <div class="scrubStage">
+            <div
+              class="scrubFrame"
+              style="width:{stageFrame.w}px; height:{stageFrame.h}px;
+                     background-image:url('{stripSrc}');
+                     background-size:{strip.cols * 100}% {strip.rows * 100}%;
+                     background-position:{c.x}% {c.y}%;"
+            ></div>
+            <span class="stageTs">{fmt(preview * (dur || strip.duration))}</span>
+          </div>
+        {/if}
+        </div>
         {#if usingProxy}
           <span class="proxytag" title="The original couldn't decode in-app; you're watching the cached H.264 conversion. Trim still cuts the original.">converted preview</span>
         {/if}
@@ -547,7 +618,7 @@
                 ></button>
               {/each}
               <div class="cursor" style="left:{pct(cur)}%"></div>
-              {#if preview != null && strip && stripSrc}
+              {#if preview != null && !scrubbing && strip && stripSrc}
                 {@const c = cellPos(preview)}
                 <div
                   class="scrubprev"
@@ -688,10 +759,45 @@
     display: flex;
     flex-direction: column;
   }
-  .vwrap video {
+  /* The stage wraps the video so the drag-scrub overlay can cover exactly the
+     picture area (not the transport bar below). */
+  .stagewrap {
+    position: relative;
     flex: 1;
     min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .stagewrap video {
     width: 100%;
+    height: 100%;
+  }
+  .scrubStage {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+    pointer-events: none;
+  }
+  .scrubFrame {
+    background-repeat: no-repeat;
+    background-color: #000;
+  }
+  .scrubStage .stageTs {
+    position: absolute;
+    left: 50%;
+    bottom: 12px;
+    transform: translateX(-50%);
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
   }
   .trim {
     flex: 0 0 auto;

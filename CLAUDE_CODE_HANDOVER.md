@@ -12,6 +12,75 @@ Claude-built `fox-cull` project.
 > **historical record** of names in effect at the time — left as-is for
 > accuracy; don't "fix" them.
 
+## 2026-07-19: Video preview rework + controller culling (v1.1.0-nightly.2, on main)
+
+A remote Fable session did the user-requested deep pass on the video preview
+system (the "Live Scrub sometimes hangs forever / Focus seek stutters"
+complaints), plus the first cut of PS5-controller culling. Everything landed
+directly on `main` per the user's instruction; nightly tag `v1.1.0-nightly.2`.
+
+**The core fix — sprite generation was full-decode.** `ensure_sprite` ran one
+ffmpeg pass with an `fps=` filter, which decodes EVERY frame of the clip to
+keep ~40: a 5-minute 4K60 HEVC Osmo clip meant ~18k frames of software HEVC
+decode per hover strip (minutes on the XPS 13), uncancellable once started, so
+sweeping the cursor across a row of clips stacked several of those up and
+"hung" the disk. Now (`video.rs`):
+
+- Each sampled frame is an independent **keyframe seek** (`-ss` before `-i` +
+  `-skip_frame nokey`, one frame decoded per sample; 2 extractions in parallel,
+  builds serialized process-wide). A strip costs seconds regardless of clip
+  length. Unseekable containers fall back to a single-pass scan that is itself
+  now `-hwaccel auto` + keyframes-only.
+- Builds are **cancellable between frames** and report per-frame progress via
+  the activity events (grid tiles show a tiny "scrub N%" tag). `commands.rs`
+  keeps a token registry: hover-leave cancels that clip's build
+  (`cancel_sprite`), folder switch cancels everything (`cancel_all_sprites`,
+  called from `resetThumbs`), and a re-request supersedes the previous build.
+- **Prepare** (heavy warm) now also pre-builds hover scrub strips for videos,
+  so a prepared folder skims with zero on-hover work. Strip sizes are trivial
+  (hover ~40–120 KB, filmstrip ~0.3–1.2 MB per clip; see STORAGE.md).
+- Poster extraction uses `-skip_frame nokey` (1 decode instead of ~60), and
+  the H.264 **proxy build decodes via `-hwaccel auto`** (NVDEC on the 1070).
+- Tile sizes bumped: filmstrip 160→240 px wide (it now doubles as a
+  full-canvas drag overlay), hover strip 128→160 px.
+
+**Focus playback** (`Loupe.svelte`): cached poster paints the stage instantly
+(`<video poster>`); the seek-bar filmstrip is no longer gated on the Live
+Scrub toggle (one clip at a time is cheap now) and shows the cached hover
+strip as a coarse layer while the dense one builds; switching clips cancels
+the previous build. While DRAG-scrubbing, the sprite frame under the cursor
+paints the whole stage (decode-free, Final Cut-style) with the real decoder
+chasing via throttled `fastSeek`, and release lands a frame-accurate seek.
+`seekBy` (keys `,`/`.`, controller triggers) is optimistic from the last
+commanded position with a trailing accurate seek, so held-repeat shuttles
+instead of stalling per keypress.
+
+**Controller culling** (new `gamepad.svelte.ts`, `ControllerPanel.svelte`):
+Gamepad-API polling with edge detection, hold-to-repeat nav and analog
+trigger shuttle (L2/R2 scale by pressure). Defaults are DualSense-shaped:
+d-pad navigates, ✕ Pick, ○ Reject, △ clear marks, □ play/pause, L1/R1
+grid/Focus, Options fullscreen, Create shows a button-guide overlay. Every
+action is remappable via press-to-bind in Settings → Controller (pairing
+guide included); bindings persist in `padBindings`. The mouse's Back/Forward
+extra buttons route through the same action map (`mouseBack`/`mouseForward`
+settings; defaults preserve the old Focus⇄grid toggle). Fullscreen (F) now
+KEEPS the bottom filmstrip — that's the couch/TV "play mode" the user
+described (Filmstrip Off still gives a bare photo).
+
+**Release plumbing**: `release.yml` prepends `RELEASE_NOTES.md` (repo root)
+to the generated release body when present, so the notes on the release page
+say what actually changed. Keep that file fresh per tag.
+
+Validation: `npm run check` 0/0, `npm run build`, `cargo check`,
+`cargo test --lib` (6 passing) — all green in the session container (Linux;
+webkit deps + a stubbed ffmpeg sidecar like CI).
+
+**Where to continue** — P0s from the audit remain (portable cache keys,
+cache GC/size visibility); candidate follow-ups from this session: NVENC
+*encode* for proxies/exports (PERF-5 second half), a controller-driven rating
+chord (hold a shoulder + d-pad?), and letting the Focus drag overlay upgrade
+to decoded frames when the machine keeps up.
+
 ## 2026-07-18: Holistic audit (branch `claude/fox-cull-audit-kc8iwu`, PR #1)
 
 A separate Claude Code session (running remotely, not this machine) did a

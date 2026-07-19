@@ -47,11 +47,20 @@ Older portable data folder names are not adopted by current builds.
 
 FoxCull uses cache in a few layers:
 
-- Folder open automatically warms grid thumbnails and video poster previews.
+- Folder open automatically warms grid thumbnails (images only).
 - Focus view prefetch keeps nearby full previews warm around the active item.
-- The Prepare button explicitly builds full-size Focus previews/posters for the
-  current folder/filter set.
-- Live Scrub generates low-resolution scrub strips only when enabled/on demand.
+- The Prepare button explicitly builds full-size Focus previews, RAW previews,
+  video posters AND hover scrub strips for the current folder/filter set.
+- Live Scrub builds a small hover strip on demand the first time you linger on
+  a video tile; the Focus view builds a denser filmstrip for its seek bar.
+  Both are extracted by keyframe seeks (a few seconds per clip, cancellable),
+  never a full decode of the footage.
+
+Scrub assets are deliberately tiny relative to the footage: the hover strip is
+roughly 40–120 KB per clip and the Focus filmstrip roughly 0.3–1.2 MB — under
+0.05% of a typical 4K clip's size. All cache entries (thumbs, posters, strips,
+H.264 proxies) are removed when their source file is deleted or moved through
+FoxCull.
 
 The cache is safe to delete; FoxCull will regenerate it. Deleting cache only
 costs time on the next browse/prepare pass.
