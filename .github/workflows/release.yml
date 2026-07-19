@@ -2,7 +2,9 @@
 #
 # Triggers:
 #   - push to a tag matching v* (e.g. `git tag v0.1.0-nightly.1 && git push --tags`)
-#   - manual run from the Actions tab
+#   - manual run from the Actions tab with the `tag` input — creates that tag
+#     at the dispatched commit and releases it (the path remote agent sessions
+#     use, since their git proxy can't push tags)
 #
 # Pipeline (3-job split avoids the tauri-action draft race when run from a matrix):
 #   1. create-release   drafts a GitHub release for the tag (once)
@@ -22,6 +24,14 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Tag to release, e.g. v1.2.0-nightly.4. If it doesn't exist yet it is
+          created at the dispatched commit (remote agent sessions can't push
+          tags through the git proxy — this input is their release path).
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -32,6 +42,7 @@ jobs:
     outputs:
       release_id: ${{ steps.create.outputs.result }}
       is_prerelease: ${{ steps.create.outputs.is_prerelease }}
+      tag_name: ${{ steps.create.outputs.tag_name }}
     steps:
       - uses: actions/checkout@v4
       - name: Create draft release
@@ -39,7 +50,38 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const tag = context.ref.replace('refs/tags/', '');
+            // Tag resolution: a v* tag push carries the tag in the ref; a
+            // manual dispatch takes it from the `tag` input and CREATES the
+            // tag at the dispatched commit if it doesn't exist yet (refs made
+            // with the Actions token don't re-trigger this workflow, so no
+            // double run).
+            let tag;
+            const input = ((context.payload.inputs || {}).tag || '').trim();
+            if (context.ref.startsWith('refs/tags/')) {
+              tag = context.ref.replace('refs/tags/', '');
+            } else if (input) {
+              if (!/^v\d/.test(input)) {
+                core.setFailed(`Tag input must look like v1.2.3[-nightly.N], got "${input}"`);
+                return;
+              }
+              tag = input;
+              try {
+                await github.rest.git.createRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `refs/tags/${tag}`,
+                  sha: context.sha,
+                });
+                core.info(`Created tag ${tag} at ${context.sha}`);
+              } catch (e) {
+                if (e.status === 422) core.info(`Tag ${tag} already exists — releasing it as-is`);
+                else throw e;
+              }
+            } else {
+              core.setFailed('Run from a v* tag push, or fill in the tag input.');
+              return;
+            }
+            core.setOutput('tag_name', tag);
             const isPrerelease = tag.startsWith('nightly-') || /-(nightly|pre|rc|alpha|beta)\b/.test(tag);
             core.setOutput('is_prerelease', String(isPrerelease));
             const channelHeader = isPrerelease
@@ -150,12 +192,15 @@ jobs:
       # named AND embedded as e.g. FoxCull_0.6.0_* instead of the
       # committed base version in the config — no more ambiguous downloads. The
       # committed config keeps the current stable base; this only rewrites it in CI.
-      # Skipped on manual (non-tag) runs so the version never becomes "main".
+      # The tag comes from create-release (real tag push OR the dispatch input),
+      # so it can never be "main".
       - name: Stamp version from tag
-        if: github.ref_type == 'tag'
+        if: needs.create-release.outputs.tag_name != ''
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.create-release.outputs.tag_name }}
         run: |
-          VER="${GITHUB_REF_NAME#v}"
+          VER="${RELEASE_TAG#v}"
           node -e "const fs=require('fs');const p='src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.version='${VER}';fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n');console.log('Stamped tauri.conf.json =>',c.version);"
           # Cargo.toml must carry the same version: the runtime window title is
           # built from CARGO_PKG_VERSION at compile time, so stamping only the
@@ -177,7 +222,7 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
-          $ver = "${{ github.ref_name }}" -replace '^v',''
+          $ver = "${{ needs.create-release.outputs.tag_name }}" -replace '^v',''
           $dir = "foxcull-portable"
           New-Item -ItemType Directory -Force $dir | Out-Null
           Copy-Item src-tauri/target/release/foxcull.exe "$dir/foxcull.exe"
@@ -190,7 +235,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const ver = '${{ github.ref_name }}'.replace(/^v/, '');
+            const ver = '${{ needs.create-release.outputs.tag_name }}'.replace(/^v/, '');
             const name = `foxcull_${ver}_x64_portable.zip`;
             await github.rest.repos.uploadReleaseAsset({
               owner: context.repo.owner,

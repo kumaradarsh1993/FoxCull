@@ -1,4 +1,4 @@
-# FoxCull v1.1.0-nightly.2 — the video preview rework
+# FoxCull v1.1.0-nightly.3 — the video preview rework
 
 **This build reworks the video preview system end to end.** Hover-scrubbing
 over video thumbnails and seeking in the Focus player are the headline: both

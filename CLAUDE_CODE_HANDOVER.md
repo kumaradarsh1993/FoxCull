@@ -12,12 +12,14 @@ Claude-built `fox-cull` project.
 > **historical record** of names in effect at the time — left as-is for
 > accuracy; don't "fix" them.
 
-## 2026-07-19: Video preview rework + controller culling (v1.1.0-nightly.2, on main)
+## 2026-07-19: Video preview rework + controller culling (v1.1.0-nightly.3, on main)
 
 A remote Fable session did the user-requested deep pass on the video preview
 system (the "Live Scrub sometimes hangs forever / Focus seek stutters"
 complaints), plus the first cut of PS5-controller culling. Everything landed
-directly on `main` per the user's instruction; nightly tag `v1.1.0-nightly.2`.
+directly on `main` per the user's instruction; nightly tag `v1.1.0-nightly.3`
+(nightly.2 turned out to already exist on the remote, pointing at old commit
+`3a0e471` — apparently tagged but never documented/released; left untouched).
 
 **The core fix — sprite generation was full-decode.** `ensure_sprite` ran one
 ffmpeg pass with an `fps=` filter, which decodes EVERY frame of the clip to
@@ -69,7 +71,11 @@ described (Filmstrip Off still gives a bare photo).
 
 **Release plumbing**: `release.yml` prepends `RELEASE_NOTES.md` (repo root)
 to the generated release body when present, so the notes on the release page
-say what actually changed. Keep that file fresh per tag.
+say what actually changed — keep that file fresh per tag. It also gained a
+`workflow_dispatch` `tag` input that CREATES the tag at the dispatched commit
+and releases it: remote agent sessions (like this one) can push branches but
+their git proxy 403s tag pushes, so dispatch-with-input is the agent release
+path (this nightly was cut that way).
 
 Validation: `npm run check` 0/0, `npm run build`, `cargo check`,
 `cargo test --lib` (6 passing) — all green in the session container (Linux;
