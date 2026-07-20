@@ -43,6 +43,12 @@ rayon = "1"
 
 parking_lot = "0.12"
 
+# Runtime-load libmpv (the mpv engine) for the experimental native video player
+# (docs/design/libmpv-transplant.md). Loaded via dlopen, NOT linked at build
+# time, so a missing dll just disables the feature — the normal build/CI gains
+# no dependency on mpv.
+libloading = "0.8"
+
 # ── Cast to TV (src/cast.rs) — all three deliberately C-toolchain-free ──────
 # mDNS discovery of Google Cast devices (pure Rust).
 mdns-sd = "0.20"

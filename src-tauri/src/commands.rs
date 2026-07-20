@@ -1207,6 +1207,24 @@ pub async fn video_poster_hires(state: State<'_, AppState>, path: String) -> Res
     .map_err(|e| e.to_string())?
 }
 
+/// M1 probe for the experimental native video player: is `libmpv-2.dll` present
+/// and loadable on this machine? Reports its client API version or the load
+/// error. Creates no window and no player, so it is always safe to call.
+#[tauri::command]
+pub fn native_video_probe() -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        crate::mpv::probe(exe_dir.as_deref())
+    }
+    #[cfg(not(windows))]
+    {
+        Err("native video player is Windows-only for now".into())
+    }
+}
+
 #[derive(Serialize)]
 pub struct FilmstripInfo {
     /// Filesystem path of the sprite JPEG (frontend converts via convertFileSrc).

@@ -4,6 +4,11 @@ mod commands;
 mod config;
 mod log;
 mod media;
+// Native video player (libmpv). Windows-first; the macOS/Linux embedding path
+// is a later milestone (docs/design/libmpv-transplant.md), so keep it off other
+// targets' builds for now.
+#[cfg(windows)]
+mod mpv;
 mod raw;
 mod thumbs;
 mod video;
@@ -137,6 +142,7 @@ pub fn run() {
             commands::loupe_src,
             commands::video_poster,
             commands::video_poster_hires,
+            commands::native_video_probe,
             commands::video_filmstrip,
             commands::video_scrubstrip,
             commands::video_scrubstrip_cached,
