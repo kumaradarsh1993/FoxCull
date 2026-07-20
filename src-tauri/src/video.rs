@@ -168,27 +168,45 @@ pub fn trim(
 /// `image` crate can read) into a JPEG at `out`, scaled to fit a `max` box.
 /// ffmpeg's HEIF demuxer applies the container's rotation (irot/imir), so the
 /// output is upright without us reading EXIF.
+///
+/// The scale MUST go through `-filter_complex`, not `-vf`. Phone HEICs (Samsung,
+/// iPhone) are commonly stored as a *grid* of HEVC tiles, and ffmpeg decodes
+/// those by auto-building a complex filtergraph to stitch the tiles into one
+/// image. A simple `-vf` on top of that fails outright — "Simple and complex
+/// filtering cannot be used together for the same stream" — which is exactly why
+/// tiled HEICs showed a placeholder in the grid and "can't preview this file" in
+/// the loupe while plain JPEGs worked. `-filter_complex` composes with the
+/// tile-stitch graph and is equally fine for single-tile HEIFs.
 pub fn decode_still(ffmpeg: &Path, src: &Path, out: &Path, max: u32) -> Result<(), String> {
-    let vf = format!("scale=w={max}:h={max}:force_original_aspect_ratio=decrease");
+    let fc = format!("scale=w={max}:h={max}:force_original_aspect_ratio=decrease");
     let mut cmd = Command::new(ffmpeg);
     cmd.args(["-v", "error", "-i"])
         .arg(src)
-        .args(["-frames:v", "1", "-vf", &vf, "-q:v", "3", "-y"])
+        .args(["-frames:v", "1", "-filter_complex", &fc, "-q:v", "3", "-y"])
         .arg(out)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let status = cmd.status().map_err(|e| e.to_string())?;
-    if status.success() && out.exists() {
+    // Capture stderr rather than discarding it: a silent `Stdio::null()` here is
+    // what hid the tiled-HEIC filtergraph failure for so long. On failure the
+    // ffmpeg diagnostic goes into the error string (and thus the log).
+    let output = cmd.output().map_err(|e| e.to_string())?;
+    if output.status.success() && out.exists() {
         Ok(())
     } else {
-        Err("ffmpeg could not decode this image".into())
+        let err = String::from_utf8_lossy(&output.stderr);
+        let tail = err.trim();
+        Err(if tail.is_empty() {
+            "ffmpeg could not decode this image".into()
+        } else {
+            format!("ffmpeg could not decode this image: {tail}")
+        })
     }
 }
 

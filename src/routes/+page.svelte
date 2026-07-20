@@ -142,16 +142,40 @@
     // and mDNS discovery is cheap (~3s, non-blocking behind the spinner).
     if (castOpen) void discoverCast();
   }
+  /// The device of the live cast session — kept so navigation can re-cast the
+  /// newly active item to the same TV without the user reopening the menu.
+  let castDevice = $state<CastDevice | null>(null);
+  /// What the TV can actually render. The Default Media Receiver is a Chrome
+  /// page: videos stream as-is (the TV's hardware decodes HEVC natively), but
+  /// still images render in an <img> — which cannot decode HEIC/RAW/TIFF. For
+  /// those, cast the cached Focus preview JPEG (1920px — at or beyond what the
+  /// receiver canvas renders anyway) instead of the original bytes.
+  const CAST_DIRECT_STILL = new Set(["jpg", "jpeg", "jpe", "png", "webp", "gif", "bmp"]);
+  async function castablePath(item: MediaItem): Promise<string> {
+    if (item.kind === "video") return item.path;
+    if (item.kind === "image" && CAST_DIRECT_STILL.has(item.ext.toLowerCase())) return item.path;
+    // RAW / HEIC / TIFF / anything else: the loupe cache is a ready-made JPEG.
+    return await api.loupeSrc(item.path);
+  }
+  async function castTo(item: MediaItem, d: CastDevice) {
+    const path = await castablePath(item);
+    const st = await cast.start(path, d);
+    // Track by the LIBRARY path, not the (possibly cache-file) casted path, so
+    // the follow effect compares against what the user is looking at.
+    castStatus = { ...st, playingPath: item.path };
+  }
   async function startCast(d: CastDevice) {
     if (!active) return;
     try {
-      castStatus = await cast.start(active.path, d);
+      await castTo(active, d);
+      castDevice = d;
       castOpen = false;
     } catch (e) {
       activity.error("cast", `Cast failed (${e})`);
     }
   }
   async function stopCast() {
+    castDevice = null;
     try {
       castStatus = await cast.stop();
     } catch {
@@ -159,6 +183,24 @@
     }
     castOpen = false;
   }
+  // ── cast follows the active item ──────────────────────────────────────────
+  // While a session is live, browsing the library IS the remote control: the
+  // TV shows whatever photo/video is active, photos and videos alike. Debounced
+  // so holding an arrow key across 20 shots sends one LOAD, not 20.
+  let castFollowTimer: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    const it = active;
+    if (!castStatus.connected || !castDevice || !it) return;
+    if (it.path === castStatus.playingPath) return;
+    clearTimeout(castFollowTimer);
+    const d = castDevice;
+    castFollowTimer = setTimeout(() => {
+      // Re-check at fire time — the session may have ended mid-debounce.
+      if (!castStatus.connected || !castDevice) return;
+      castTo(it, d).catch((e) => activity.error("cast", `Cast failed (${e})`));
+    }, 350);
+    return () => clearTimeout(castFollowTimer);
+  });
   let libInfo = $state<LibraryInfo | null>(null);
   let trashOpen = $state(false);
   let trashItems = $state<TrashItem[]>([]);
@@ -1713,9 +1755,24 @@
   async function executeDelete() {
     const paths = await api.listRejected();
     if (!paths.length) return;
+    // A sprite build / warm pass may hold one of these files open — on Windows
+    // that open handle makes the dispose rename fail "in use". Cancel background
+    // work and give the current ffmpeg frame extraction a beat to drain (builds
+    // cancel between frames, ~100-300 ms) before touching the files.
+    api.cancelAllSprites();
+    api.cancelWarm();
+    await new Promise((r) => setTimeout(r, 350));
     // "folder" -> the active drive's _FoxCull/recycle (recoverable in-app Trash);
     // "recycle" → the OS Recycle Bin / Trash.
-    await api.disposeRejected(paths, settings.s.deleteMode);
+    const out = await api.disposeRejected(paths, settings.s.deleteMode);
+    if (out.failed.length) {
+      // Don't fail silently: a locked or permission-denied file stays in the
+      // grid, and the user needs to know why nothing happened to it.
+      activity.error(
+        "delete",
+        `${out.failed.length} file${out.failed.length === 1 ? "" : "s"} couldn't be deleted (still in use?) — try again in a moment`,
+      );
+    }
     // Stay where we were — after the rejected shots vanish, the same index lands
     // on the next surviving photo, not back at the top of the folder.
     if (currentDir) await openFolder(currentDir, { selectIndex: activeIndex });
@@ -2465,7 +2522,7 @@
             class="ico castBtn"
             class:on={castOpen || castStatus.connected}
             onclick={toggleCastMenu}
-            title={castStatus.connected ? `Casting to ${castStatus.deviceName} — click to manage` : "Cast the current photo/video to a TV (Chromecast)"}
+            title={castStatus.connected ? `Casting to ${castStatus.deviceName} — follows as you browse; click to manage` : "Cast to a TV (Chromecast) — the TV then follows whatever photo/video you're on"}
             aria-label="Cast to TV"
           >
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 20h.01"/><path d="M2 16.5a3.5 3.5 0 0 1 3.5 3.5"/><path d="M2 13a7 7 0 0 1 7 7"/><path d="M2 9.5V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-8.5"/></svg>
@@ -2473,7 +2530,7 @@
           {#if castOpen}
             <div class="castMenu">
               {#if castStatus.connected}
-                <div class="castNow">Casting to <strong>{castStatus.deviceName}</strong></div>
+                <div class="castNow">Casting to <strong>{castStatus.deviceName}</strong> — the TV follows as you browse</div>
                 <button class="castRow stop" onclick={() => void stopCast()}>Stop casting</button>
                 <div class="menuSep"></div>
               {/if}

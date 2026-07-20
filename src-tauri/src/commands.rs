@@ -3328,9 +3328,19 @@ fn move_into_recycle(root: &Path, recycle: &Path, src: &Path) -> Result<(String,
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    if std::fs::rename(src, &target).is_err() {
-        std::fs::copy(src, &target).map_err(|e| e.to_string())?;
-        std::fs::remove_file(src).map_err(|e| e.to_string())?;
+    // The recycle folder is ALWAYS on the same volume as the source (it lives at
+    // `<drive-root>/_FoxCull/recycle`, and `src` is validated to sit under that
+    // same drive root). So `rename` is a metadata-only move that's instant even
+    // for a 17 GB clip — and a failure here means the file is *locked* (a preview
+    // or playback still holds it open) or permission-denied, NOT a cross-device
+    // move. The old code fell back to `copy` + `remove_file`, which on a huge
+    // locked file copied gigabytes and then failed the remove anyway — the exact
+    // path that made deleting a big in-use HEVC clip hang the app ("not
+    // responding"). Surface a clear, retryable error instead of copying.
+    if let Err(e) = std::fs::rename(src, &target) {
+        return Err(format!(
+            "file is in use — close its preview/playback and try again ({e})"
+        ));
     }
     let stored = target
         .strip_prefix(recycle)
@@ -3344,22 +3354,27 @@ fn move_into_recycle(root: &Path, recycle: &Path, src: &Path) -> Result<(String,
 /// "folder" (move into the active drive's `_FoxCull/recycle`, tracked by the
 /// in-app Trash so it can be previewed, restored or purged). Drops catalog
 /// decision rows for disposed files; records folder-mode deletes in `trash`.
+///
+/// ASYNC deliberately: synchronous commands run on the main thread, and this one
+/// touches the filesystem per file — when a huge in-use clip made the old
+/// copy-fallback grind for minutes, the whole window went "not responding".
+/// Async keeps the UI alive no matter how slow a dispose turns out to be.
 #[tauri::command]
-pub fn dispose_rejected(
+pub async fn dispose_rejected(
     state: State<'_, AppState>,
     catalog: State<'_, Catalog>,
     paths: Vec<String>,
     mode: String,
-) -> TrashOutcome {
+) -> Result<TrashOutcome, String> {
     let root = state.root.lock().clone();
     let root_canon = match canonical_active_root(&root) {
         Ok(r) => r,
         Err(e) => {
-            return TrashOutcome {
+            return Ok(TrashOutcome {
                 deleted: 0,
                 failed: paths,
                 errors: vec![e],
-            }
+            })
         }
     };
     let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
@@ -3415,11 +3430,11 @@ pub fn dispose_rejected(
     if !trash_rows.is_empty() {
         let _ = catalog.add_trash_many(&trash_rows);
     }
-    TrashOutcome {
+    Ok(TrashOutcome {
         deleted,
         failed,
         errors,
-    }
+    })
 }
 
 // ── in-app Trash (per-drive recycle folder) ─────────────────────────────────

@@ -12,6 +12,30 @@ Claude-built `fox-cull` project.
 > **historical record** of names in effect at the time — left as-is for
 > accuracy; don't "fix" them.
 
+## 2026-07-20: HEIC fix, delete-freeze fix, cast follow-mode (local, unpushed — owner is batching)
+
+Base-machine session, post-nightly.4 live testing by the owner. Committed
+LOCALLY only — the owner wants further fixes batched before anything goes
+online. Full module-level detail: `docs/changes/2026-07-20-heic-delete-cast.md`
+(the first entry of the now-mandatory per-push change ledger — see CLAUDE.md).
+New: `docs/DECISIONS.md` (ADR log; HEIC decode strategy + cast quality).
+
+- **HEIC decode fixed**: tiled phone HEICs failed in `decode_still` (`-vf` vs
+  the auto-inserted tile-stitch complex filtergraph) → `-filter_complex`, and
+  ffmpeg stderr is no longer swallowed. Verified against the owner's real
+  Samsung HEICs with the shipped ffmpeg binary.
+- **Delete can't freeze the app**: no more copy-fallback for in-use files,
+  `dispose_rejected` is async (off the main thread), background sprite/warm
+  work is cancelled before disposing, failures surface in the activity chip.
+- **Cast follows browsing**: one session, the TV mirrors the active
+  photo/video (debounced); HEIC/RAW cast their 1920px loupe JPEG (the Default
+  Media Receiver can't decode them raw).
+- **⚠ OPEN — do not "fix" without owner sign-off**: the Focus filmstrip
+  builds unconditionally, ignoring the Live Scrub toggle (nightly.3
+  regression; brutal on the owner's HDD library). Complete RCA + agreed-scope
+  fix plan: `.rca-live-scrub.md` at repo root. The owner is testing on SSD vs
+  HDD and will confirm the plan.
+
 ## 2026-07-19 (later session): UX/UI audit + Look-panel overhaul (v1.1.0-nightly.4, on main)
 
 Same remote Fable session, second pass at the user's request: an

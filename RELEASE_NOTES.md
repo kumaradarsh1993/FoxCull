@@ -1,50 +1,33 @@
-# FoxCull v1.1.0-nightly.4 — the UX & Looks pass
+# FoxCull v1.1.0-nightly.5 — HEIC fixed, safe deletes, cast that follows you
 
-A full independent audit of every button, menu, shortcut, and panel — then
-the overhaul. (The video preview rework from nightly.3 is included too if
-you're jumping straight here.)
+## HEIC photos work now
 
-## Feels-native fixes
+- **Phone HEIC photos show and open.** Samsung/iPhone `.heic` files were
+  showing a grey "HEIC" tile in the grid and "can't preview this file" in
+  Focus, while JPEGs worked fine. The cause: phone HEICs are stored as a *grid
+  of tiles*, and the decode step used a filter that can't sit on top of the
+  tile-stitching ffmpeg does to reassemble them — it failed before producing
+  anything. Fixed; full-res HEIC now decodes, scales, and rotates correctly
+  everywhere. No Windows codec packs involved or needed — HEIC is handled
+  entirely inside FoxCull.
+- When an image genuinely can't be decoded, the reason now lands in the log
+  instead of being swallowed — the next such bug is a one-look diagnosis.
 
-- **Menus finally behave**: every toolbar popover (Settings, Filters,
-  Arrange, Clear, Cast) and the Details Columns menu now close when you
-  click anywhere else or press Esc — no more re-clicking the button to make
-  a menu go away.
-- **Press `?` for the shortcut guide** — every key, grouped (navigate,
-  views, culling, video, files, mouse & controller). Tooltips on the main
-  buttons now show their key too.
-- Right-click works in the **Details list** now (same menu as the grid),
-  keyboard focus is visible when tabbing, empty states offer a one-click
-  **Clear filters**, and a handful of glyph/consistency papercuts are gone.
+## Deletes can't freeze the app anymore
 
-## Progress bars you can trust
+- Deleting a huge clip that something was still reading (a preview build, a
+  playing video) used to grind the whole app into "not responding" — the
+  fallback quietly copied the entire multi-GB file and then failed anyway.
+  Now: background work is cancelled first, the delete runs off the UI thread,
+  and if a file is still locked you get a clear "couldn't delete — still in
+  use?" notice instead of a frozen window.
 
-- Background jobs in the activity chip now show a **time estimate**
-  (`124 / 800 · ~4m 30s`) computed from the actual observed rate — it only
-  appears once there's enough data to be meaningful, and never on jobs whose
-  length genuinely isn't knowable.
-- **Prepare** now processes photos first, then videos, and estimates each
-  phase separately — so preparing a mixed folder says ~20 minutes when it
-  will take ~20 minutes, instead of extrapolating a photo-speed fantasy.
-  Its tooltip also finally says what it does now (full previews + video
-  posters + hover scrub strips).
+## Casting follows you now
 
-## Looks that actually look like something
-
-The Edit studio's Look panel was overhauled end to end:
-
-- **Sliders have real impact now.** Warmth and split-tone were
-  mathematically too timid — a full-range warmth drag only shifted color
-  ~20%; presets built on tiny values barely registered. Both were
-  strengthened in the live preview *and* the export filters together, so
-  what you see is exactly what renders.
-- **12 researched presets in collapsible groups**: Vlog & Portrait (Warm
-  Portrait, Soft Skin, Golden Hour) · Drone & Landscape (Vivid Landscape,
-  Orange & Teal) · Black & White (Mono, Noir) · Cinematic (Teal & Orange,
-  The Batman, Moody Film) · Clean & Correction (Osmo Clean, and a new
-  **De-Log Boost** for flat/log footage). Every preset is clearly visible at
-  default intensity; the Intensity slider (0–150%) scales them all.
-- Clear active-preset highlight, a "Reset look" button, and per-slider
-  double-click reset as before.
-- Heads-up: **Sharpen** applies on export only (no live preview yet) — it's
-  the one slider without instant feedback.
+- **Start casting once — the TV then shows whatever you're on.** Move through
+  photos and videos with the arrow keys and the TV keeps up (small debounce so
+  holding a key doesn't spam the TV). Photos and videos both, one session.
+- **HEIC and RAW cast correctly** (previously the TV got a format it can't
+  render and showed nothing) — they cast their high-res preview instead.
+- Videos still stream the untouched original file — your 4K60 HEVC plays at
+  full native quality via the TV's own decoder.

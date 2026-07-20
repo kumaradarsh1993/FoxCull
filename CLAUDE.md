@@ -30,6 +30,8 @@ frozen history — never edit it.
 | `docs/INSTAGRAM_EXPORT_PLAYBOOK.md` | The IG export pipeline's reasoning. |
 | `STORAGE.md` | On-disk layout of `_FoxCull/` per-drive data. |
 | `RELEASE_NOTES.md` | User-facing notes for the NEXT tag — release.yml prepends it to the release body. Refresh per tag. |
+| `docs/changes/` | **Per-push change ledger (L2).** One file per push — see "Per-push change ledger" below. |
+| `docs/DECISIONS.md` | ADR-lite log of standing technical decisions + reasoning. Read before re-litigating one. |
 
 **Convention: everything about FoxCull lives in this repo** — design notes,
 internal discussion, handover docs, roadmap, playbooks. Only secrets stay out
@@ -121,6 +123,13 @@ loads, ffmpeg fan-out is throttled (probe queue = 4). The audit
 - **Single-writer per repo** (workspace rule): one agent/machine on this repo
   at a time. `git fetch` + reconcile with `origin/main` before any work;
   commit code AND docs and push at session end.
+- **Per-push change ledger (owner-mandated, 2026-07-20).** Every push adds
+  `docs/changes/YYYY-MM-DD-<slug>.md` covering, at module level: *Intent* ·
+  *Modules touched* (file → level: logic / architecture / UX / process — and
+  what changed, one row each) · *Behavior changes* · *Risks/compat* ·
+  *Verification actually run*. Release notes stay user-prose; the ledger is
+  the L2 traceability layer that lets an independent agent see what moved
+  without diffing. Exemplar: `docs/changes/2026-07-20-heic-delete-cast.md`.
 - Work directly on `main` — pushing ships nothing (releases are tag-driven).
   Branches/PRs only for isolated independent lines (e.g. audit PR #1).
 - **Release discipline:** nightly = tag `v*-nightly.N` → CI → prerelease
