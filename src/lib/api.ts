@@ -50,6 +50,18 @@ export const api = {
   videoPoster: (path: string) => invoke<string>("video_poster", { path }),
   /** Sharp ~1280px poster for Focus view (grid uses videoPoster's 480px). */
   videoPosterHires: (path: string) => invoke<string>("video_poster_hires", { path }),
+
+  // ── experimental native video player (libmpv over a child HWND) ──
+  /** Is libmpv present/loadable on this machine? Returns a version string. */
+  nativeVideoProbe: () => invoke<string>("native_video_probe"),
+  /** Start (or reuse) the native player over the given PHYSICAL-px client rect. */
+  nativeVideoStart: (path: string, x: number, y: number, w: number, h: number) =>
+    invoke<string>("native_video_start", { path, x, y, w, h }),
+  nativeVideoSetRect: (x: number, y: number, w: number, h: number) =>
+    invoke("native_video_set_rect", { x, y, w, h }).catch(() => {}),
+  nativeVideoCommand: (cmd: string) =>
+    invoke("native_video_command", { cmd }).catch(() => {}),
+  nativeVideoStop: () => invoke("native_video_stop").catch(() => {}),
   /** Tiled sprite of frames for decode-free scrubbing (built lazily, cached). */
   videoFilmstrip: (path: string) =>
     invoke<FilmstripInfo>("video_filmstrip", { path }),

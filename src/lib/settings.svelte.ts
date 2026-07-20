@@ -40,6 +40,10 @@ export interface AppSettings {
   /** Collapse the video transport to a thin hover-to-expand line (vs a pinned
    *  always-visible bar). Keeps the picture edge-to-edge in Focus/full-screen. */
   minimalVideoBar: boolean;
+  /** EXPERIMENTAL: play Focus-view video through the native libmpv surface
+   *  (butter-smooth 4K60 / frame-accurate scrub) instead of the <video> element.
+   *  Windows-only; falls back to <video> if libmpv is unavailable. */
+  experimentalNativeVideo: boolean;
   /** Game-controller culling (PS5/PS4 pad over Bluetooth/USB). */
   padEnabled: boolean;
   /** Controller action-id → button-index overrides; unset actions use the
@@ -73,6 +77,7 @@ const DEFAULTS: AppSettings = {
   scrubPrefetch: false,
   videoAutoplay: false,
   minimalVideoBar: true,
+  experimentalNativeVideo: false,
   padEnabled: true,
   padBindings: {},
   mouseBack: "viewBack",

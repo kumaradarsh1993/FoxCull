@@ -77,6 +77,22 @@ see") picks between these from real observation rather than guesswork.
 `mpv_command_string` (loadfile, seek), `mpv_set_property_string` (pause),
 `mpv_terminate_destroy`. No render-context API needed for `--wid` embedding.
 
+## Local build note (important, discovered 2026-07-21)
+
+`tauri dev` had **never linked** on the local windows-gnu toolchain: the lib's
+`crate-type` included `cdylib`, and GNU ld auto-exports every symbol of a
+cdylib — the full Tauri app has ~165k, far past GNU ld's **65k DLL
+export-ordinal limit** (the same limit that blocks `cargo test` locally, per the
+workspace CLAUDE.md). The team only ever built via CI (MSVC, no limit), so this
+was latent. Fix on this branch: `crate-type = ["rlib"]` — the desktop **binary**
+links the lib as an rlib and doesn't hit the limit; `cdylib`/`staticlib` were
+mobile-only and unused. Desktop CI is unaffected (it builds the binary). This is
+what makes the local test loop for M2 possible at all.
+
+Corollary for FFI here: keep native Win32 usage **hand-declared** (as `mpv.rs`
+does for `user32`) rather than pulling `windows-sys`/`windows` features — those
+add ~100k exported symbols and, if the cdylib ever comes back, re-trip the limit.
+
 ## Open questions / risks
 
 - HEVC hwdec path on the two real machines (GTX 1070 → d3d11va/nvdec). Verify

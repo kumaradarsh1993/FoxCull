@@ -2784,6 +2784,12 @@
             <button class="chip" class:on={!settings.s.minimalVideoBar} onclick={() => settings.set({ minimalVideoBar: false })}>Off</button>
           </div>
         </div>
+        <div class="row"><span>Native video (experimental)</span>
+          <div class="seg" title="Play Focus-view video through the native libmpv engine for butter-smooth 4K60 and frame-accurate scrub. Windows-only; work in progress — falls back to the built-in player if unavailable.">
+            <button class="chip" class:on={settings.s.experimentalNativeVideo} onclick={() => settings.set({ experimentalNativeVideo: true })}>On</button>
+            <button class="chip" class:on={!settings.s.experimentalNativeVideo} onclick={() => settings.set({ experimentalNativeVideo: false })}>Off</button>
+          </div>
+        </div>
         <div class="row"><span>Controller</span>
           <button class="btn sm" onclick={() => { settingsOpen = false; controllerOpen = true; }} title="Pair a PS5/PS4 controller and map its buttons (mouse extras too)">
             🎮 {pad.connected ? "Connected — set up…" : "Set up…"}

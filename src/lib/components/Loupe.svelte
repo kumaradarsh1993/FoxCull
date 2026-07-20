@@ -143,6 +143,61 @@
     bottomHover = false;
   }
 
+  // ── experimental native (libmpv) surface — M2 probe ───────────────────────
+  // When the setting is on and we're on a video, spin up the native player over
+  // the stage rect and let it play. This is the compositing probe: it tells us
+  // whether the native surface renders over the webview and where our overlays
+  // land relative to it. The <video> element is muted meanwhile to avoid double
+  // audio. All failures are swallowed → the built-in player still works.
+  let nativeVideo = $derived(settings.s.experimentalNativeVideo);
+  function nativeRect(): { x: number; y: number; w: number; h: number } | null {
+    const el = stageEl;
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    return {
+      x: Math.round(r.left * dpr),
+      y: Math.round(r.top * dpr),
+      w: Math.round(r.width * dpr),
+      h: Math.round(r.height * dpr),
+    };
+  }
+  // Start/reload: runs when the mode toggles or the item changes (NOT on
+  // resize) so it never restarts playback mid-view. The backend reuses a live
+  // player, just loading the new clip.
+  $effect(() => {
+    const on = nativeVideo;
+    const it = item;
+    if (!on || !it || it.kind !== "video" || !stageEl) return;
+    const rect = nativeRect();
+    if (!rect) return;
+    const my = epoch;
+    api
+      .nativeVideoStart(it.path, rect.x, rect.y, rect.w, rect.h)
+      .then(() => {
+        if (my === epoch) api.nativeVideoCommand("set pause no");
+      })
+      .catch((e) => console.error("native video start:", e));
+  });
+  // Reposition only: follows stage size/layout changes without reloading.
+  $effect(() => {
+    const on = nativeVideo;
+    const it = item;
+    void stageW;
+    void stageH;
+    if (!on || !it || it.kind !== "video" || !stageEl) return;
+    const rect = nativeRect();
+    if (rect) api.nativeVideoSetRect(rect.x, rect.y, rect.w, rect.h);
+  });
+  // Tear the native surface down when leaving native mode, leaving video, or
+  // unmounting — so it never lingers over the grid/other items.
+  $effect(() => {
+    if (!nativeVideo || !item || item.kind !== "video") api.nativeVideoStop();
+  });
+  $effect(() => () => {
+    api.nativeVideoStop();
+  });
+
   // Full-canvas scrub overlay geometry: the sprite cell keeps the clip's aspect
   // inside whatever the video stage measures (same approach as Thumb's scrubBox).
   let stageEl = $state<HTMLDivElement | null>(null);
@@ -633,7 +688,8 @@
           bind:this={vid}
           src={vsrc}
           poster={posterSrc ?? undefined}
-          autoplay={settings.s.videoAutoplay}
+          autoplay={settings.s.videoAutoplay && !nativeVideo}
+          muted={nativeVideo}
           preload="auto"
           playsinline
           onclick={togglePlay}

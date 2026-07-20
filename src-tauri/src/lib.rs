@@ -120,6 +120,10 @@ pub fn run() {
             // the empty slots.
             app.manage(cast::CastState::default());
 
+            // Experimental native video player state (Windows only).
+            #[cfg(windows)]
+            app.manage(mpv::NativeVideoState::default());
+
             // Title carries the exact build (stable or nightly) so the user can
             // always tell which version they're testing at a glance.
             if let Some(win) = app.get_webview_window("main") {
@@ -143,6 +147,10 @@ pub fn run() {
             commands::video_poster,
             commands::video_poster_hires,
             commands::native_video_probe,
+            commands::native_video_start,
+            commands::native_video_set_rect,
+            commands::native_video_command,
+            commands::native_video_stop,
             commands::video_filmstrip,
             commands::video_scrubstrip,
             commands::video_scrubstrip_cached,

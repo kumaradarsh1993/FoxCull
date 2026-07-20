@@ -1225,6 +1225,94 @@ pub fn native_video_probe() -> Result<String, String> {
     }
 }
 
+// ── experimental native video player (libmpv over a child HWND) — M2 ──────────
+// Geometry (x,y,w,h) is in PHYSICAL client-area pixels (the frontend multiplies
+// its CSS stage rect by devicePixelRatio). Start reuses a live player (just
+// reloads + repositions) so flipping between clips doesn't recreate the window.
+
+#[cfg(windows)]
+#[tauri::command]
+pub fn native_video_start(
+    window: tauri::WebviewWindow,
+    state: State<'_, crate::mpv::NativeVideoState>,
+    path: String,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) -> Result<String, String> {
+    let parent = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let dll = crate::mpv::resolve_dll(exe_dir.as_deref())?;
+    let src = PathBuf::from(&path);
+    let mut guard = state.0.lock();
+    match guard.as_ref() {
+        Some(p) => {
+            p.set_rect(x, y, w, h);
+            p.set_visible(true);
+            p.load(&src)?;
+        }
+        None => {
+            *guard = Some(crate::mpv::NativePlayer::start(&dll, parent, &src, x, y, w, h)?);
+        }
+    }
+    Ok("ok".into())
+}
+
+#[cfg(windows)]
+#[tauri::command]
+pub fn native_video_set_rect(
+    state: State<'_, crate::mpv::NativeVideoState>,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) {
+    if let Some(p) = state.0.lock().as_ref() {
+        p.set_rect(x, y, w, h);
+    }
+}
+
+#[cfg(windows)]
+#[tauri::command]
+pub fn native_video_command(
+    state: State<'_, crate::mpv::NativeVideoState>,
+    cmd: String,
+) -> Result<(), String> {
+    match state.0.lock().as_ref() {
+        Some(p) => p.command(&cmd),
+        None => Err("no native player".into()),
+    }
+}
+
+#[cfg(windows)]
+#[tauri::command]
+pub fn native_video_stop(state: State<'_, crate::mpv::NativeVideoState>) {
+    // Dropping the player tears down mpv then its window.
+    *state.0.lock() = None;
+}
+
+// Non-Windows stubs so the command names exist for the single invoke_handler
+// list and the frontend can call them harmlessly (extra args are ignored).
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn native_video_start() -> Result<String, String> {
+    Err("native video player is Windows-only for now".into())
+}
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn native_video_set_rect() {}
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn native_video_command() -> Result<(), String> {
+    Err("native video player is Windows-only for now".into())
+}
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn native_video_stop() {}
+
 #[derive(Serialize)]
 pub struct FilmstripInfo {
     /// Filesystem path of the sprite JPEG (frontend converts via convertFileSrc).

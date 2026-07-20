@@ -235,3 +235,183 @@ impl Drop for Mpv {
         }
     }
 }
+
+// ── native child window + player orchestration (M2) ──────────────────────────
+// Win32 windowing is hand-declared (4 user32 functions) rather than pulled from
+// the `windows-sys` crate ON PURPOSE: that crate's WindowsAndMessaging feature
+// adds ~100k public symbols, and our cdylib auto-exports all of them, blowing
+// past GNU ld's 65k DLL export-ordinal limit on the local toolchain (see the
+// workspace CLAUDE.md). `user32` is already linked; this adds no symbol bloat.
+type HWND = *mut c_void;
+
+const WS_CHILD: u32 = 0x4000_0000;
+const WS_VISIBLE: u32 = 0x1000_0000;
+const WS_CLIPSIBLINGS: u32 = 0x0400_0000;
+const SWP_NOZORDER: u32 = 0x0004;
+const SWP_NOACTIVATE: u32 = 0x0010;
+const SW_HIDE: i32 = 0;
+const SW_SHOW: i32 = 5;
+
+#[link(name = "user32")]
+extern "system" {
+    fn CreateWindowExW(
+        ex_style: u32,
+        class_name: *const u16,
+        window_name: *const u16,
+        style: u32,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        parent: HWND,
+        menu: *mut c_void,
+        instance: *mut c_void,
+        param: *const c_void,
+    ) -> HWND;
+    fn DestroyWindow(hwnd: HWND) -> i32;
+    fn SetWindowPos(
+        hwnd: HWND,
+        insert_after: HWND,
+        x: i32,
+        y: i32,
+        cx: i32,
+        cy: i32,
+        flags: u32,
+    ) -> i32;
+    fn ShowWindow(hwnd: HWND, cmd: i32) -> i32;
+}
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Resolve the first usable libmpv dll path, or an error listing what we tried.
+pub fn resolve_dll(exe_dir: Option<&Path>) -> Result<PathBuf, String> {
+    for cand in dll_candidates(exe_dir) {
+        if cand.is_absolute() && cand.exists() {
+            return Ok(cand);
+        }
+    }
+    // Fall back to the bare name and let the OS loader search (may still work).
+    Ok(PathBuf::from("libmpv-2.dll"))
+}
+
+/// Create a borderless child window (the STATIC system class — no class
+/// registration needed) inside `parent`, at client-area pixel rect (x,y,w,h).
+/// Returns the child HWND as an isize. mpv draws into this via `--wid`.
+fn create_child(parent: isize, x: i32, y: i32, w: i32, h: i32) -> Result<isize, String> {
+    let class = wide("STATIC");
+    let name = wide("");
+    // SAFETY: standard Win32 child-window creation with a system class.
+    let hwnd = unsafe {
+        CreateWindowExW(
+            0,
+            class.as_ptr(),
+            name.as_ptr(),
+            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+            x,
+            y,
+            w.max(1),
+            h.max(1),
+            parent as HWND,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        )
+    };
+    if hwnd.is_null() {
+        return Err("CreateWindowExW returned null".into());
+    }
+    Ok(hwnd as isize)
+}
+
+/// Owns the child window and destroys it on drop. Declared AFTER `mpv` in
+/// `NativePlayer` so field-drop order tears mpv down first (it stops rendering),
+/// then removes the window it was drawing into.
+struct WindowGuard(isize);
+impl Drop for WindowGuard {
+    fn drop(&mut self) {
+        // SAFETY: destroy the child window exactly once.
+        unsafe { DestroyWindow(self.0 as HWND) };
+    }
+}
+
+/// A live native player: the mpv instance plus the child window it renders into.
+/// Held in managed state so it outlives individual commands (dropping it would
+/// tear down playback).
+pub struct NativePlayer {
+    mpv: Mpv,
+    win: WindowGuard, // drops after `mpv` — see WindowGuard
+}
+
+// The child HWND is only touched from Tauri command threads, serialised by the
+// state mutex; the raw handle isn't auto-Send, so assert it.
+unsafe impl Send for NativePlayer {}
+
+impl NativePlayer {
+    /// Create the child window under `parent`, embed mpv, and load `path`.
+    pub fn start(
+        dll: &Path,
+        parent: isize,
+        path: &Path,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    ) -> Result<Self, String> {
+        let hwnd = create_child(parent, x, y, w, h)?;
+        let mpv = match Mpv::embed(dll, hwnd as i64) {
+            Ok(m) => m,
+            Err(e) => {
+                // SAFETY: undo the child window we just created on failure.
+                unsafe { DestroyWindow(hwnd as HWND) };
+                return Err(e);
+            }
+        };
+        mpv.loadfile(path)?;
+        Ok(NativePlayer {
+            mpv,
+            win: WindowGuard(hwnd),
+        })
+    }
+
+    pub fn load(&self, path: &Path) -> Result<(), String> {
+        self.mpv.loadfile(path)
+    }
+
+    pub fn set_rect(&self, x: i32, y: i32, w: i32, h: i32) {
+        // SAFETY: reposition the child within its parent's client area.
+        unsafe {
+            SetWindowPos(
+                self.win.0 as HWND,
+                std::ptr::null_mut(),
+                x,
+                y,
+                w.max(1),
+                h.max(1),
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
+
+    pub fn set_visible(&self, visible: bool) {
+        // SAFETY: show/hide the child window.
+        unsafe { ShowWindow(self.win.0 as HWND, if visible { SW_SHOW } else { SW_HIDE }) };
+    }
+
+    pub fn set_paused(&self, paused: bool) -> Result<(), String> {
+        self.mpv.set_paused(paused)
+    }
+
+    pub fn seek_abs(&self, secs: f64) -> Result<(), String> {
+        self.mpv.seek_abs(secs)
+    }
+
+    pub fn command(&self, cmd: &str) -> Result<(), String> {
+        self.mpv.command(cmd)
+    }
+}
+
+/// Managed Tauri state holding the (at most one) live native player.
+#[derive(Default)]
+pub struct NativeVideoState(pub parking_lot::Mutex<Option<NativePlayer>>);

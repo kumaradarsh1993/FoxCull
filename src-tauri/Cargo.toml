@@ -7,7 +7,12 @@ edition = "2021"
 
 [lib]
 name = "foxcull_codex_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Desktop-only app: the binary links the lib as an rlib. The `staticlib`/`cdylib`
+# types are only for the (unused) mobile targets, and the cdylib's auto-exported
+# symbol table (~165k) blows past GNU ld's 65k DLL export-ordinal limit, which is
+# why `tauri dev` never linked on the local windows-gnu toolchain. Dropping them
+# lets the local build link; desktop CI (MSVC) is unaffected — it builds the bin.
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
