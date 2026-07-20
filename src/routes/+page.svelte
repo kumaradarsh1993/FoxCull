@@ -1813,25 +1813,38 @@
   }
 
   // ── full-screen mode (F): just the photo, everything else gone ───────────
-  let fullscreen = $state(false);
-  // In fullscreen the bottom filmstrip gets out of the picture's way: hidden by
-  // default, it slides up when the pointer reaches the bottom edge (or is over
-  // the strip). Regular (non-fullscreen) view keeps it pinned as before.
-  let fsStripHover = $state(false);
+  // Fullscreen is a 3-state cycle on F: 0 = off, 1 = play mode WITH the bottom
+  // filmstrip (dimmed ~20%, so focus stays on the photo while you can still see
+  // the strip), 2 = bare photo/video only. Escape always exits to 0. Edit mode
+  // and the controller use the simple 0↔1 toggle (there is no filmstrip there).
+  let fsMode = $state<0 | 1 | 2>(0);
+  let fullscreen = $derived(fsMode > 0);
   let fsPrevView: ViewMode = "grid";
+  async function applyFs(next: 0 | 1 | 2) {
+    const wasFs = fsMode > 0;
+    fsMode = next;
+    const nowFs = next > 0;
+    if (wasFs !== nowFs) {
+      try {
+        await getCurrentWindow().setFullscreen(nowFs);
+      } catch {
+        // wayland/odd WMs can refuse — the chrome still hides, which is most of it
+      }
+      if (nowFs) {
+        fsPrevView = viewMode;
+        if (!editOpen && active) setView("loupe");
+      } else if (!editOpen) {
+        setView(fsPrevView);
+      }
+    }
+  }
+  /** F in Focus/grid: off → play+strip → bare photo → off. */
+  function cycleFullscreen() {
+    void applyFs(((fsMode + 1) % 3) as 0 | 1 | 2);
+  }
+  /** Simple on/off toggle (edit mode, controller, Escape). */
   async function toggleFullscreen() {
-    fullscreen = !fullscreen;
-    try {
-      await getCurrentWindow().setFullscreen(fullscreen);
-    } catch {
-      // wayland/odd WMs can refuse — the chrome still hides, which is most of it
-    }
-    if (fullscreen) {
-      fsPrevView = viewMode;
-      if (!editOpen && active) setView("loupe");
-    } else {
-      if (!editOpen) setView(fsPrevView);
-    }
+    await applyFs(fsMode > 0 ? 0 : 1);
   }
 
   // ── export (RAW → camera-rendered JPEG; images copied through) ───────────
@@ -1992,19 +2005,21 @@
       return;
     }
     // Video playback keys (Focus mode, active clip): Space toggles play/pause,
-    // and , / . scrub the clip (Shift+←/→ is reserved for extending the item
-    // selection, just like the grid, so the filmstrip behaves like Lightroom).
+    // , / . and Shift+←/→ step the clip ±5s. For a video, Shift+←/→ seeks rather
+    // than extending the selection (that stays the default for photos/grid).
     if (viewMode === "loupe" && active?.kind === "video" && loupeComp) {
       if (e.key === " " || e.code === "Space") { loupeComp.togglePlay(); e.preventDefault(); return; }
       if (e.key === "[") { loupeComp.setInPoint?.(); e.preventDefault(); return; }
       if (e.key === "]") { loupeComp.setOutPoint?.(); e.preventDefault(); return; }
+      if (e.shiftKey && e.key === "ArrowRight") { loupeComp.seekBy(5); e.preventDefault(); return; }
+      if (e.shiftKey && e.key === "ArrowLeft") { loupeComp.seekBy(-5); e.preventDefault(); return; }
       if (e.key === "," || e.key === "<") { loupeComp.seekBy(-5); e.preventDefault(); return; }
       if (e.key === "." || e.key === ">") { loupeComp.seekBy(5); e.preventDefault(); return; }
     }
     const delta = navDelta(e.key);
     if (delta) {
-      // Shift+←/→ extends the selection to the neighbouring item everywhere —
-      // grid, details AND the Focus filmstrip (previously it scrubbed video).
+      // Shift+←/→ extends the selection in grid/details and for a photo in Focus.
+      // For a video in Focus it seeks instead (handled in the block above).
       move(delta, { extend: e.shiftKey });
       e.preventDefault();
       return;
@@ -2020,7 +2035,7 @@
       }
       return;
     }
-    if (k === "f") { toggleFullscreen(); return; }
+    if (k === "f") { cycleFullscreen(); return; }
     if (k === "l") { dimLevel = (dimLevel + 1) % 3; return; }
     if (k === "g") { setView("grid"); return; }
     if (k === "d") { setView("details"); return; }
@@ -2674,7 +2689,7 @@
             <div class="kbGroup">Views</div>
             <div class="kbRow"><span class="keys"><kbd>G</kbd></span><span>Grid</span></div>
             <div class="kbRow"><span class="keys"><kbd>D</kbd></span><span>Details</span></div>
-            <div class="kbRow"><span class="keys"><kbd>F</kbd></span><span>Play mode (fullscreen + strip)</span></div>
+            <div class="kbRow"><span class="keys"><kbd>F</kbd></span><span>Play mode — cycle: + strip → bare → off</span></div>
             <div class="kbRow"><span class="keys"><kbd>L</kbd></span><span>Dim lights (cycle)</span></div>
             <div class="kbRow"><span class="keys"><kbd>I</kbd></span><span>Info overlay</span></div>
             <div class="kbGroup">Files</div>
@@ -2692,7 +2707,7 @@
             <div class="kbRow"><span class="keys"><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Y</kbd></span><span>Undo / redo marks</span></div>
             <div class="kbGroup">Video (Focus)</div>
             <div class="kbRow"><span class="keys"><kbd>Space</kbd></span><span>Play / pause</span></div>
-            <div class="kbRow"><span class="keys"><kbd>,</kbd> <kbd>.</kbd></span><span>Step 5 s back / forward</span></div>
+            <div class="kbRow"><span class="keys"><kbd>,</kbd> <kbd>.</kbd> · <kbd>Shift</kbd>+<kbd>←/→</kbd></span><span>Step 5 s back / forward</span></div>
             <div class="kbRow"><span class="keys"><kbd>[</kbd> <kbd>]</kbd></span><span>Set in / out point</span></div>
             <div class="kbGroup">Beyond the keyboard</div>
             <div class="kbRow"><span class="keys">🖱</span><span>Right-click anything for its menu; mouse Back/Forward are remappable</span></div>
@@ -2828,25 +2843,13 @@
       </div>
     {/if}
 
-    <!-- bottom filmstrip -->
-    {#if !editOpen && settings.s.filmstripPos === "bottom" && view.length}
+    <!-- bottom filmstrip — hidden in the bare fullscreen state (fsMode 2), shown
+         and dimmed in play-mode-with-strip (fsMode 1), normal otherwise. -->
+    {#if !editOpen && settings.s.filmstripPos === "bottom" && view.length && fsMode !== 2}
       <div class="hsplit" role="separator" tabindex="-1" onpointerdown={startStripResize} title="Drag to resize"><span class="grip"></span></div>
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="bstrip"
-        class:fsReveal={fullscreen && fsStripHover}
-        style="height:{settings.s.filmstripSize}px"
-        onpointerenter={() => (fsStripHover = true)}
-        onpointerleave={() => (fsStripHover = false)}
-      >
+      <div class="bstrip" class:fsDim={fullscreen} style="height:{settings.s.filmstripSize}px">
         <VirtualStrip items={view} {activeIndex} orientation="h" cellSize={stripCell} cell={stripCellSnip} />
       </div>
-      <!-- Fullscreen-only: a thin sensor at the very bottom edge that reveals
-           the hidden filmstrip on hover, so play mode is a clean full picture. -->
-      {#if fullscreen}
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="fsStripSensor" onpointerenter={() => (fsStripHover = true)}></div>
-      {/if}
     {/if}
   </main>
 
@@ -3216,29 +3219,11 @@
   .viewport.lit { position: relative; z-index: 50; }
   .rstrip { flex: 0 0 auto; border-left: 1px solid var(--border); }
   .bstrip { flex: 0 0 auto; }
-  /* In play mode (F) the strip no longer eats the bottom of the picture: it
-     lifts out of flow and slides up only when you reach the bottom edge. */
-  .app.fs .bstrip {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 40;
-    transform: translateY(100%);
-    transition: transform 0.18s ease;
-    background: var(--bg-panel);
-    box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.5);
-  }
-  .app.fs .bstrip.fsReveal {
-    transform: translateY(0);
-  }
-  .fsStripSensor {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    height: 22px;
-    z-index: 39;
+  /* Play mode (fsMode 1): the strip stays in view but dimmed ~20% so attention
+     stays on the photo/video. fsMode 2 doesn't render it at all. */
+  .app.fs .bstrip.fsDim {
+    filter: brightness(0.8);
+    transition: filter 0.15s ease;
   }
 
   .welcome { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--text-dim); text-align: center; padding: 24px; }
