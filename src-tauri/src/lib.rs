@@ -139,6 +139,7 @@ pub fn run() {
             commands::video_filmstrip,
             commands::video_scrubstrip,
             commands::video_scrubstrip_cached,
+            commands::video_filmstrip_cached,
             commands::cancel_sprite,
             commands::cancel_all_sprites,
             commands::capture_dates,

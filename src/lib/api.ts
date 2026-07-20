@@ -56,6 +56,9 @@ export const api = {
   /** The hover strip IF already cached — never triggers a build. */
   videoScrubstripCached: (path: string) =>
     invoke<FilmstripInfo | null>("video_scrubstrip_cached", { path }).catch(() => null),
+  /** Dense Focus filmstrip IF already cached — never triggers a build. */
+  videoFilmstripCached: (path: string) =>
+    invoke<FilmstripInfo | null>("video_filmstrip_cached", { path }).catch(() => null),
   /** Stop an in-flight sprite build ("film" = Focus filmstrip, "scrub" = hover strip). */
   cancelSprite: (path: string, kind: "film" | "scrub") =>
     invoke<void>("cancel_sprite", { kind, path }).catch(() => {}),

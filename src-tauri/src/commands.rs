@@ -1364,6 +1364,21 @@ pub fn video_scrubstrip_cached(
         .map(|(sprite, fs)| filmstrip_info(sprite, fs))
 }
 
+/// The DENSE Focus filmstrip's geometry IF it's already cached — never builds.
+/// Focus view always calls this (a strip built in an earlier session shows for
+/// free); the BUILDING `video_filmstrip` call is gated in the UI on the Live
+/// Scrub setting + first scrub intent (see the 2026-07-20 RCA: unconditional
+/// builds on Focus open were ~70s of unwanted work per clip on HDD libraries).
+#[tauri::command]
+pub fn video_filmstrip_cached(
+    state: State<'_, AppState>,
+    path: String,
+) -> Option<FilmstripInfo> {
+    let cache_dir = state.cache_dir.lock().clone();
+    video::sprite_cached(&cache_dir, Path::new(&path), true)
+        .map(|(sprite, fs)| filmstrip_info(sprite, fs))
+}
+
 /// How many items the background warmer pre-generates per folder. Bounded so a
 /// huge folder can't keep the USB SSD's read queue saturated for a minute — past
 /// this the viewport-prioritized on-demand loader handles whatever you scroll to.

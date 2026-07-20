@@ -530,7 +530,12 @@ fn extract_frame_at(
     out: &Path,
 ) -> bool {
     let mut cmd = Command::new(ffmpeg);
-    cmd.args(["-v", "error", "-ss", &format!("{at:.3}")]);
+    // `-hwaccel auto`: decode the keyframe on the GPU when a decoder exists
+    // (NVDEC on the GTX 1070 does 4K HEVC ~5-10x faster than software; d3d11va
+    // otherwise), fall back to software transparently. This was only on the
+    // rare fullscan path before — on HDD libraries the software decode
+    // dominated the whole strip build (~0.3-1.5s per 4K HEVC frame).
+    cmd.args(["-v", "error", "-hwaccel", "auto", "-ss", &format!("{at:.3}")]);
     if keyframe_only {
         cmd.args(["-skip_frame", "nokey"]);
     }
@@ -597,7 +602,11 @@ pub fn ensure_filmstrip(
         FILMSTRIP_COLS,
         FILMSTRIP_TILE_W,
         16,
-        100,
+        // 48, not 100: on a typical seek bar that's still a frame every ~2% of
+        // the timeline — visually indistinguishable while halving the build
+        // cost on long clips (the count is clamp(duration_secs, min, max), so
+        // every clip over the max pays the full price).
+        48,
         cancel,
         on_progress,
     )

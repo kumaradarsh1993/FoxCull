@@ -1,4 +1,17 @@
-# FoxCull v1.1.0-nightly.5 — HEIC fixed, safe deletes, cast that follows you
+# FoxCull v1.1.0-nightly.5 — HEIC fixed, safe deletes, cast that follows you, scrubbing tamed
+
+## Video previews respect you again
+
+- **Live Scrub OFF now means OFF.** The previous nightly built a scrub
+  filmstrip for every video the moment you opened it in Focus — a minute-plus
+  of disk and CPU churn per clip on a hard-drive library, toggle be damned.
+  Opening a video now does zero preview work: anything already built still
+  shows for free, and the plain seek bar just works.
+- **Live Scrub ON got much faster and politer.** The filmstrip builds only
+  when you actually reach for the timeline (hover, drag, or step keys) — and
+  it now decodes on your GPU, so a build that took ~70 seconds lands in
+  roughly 10–20. Fewer, smarter frames too; you won't see the difference,
+  your disk will.
 
 ## HEIC photos work now
 

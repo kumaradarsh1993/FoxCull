@@ -30,11 +30,12 @@ New: `docs/DECISIONS.md` (ADR log; HEIC decode strategy + cast quality).
 - **Cast follows browsing**: one session, the TV mirrors the active
   photo/video (debounced); HEIC/RAW cast their 1920px loupe JPEG (the Default
   Media Receiver can't decode them raw).
-- **⚠ OPEN — do not "fix" without owner sign-off**: the Focus filmstrip
-  builds unconditionally, ignoring the Live Scrub toggle (nightly.3
-  regression; brutal on the owner's HDD library). Complete RCA + agreed-scope
-  fix plan: `.rca-live-scrub.md` at repo root. The owner is testing on SSD vs
-  HDD and will confirm the plan.
+- **Live Scrub regression FIXED (owner-approved plan, second commit)**: Focus
+  open is cached-only; the dense build fires only on Live Scrub ON + first
+  timeline intent; `-hwaccel auto` on frame extraction; strip cap 100→48.
+  RCA that drove it: `.rca-live-scrub.md` (repo root, untracked); ledger:
+  `docs/changes/2026-07-20-live-scrub-fix.md`. Owner still owes the SSD-vs-HDD
+  A/B and live verification on the next installed build.
 
 ## 2026-07-19 (later session): UX/UI audit + Look-panel overhaul (v1.1.0-nightly.4, on main)
 

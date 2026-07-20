@@ -77,6 +77,9 @@
 
   // ── filmstrip scrub state ──
   let strip = $state<FilmstripInfo | null>(null);
+  /// Whether the DENSE filmstrip build has been requested for the current item
+  /// (cached loads don't count — this guards the expensive path only).
+  let denseRequested = false;
   let stripSrc = $derived(strip ? api.fileSrc(strip.src) : null);
   let posterSrc = $state<string | null>(null); // cached poster: instant first paint
   let preview = $state<number | null>(null); // fraction 0..1 to preview, or null
@@ -168,21 +171,21 @@
       loadVideoPoster(it.path).then((s) => {
         if (my === epoch && s) posterSrc = s;
       });
-      // Scrub filmstrip: ALWAYS built for the active clip (this is what makes
-      // the seek bar previewable and drag-scrub fluid — one clip at a time is
-      // cheap with keyframe-seek extraction). If the lighter hover strip is
-      // already cached (grid hover / Prepare), show it immediately as a coarse
-      // scrub layer while the dense one renders. Failure quietly leaves a
-      // plain seek bar.
+      // Scrub filmstrip: CACHED-ONLY on open. Anything already built (grid
+      // hover, Prepare, an earlier session) paints for free — coarse strip
+      // first, dense strip over it if it exists. The EXPENSIVE dense build
+      // never fires on open: it is gated on the Live Scrub setting AND first
+      // scrub intent (hovering/touching the seek bar, or key/controller
+      // seeks) — see ensureFilmstrip(). The nightly.3 rework built it
+      // unconditionally here, which on an HDD library meant ~a minute of
+      // unwanted ffmpeg work per clip with Live Scrub OFF (2026-07-20 RCA).
+      denseRequested = false;
       api.videoScrubstripCached(it.path).then((s) => {
         if (my === epoch && s && !strip) strip = s;
       });
-      api
-        .videoFilmstrip(it.path)
-        .then((f) => {
-          if (my === epoch) strip = f;
-        })
-        .catch(() => {});
+      api.videoFilmstripCached(it.path).then((f) => {
+        if (my === epoch && f) strip = f;
+      });
       api
         .loupeSrc(it.path)
         .then((p) => {
@@ -263,6 +266,7 @@
   }
   export function seekBy(d: number) {
     if (!vid) return;
+    ensureFilmstrip(); // key/controller seeking is scrub intent too
     const max = dur || strip?.duration || vid.duration || 0;
     if (max <= 0) return;
     // Optimistic: step from the last COMMANDED position (`cur`), not the
@@ -329,7 +333,25 @@
       if (next != null) applySeek(next);
     });
   }
+  /// Build the dense filmstrip on first scrub INTENT — and only when Live
+  /// Scrub is enabled. Watching a clip costs nothing; the build starts the
+  /// moment you actually reach for the timeline (hover, drag, key/controller
+  /// seek). Cached strips are painted by the open effect regardless.
+  function ensureFilmstrip() {
+    const it = item;
+    if (!it || it.kind !== "video") return;
+    if (!settings.s.liveScrub || denseRequested) return;
+    denseRequested = true;
+    const my = epoch;
+    api
+      .videoFilmstrip(it.path)
+      .then((f) => {
+        if (my === epoch) strip = f;
+      })
+      .catch(() => {});
+  }
   function onTrackDown(e: PointerEvent) {
+    ensureFilmstrip();
     scrubbing = true;
     resumeAfterScrub = !!vid && !vid.paused;
     vid?.pause();
@@ -342,6 +364,7 @@
     seekTo(f);
   }
   function onTrackMove(e: PointerEvent) {
+    ensureFilmstrip(); // first hover over the timeline = scrub intent
     const f = fracFromEvent(e);
     preview = f;
     if (scrubbing) seekTo(f);
