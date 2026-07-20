@@ -39,25 +39,42 @@ fn meta(src: &Path) -> (i64, u64) {
     }
 }
 
-/// Cache path for a clip's poster, keyed by (path, mtime, size) and prefixed `v`
-/// so it never collides with image thumbnails.
-pub fn poster_path(cache_dir: &Path, src: &Path) -> PathBuf {
+/// Cache path for a clip's poster, keyed by (path, mtime, size) and prefixed by
+/// `prefix` so it never collides with image thumbnails or the hi-res variant.
+fn poster_path_pfx(cache_dir: &Path, src: &Path, prefix: char) -> PathBuf {
     let (mtime, size) = meta(src);
     let abs = src.to_string_lossy();
     let mut h = std::collections::hash_map::DefaultHasher::new();
     abs.hash(&mut h);
     mtime.hash(&mut h);
     size.hash(&mut h);
-    cache_dir.join(format!("v{:016x}.jpg", h.finish()))
+    cache_dir.join(format!("{prefix}{:016x}.jpg", h.finish()))
 }
 
-/// Extract one representative frame (~1s in) scaled to fit a 480px box and write
-/// it to `out`. Idempotent. Works for any codec the bundled ffmpeg supports —
-/// crucially including HEVC (the Osmo Pocket 3 footage the webview can't decode).
-pub fn make_poster(ffmpeg: &Path, src: &Path, out: &Path) -> Result<(), String> {
+/// Light 480px poster (prefix `v`) — used by the grid, where tiles are tiny.
+pub fn poster_path(cache_dir: &Path, src: &Path) -> PathBuf {
+    poster_path_pfx(cache_dir, src, 'v')
+}
+
+/// Sharp ~1280px poster (prefix `w`) — used by Focus/full-screen view, where a
+/// 480px frame scaled up to a 4K stage looked pixelated. Kept a separate cache
+/// entry so opening one clip in Focus never bloats the grid's poster memory.
+pub fn poster_hires_path(cache_dir: &Path, src: &Path) -> PathBuf {
+    poster_path_pfx(cache_dir, src, 'w')
+}
+
+/// Extract one representative frame (~1s in) scaled to fit a `box_px` box and
+/// write it to `out`. Idempotent. Works for any codec the bundled ffmpeg
+/// supports — crucially including HEVC (the Osmo Pocket 3 footage the webview
+/// can't decode). `box_px` lets the grid use a light 480px poster while Focus
+/// view asks for a sharp ~1280px one (see `ensure_poster_hires`).
+pub fn make_poster(ffmpeg: &Path, src: &Path, out: &Path, box_px: u32) -> Result<(), String> {
     if out.exists() {
         return Ok(());
     }
+    // q:v 3 keeps the still crisp — the previous default quantizer made the
+    // Focus/full-screen first frame look pixelated even at full resolution.
+    let scale = format!("scale=w={box_px}:h={box_px}:force_original_aspect_ratio=decrease");
     // `-skip_frame nokey` means the decoder only touches the keyframe at/before
     // the seek point instead of decoding forward frame-by-frame to exactly 1.0s —
     // on 4K60 HEVC that's one frame decoded instead of ~60, and visually the
@@ -65,13 +82,7 @@ pub fn make_poster(ffmpeg: &Path, src: &Path, out: &Path) -> Result<(), String> 
     let mut cmd = Command::new(ffmpeg);
     cmd.args(["-v", "error", "-ss", "1", "-skip_frame", "nokey", "-i"])
         .arg(src)
-        .args([
-            "-frames:v",
-            "1",
-            "-vf",
-            "scale=w=480:h=480:force_original_aspect_ratio=decrease",
-            "-y",
-        ])
+        .args(["-frames:v", "1", "-vf", &scale, "-q:v", "3", "-y"])
         .arg(out)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -91,13 +102,7 @@ pub fn make_poster(ffmpeg: &Path, src: &Path, out: &Path) -> Result<(), String> 
         let mut cmd2 = Command::new(ffmpeg);
         cmd2.args(["-v", "error", "-i"])
             .arg(src)
-            .args([
-                "-frames:v",
-                "1",
-                "-vf",
-                "scale=w=480:h=480:force_original_aspect_ratio=decrease",
-                "-y",
-            ])
+            .args(["-frames:v", "1", "-vf", &scale, "-q:v", "3", "-y"])
             .arg(out)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -316,7 +321,24 @@ pub fn ensure_poster(cache_dir: &Path, ffmpeg: Option<&Path>, src: &Path) -> Res
         return Ok(out);
     }
     let ff = ffmpeg.ok_or("ffmpeg not available")?;
-    make_poster(ff, src, &out)?;
+    make_poster(ff, src, &out, 480)?;
+    Ok(out)
+}
+
+/// Ensure the sharp Focus-view poster exists; returns its cache path. Same
+/// keyframe extraction as `ensure_poster` but at ~1280px so it holds up on a
+/// full-screen stage.
+pub fn ensure_poster_hires(
+    cache_dir: &Path,
+    ffmpeg: Option<&Path>,
+    src: &Path,
+) -> Result<PathBuf, String> {
+    let out = poster_hires_path(cache_dir, src);
+    if out.exists() {
+        return Ok(out);
+    }
+    let ff = ffmpeg.ok_or("ffmpeg not available")?;
+    make_poster(ff, src, &out, 1280)?;
     Ok(out)
 }
 

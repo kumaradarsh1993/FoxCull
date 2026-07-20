@@ -1,4 +1,20 @@
-# FoxCull v1.1.0-nightly.5 — HEIC fixed, safe deletes, cast that follows you, scrubbing tamed
+# FoxCull v1.1.0-nightly.5 — cleaner video view, HEIC fixed, safe deletes, cast that follows you
+
+## The video view gets out of the way
+
+- **The transport bar is gone until you want it.** Open a video and you see the
+  picture edge-to-edge with just a thin, quiet progress line at the bottom.
+  Move your pointer to the bottom of the frame and the full controls — play,
+  time, scrub track, Info, Clip tools — slide up; move away while it's playing
+  and they tuck back down. It's the VLC/YouTube feel. Prefer the old
+  always-visible bar? **Settings → Minimal video bar → Off.**
+- **The first frame is sharp now.** The still shown before a video plays (and
+  with autoplay off) used to be a pixelated low-res blowup on a big screen.
+  It's now generated at high resolution for Focus and full-screen. Grid
+  thumbnails are untouched, so this costs the grid nothing.
+- **Play mode (F) is a clean full picture.** The bottom filmstrip no longer
+  sits in play mode — reach the very bottom edge and it slides up when you want
+  it.
 
 ## Video previews respect you again
 

@@ -1187,6 +1187,21 @@ pub async fn video_poster(state: State<'_, AppState>, path: String) -> Result<St
     .map_err(|e| e.to_string())?
 }
 
+/// Sharp ~1280px poster for Focus/full-screen view (the grid keeps `video_poster`
+/// at 480px). Generated lazily, only for clips actually opened in Focus.
+#[tauri::command]
+pub async fn video_poster_hires(state: State<'_, AppState>, path: String) -> Result<String, String> {
+    let cache_dir = state.cache_dir.lock().clone();
+    let ffmpeg = state.ffmpeg.clone();
+    let src = PathBuf::from(&path);
+    tauri::async_runtime::spawn_blocking(move || {
+        video::ensure_poster_hires(&cache_dir, ffmpeg.as_deref(), &src)
+            .map(|o| o.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[derive(Serialize)]
 pub struct FilmstripInfo {
     /// Filesystem path of the sprite JPEG (frontend converts via convertFileSrc).

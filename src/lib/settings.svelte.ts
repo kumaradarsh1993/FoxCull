@@ -29,6 +29,9 @@ export interface AppSettings {
   includeSub: boolean;
   liveScrub: boolean;
   videoAutoplay: boolean;
+  /** Collapse the video transport to a thin hover-to-expand line (vs a pinned
+   *  always-visible bar). Keeps the picture edge-to-edge in Focus/full-screen. */
+  minimalVideoBar: boolean;
   /** Game-controller culling (PS5/PS4 pad over Bluetooth/USB). */
   padEnabled: boolean;
   /** Controller action-id → button-index overrides; unset actions use the
@@ -60,6 +63,7 @@ const DEFAULTS: AppSettings = {
   includeSub: true,
   liveScrub: false,
   videoAutoplay: false,
+  minimalVideoBar: true,
   padEnabled: true,
   padBindings: {},
   mouseBack: "viewBack",

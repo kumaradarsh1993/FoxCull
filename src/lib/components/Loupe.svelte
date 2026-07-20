@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api } from "$lib/api";
   import { activity } from "$lib/activity.svelte";
-  import { loadThumb, loadVideoPoster } from "$lib/thumbnail-loader";
+  import { loadThumb, loadVideoPosterHires } from "$lib/thumbnail-loader";
   import { settings } from "$lib/settings.svelte";
   import type { MediaItem, FilmstripInfo, MediaProbe, VideoSegment } from "$lib/types";
 
@@ -97,6 +97,30 @@
     strip ? Math.round((PREVIEW_W * strip.tile_h) / strip.tile_w) : 0,
   );
 
+  // ── auto-hiding transport ─────────────────────────────────────────────────
+  // In minimal mode (default) the transport collapses to a thin, unobtrusive
+  // progress line at the bottom of the stage and only unfolds into the full
+  // bar when you reach for it — pointer in the bottom band, an active scrub, or
+  // Clip tools open. This keeps the picture edge-to-edge (Focus AND full-screen)
+  // instead of a permanent thick bar eating vertical space. Turn the setting off
+  // to pin the bar open like a classic player.
+  let bottomHover = $state(false);
+  let minimalBar = $derived(settings.s.minimalVideoBar);
+  let showTransport = $derived(
+    !minimalBar || bottomHover || scrubbing || clipToolsOpen,
+  );
+  function onStagePointerMove(e: PointerEvent) {
+    const el = stageEl;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    // Bottom ~26% of the stage (at least 90px) is the reveal band.
+    const band = Math.max(90, r.height * 0.26);
+    bottomHover = e.clientY >= r.bottom - band;
+  }
+  function onStagePointerLeave() {
+    bottomHover = false;
+  }
+
   // Full-canvas scrub overlay geometry: the sprite cell keeps the clip's aspect
   // inside whatever the video stage measures (same approach as Thumb's scrubBox).
   let stageEl = $state<HTMLDivElement | null>(null);
@@ -167,8 +191,10 @@
         if (my === epoch) probe = p;
       }).catch(() => {});
       // Poster first: the cached frame paints the stage instantly while the
-      // real <video> element is still opening the file.
-      loadVideoPoster(it.path).then((s) => {
+      // real <video> element is still opening the file. Focus view uses the
+      // SHARP ~1280px poster so the first frame isn't a pixelated 480px blowup
+      // on a full-screen stage (the grid keeps the light 480px one).
+      loadVideoPosterHires(it.path).then((s) => {
         if (my === epoch && s) posterSrc = s;
       });
       // Scrub filmstrip: CACHED-ONLY on open. Anything already built (grid
@@ -545,7 +571,13 @@
       </div>
     {:else if vsrc}
       <div class="vwrap">
-        <div class="stagewrap" bind:this={stageEl}>
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="stagewrap"
+          bind:this={stageEl}
+          onpointermove={onStagePointerMove}
+          onpointerleave={onStagePointerLeave}
+        >
         <!-- svelte-ignore a11y_media_has_caption -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -603,14 +635,19 @@
             <span class="stageTs">{fmt(preview * (dur || strip.duration))}</span>
           </div>
         {/if}
-        </div>
         {#if usingProxy}
           <span class="proxytag" title="The original couldn't decode in-app; you're watching the cached H.264 conversion. Trim still cuts the original.">converted preview</span>
         {/if}
-        <div class="trim">
+        <!-- Collapsed state: a thin, unobtrusive progress line at the very bottom
+             so you sense position/length without any bar eating the picture. -->
+        {#if minimalBar && !showTransport}
+          <div class="thinline"><div class="thinfill" style="width:{pct(cur)}%"></div></div>
+        {/if}
+        <div class="trim" class:shown={showTransport}>
           <!-- Compact single-row transport: play, time, inline scrubber, then the
                Info + Clip tools toggles. Trim/mark/export controls only unfold
-               below when Clip tools is open. -->
+               below when Clip tools is open. Overlays the bottom of the stage;
+               reveals on hover in minimal mode (default), pinned otherwise. -->
           <div class="playrow">
             <button class="pp" onclick={togglePlay} title={paused ? "Play (Space)" : "Pause (Space)"}>
               {paused ? "▶" : "⏸"}
@@ -696,6 +733,7 @@
             </div>
           {/if}
           {#if exportNote}<div class="note">{exportNote}</div>{/if}
+        </div>
         </div>
       </div>
     {:else}
@@ -822,11 +860,51 @@
     font-size: 12.5px;
     font-variant-numeric: tabular-nums;
   }
+  /* Transport overlays the bottom of the stage (not a panel below it), so the
+     picture stays edge-to-edge. A soft top-fading scrim keeps the controls
+     legible over any frame. Shown/hidden by the .shown class (hover reveal). */
   .trim {
-    flex: 0 0 auto;
-    background: var(--bg-panel);
-    border-top: 1px solid var(--border);
-    padding: 8px 12px 10px;
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 6;
+    padding: 30px 14px 12px;
+    background: linear-gradient(
+      to top,
+      rgba(0, 0, 0, 0.74) 0%,
+      rgba(0, 0, 0, 0.5) 42%,
+      rgba(0, 0, 0, 0) 100%
+    );
+    transition:
+      opacity 0.16s ease,
+      transform 0.18s ease;
+  }
+  .trim:not(.shown) {
+    opacity: 0;
+    transform: translateY(14px);
+    pointer-events: none;
+  }
+  /* Collapsed progress: a hairline that just conveys position/length. Kept
+     unobtrusive (white at low alpha) so it doesn't distract from the frame. */
+  .thinline {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3px;
+    background: rgba(255, 255, 255, 0.12);
+    z-index: 5;
+    pointer-events: none;
+  }
+  .thinfill {
+    height: 100%;
+    background: rgba(255, 255, 255, 0.5);
+  }
+  /* Controls read on a dark scrim now, not the panel background. */
+  .trim .time,
+  .trim .time .sep {
+    color: rgba(255, 255, 255, 0.86);
   }
   .playrow {
     display: flex;

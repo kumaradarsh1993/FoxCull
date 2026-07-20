@@ -48,6 +48,8 @@ export const api = {
   loupeSrc: (path: string) => invoke<string>("loupe_src", { path }),
   /** Cached poster frame (filesystem path) for a video, via bundled ffmpeg. */
   videoPoster: (path: string) => invoke<string>("video_poster", { path }),
+  /** Sharp ~1280px poster for Focus view (grid uses videoPoster's 480px). */
+  videoPosterHires: (path: string) => invoke<string>("video_poster_hires", { path }),
   /** Tiled sprite of frames for decode-free scrubbing (built lazily, cached). */
   videoFilmstrip: (path: string) =>
     invoke<FilmstripInfo>("video_filmstrip", { path }),

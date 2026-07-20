@@ -260,6 +260,10 @@ export function cancelThumb(path: string, size: number): void {
 export function loadVideoPoster(path: string): Promise<string | null> {
   return enqueue(`vid:${path}`, () => api.videoPoster(path));
 }
+/** Sharp ~1280px poster for Focus view — same queue, separate cache key. */
+export function loadVideoPosterHires(path: string): Promise<string | null> {
+  return enqueue(`vidhi:${path}`, () => api.videoPosterHires(path));
+}
 export function cancelVideoPoster(path: string): void {
   cancel(`vid:${path}`);
 }

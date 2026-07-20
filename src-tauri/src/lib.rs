@@ -136,6 +136,7 @@ pub fn run() {
             commands::cancel_warm,
             commands::loupe_src,
             commands::video_poster,
+            commands::video_poster_hires,
             commands::video_filmstrip,
             commands::video_scrubstrip,
             commands::video_scrubstrip_cached,

@@ -1814,6 +1814,10 @@
 
   // ── full-screen mode (F): just the photo, everything else gone ───────────
   let fullscreen = $state(false);
+  // In fullscreen the bottom filmstrip gets out of the picture's way: hidden by
+  // default, it slides up when the pointer reaches the bottom edge (or is over
+  // the strip). Regular (non-fullscreen) view keeps it pinned as before.
+  let fsStripHover = $state(false);
   let fsPrevView: ViewMode = "grid";
   async function toggleFullscreen() {
     fullscreen = !fullscreen;
@@ -2602,6 +2606,12 @@
             <button class="chip" class:on={!settings.s.videoAutoplay} onclick={() => settings.set({ videoAutoplay: false })}>Off</button>
           </div>
         </div>
+        <div class="row"><span>Minimal video bar</span>
+          <div class="seg" title="Collapse the transport to a thin hover-to-expand line so the picture stays edge-to-edge. Off pins a classic always-visible bar.">
+            <button class="chip" class:on={settings.s.minimalVideoBar} onclick={() => settings.set({ minimalVideoBar: true })}>On</button>
+            <button class="chip" class:on={!settings.s.minimalVideoBar} onclick={() => settings.set({ minimalVideoBar: false })}>Off</button>
+          </div>
+        </div>
         <div class="row"><span>Controller</span>
           <button class="btn sm" onclick={() => { settingsOpen = false; controllerOpen = true; }} title="Pair a PS5/PS4 controller and map its buttons (mouse extras too)">
             🎮 {pad.connected ? "Connected — set up…" : "Set up…"}
@@ -2821,9 +2831,22 @@
     <!-- bottom filmstrip -->
     {#if !editOpen && settings.s.filmstripPos === "bottom" && view.length}
       <div class="hsplit" role="separator" tabindex="-1" onpointerdown={startStripResize} title="Drag to resize"><span class="grip"></span></div>
-      <div class="bstrip" style="height:{settings.s.filmstripSize}px">
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="bstrip"
+        class:fsReveal={fullscreen && fsStripHover}
+        style="height:{settings.s.filmstripSize}px"
+        onpointerenter={() => (fsStripHover = true)}
+        onpointerleave={() => (fsStripHover = false)}
+      >
         <VirtualStrip items={view} {activeIndex} orientation="h" cellSize={stripCell} cell={stripCellSnip} />
       </div>
+      <!-- Fullscreen-only: a thin sensor at the very bottom edge that reveals
+           the hidden filmstrip on hover, so play mode is a clean full picture. -->
+      {#if fullscreen}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div class="fsStripSensor" onpointerenter={() => (fsStripHover = true)}></div>
+      {/if}
     {/if}
   </main>
 
@@ -3193,6 +3216,30 @@
   .viewport.lit { position: relative; z-index: 50; }
   .rstrip { flex: 0 0 auto; border-left: 1px solid var(--border); }
   .bstrip { flex: 0 0 auto; }
+  /* In play mode (F) the strip no longer eats the bottom of the picture: it
+     lifts out of flow and slides up only when you reach the bottom edge. */
+  .app.fs .bstrip {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 40;
+    transform: translateY(100%);
+    transition: transform 0.18s ease;
+    background: var(--bg-panel);
+    box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.5);
+  }
+  .app.fs .bstrip.fsReveal {
+    transform: translateY(0);
+  }
+  .fsStripSensor {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 22px;
+    z-index: 39;
+  }
 
   .welcome { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--text-dim); text-align: center; padding: 24px; }
   .welcome h1 { font-size: 28px; margin: 0; }

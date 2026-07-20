@@ -12,6 +12,31 @@ Claude-built `fox-cull` project.
 > **historical record** of names in effect at the time — left as-is for
 > accuracy; don't "fix" them.
 
+## 2026-07-20 (3): Video-focus UX pass — minimal transport, sharp poster, fullscreen filmstrip (nightly.5, being pushed)
+
+Base-machine session, Opus. Owner lifted the push hold ("push all these changes,
+send out a build so I can test"). This folds the earlier batched local commits
+(HEIC/delete/cast + Live Scrub fix) plus a video-focus UX pass into
+**v1.1.0-nightly.5** and pushes + tags. Full module-level detail:
+`docs/changes/2026-07-20-video-transport-poster.md`.
+
+- **Minimal video transport**: the bar overlays the stage and collapses to a 3px
+  progress hairline; hovering the bottom band reveals it, scrubbing/Clip-tools
+  keep it open. Setting `minimalVideoBar` (default ON) + Settings toggle; Off =
+  pinned bar.
+- **Sharp Focus poster**: new 1280px `w…` poster cache (`video_poster_hires`);
+  grid keeps the 480px `v…` poster, so grid memory is unchanged.
+- **Play-mode (F) filmstrip**: hidden and hover-revealed at the bottom edge
+  (`.fsStripSensor`), instead of pinned.
+- **Architecture Q answered for the owner**: the Chromium/WebView2 approach is
+  fine for photos; the ONE real ceiling is `<video>` scrub smoothness. A future
+  libmpv native-surface transplant would fix it *and keep every edit feature*
+  (in/out, segments, EditStudio, export are backend/state, not tied to the
+  `<video>` element). Recommendation: targeted transplant later, not a rewrite.
+- **In/out persistence**: confirmed already working in current code
+  (`get_trim`/`set_trim` restore on reopen) — the owner's report was an older
+  installed build.
+
 ## 2026-07-20: HEIC fix, delete-freeze fix, cast follow-mode (local, unpushed — owner is batching)
 
 Base-machine session, post-nightly.4 live testing by the owner. Committed
