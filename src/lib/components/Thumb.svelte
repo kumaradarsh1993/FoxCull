@@ -27,6 +27,8 @@
   let mediaAspect = $state(16 / 9);
   let strip = $state<FilmstripInfo | null>(null);
   let scrub = $state<number | null>(null);
+  let hovering = $state(false);
+  let building = $state(false);
   let scrubTimer: ReturnType<typeof setTimeout> | null = null;
 
   let isVideo = $derived(item.kind === "video");
@@ -62,6 +64,7 @@
     mediaAspect = 16 / 9;
     strip = null;
     scrub = null;
+    building = false;
     if (it.kind === "other") return;
     let alive = true;
     const p = it.kind === "video" ? loadVideoPoster(it.path) : loadThumb(it.path, size);
@@ -87,6 +90,7 @@
     if (!settings.s.liveScrub) {
       strip = null;
       scrub = null;
+      building = false;
       if (scrubTimer) clearTimeout(scrubTimer);
       scrubTimer = null;
       if (item.kind === "video") cancelVideoScrubstrip(item.path);
@@ -98,6 +102,7 @@
   $effect(() => {
     if (!armed) {
       scrub = null;
+      building = false;
       if (scrubTimer) {
         clearTimeout(scrubTimer);
         scrubTimer = null;
@@ -106,49 +111,78 @@
     }
   });
 
+  // THE build trigger — an effect, deliberately, not the pointerenter handler.
+  //
+  // You arm a tile by CLICKING it, and by then the pointer is already inside:
+  // `pointerenter` fired long before the tile was armed and never fires again,
+  // so a handler-only path scheduled a build for every tile you swept past and
+  // for none of the tile you actually selected. That is the whole "the scrub
+  // bar appears but the frames never change" bug. Keying off (armed && hovering)
+  // as *state* makes arming-under-the-cursor and hovering-an-armed-tile the
+  // same thing, whichever order they happen in.
+  $effect(() => {
+    if (!isVideo || !armed || !hovering) return;
+    if (!settings.s.liveScrub || strip || scrubTimer) return;
+    const path = item.path;
+    building = true;
+    scrubTimer = setTimeout(() => {
+      scrubTimer = null;
+      loadVideoScrubstrip(path)
+        .then((s) => {
+          if (item.path !== path) return;
+          if (settings.s.liveScrub && s) strip = s;
+        })
+        .finally(() => {
+          if (item.path === path) building = false;
+        });
+    }, SCRUB_BUILD_DELAY_MS);
+  });
+
   function framePos(frac: number) {
     if (!strip) return { x: 0, y: 0 };
     const i = Math.max(0, Math.min(strip.count - 1, Math.floor(frac * strip.count)));
     return { x: i % strip.cols, y: Math.floor(i / strip.cols) };
   }
 
+  // The skim position maps across the WHOLE CELL, not across the letterboxed
+  // picture inside it. Mapping to the picture made portrait clips wildly
+  // oversensitive: a 9:16 clip only paints ~30% of a landscape cell's width, so
+  // the full timeline was crammed into that sliver while the pillarboxed
+  // remainder was dead travel. The cell is what the hand actually aims at.
   function updateScrub(e: PointerEvent) {
     if (!isVideo || !armed || !settings.s.liveScrub) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const visibleW = Math.max(1, scrubBox.w);
-    const visibleLeft = rect.left + (rect.width - visibleW) / 2;
-    scrub = Math.max(0, Math.min(0.999, (e.clientX - visibleLeft) / visibleW));
+    const w = Math.max(1, rect.width);
+    scrub = Math.max(0, Math.min(0.999, (e.clientX - rect.left) / w));
   }
 
   function enterThumb(e: PointerEvent) {
+    hovering = true;
     updateScrub(e);
-    if (!isVideo || !armed || !settings.s.liveScrub || strip || scrubTimer) return;
-    const path = item.path;
-    scrubTimer = setTimeout(() => {
-      scrubTimer = null;
-      loadVideoScrubstrip(path).then((s) => {
-        if (item.path === path && settings.s.liveScrub && s) strip = s;
-      });
-    }, SCRUB_BUILD_DELAY_MS);
   }
 
   function leaveThumb() {
+    hovering = false;
     scrub = null;
+    building = false;
     if (scrubTimer) {
       clearTimeout(scrubTimer);
       scrubTimer = null;
     }
-    // Cancel whether the request is still queued OR already extracting frames
-    // on the backend — leaving the tile must always stop the disk work. (The
-    // old code only cancelled inside the 140 ms debounce window, so any build
-    // that had actually started kept running to completion.)
-    if (isVideo && !strip) cancelVideoScrubstrip(item.path);
+    // Leaving an UNARMED tile stops the disk work (queued or already extracting
+    // frames on the backend) — that's the sweep-across-a-wall-of-videos case.
+    // An ARMED tile's build is left to finish: you selected that clip on
+    // purpose, and cancelling a 10-second extraction because the pointer
+    // drifted off, then restarting it from zero on the way back, is how
+    // skimming ended up feeling like it never worked. The disarm effect above
+    // is what cancels it if the selection genuinely moves on.
+    if (isVideo && !armed && !strip) cancelVideoScrubstrip(item.path);
   }
 
   // Live build feedback while the hover strip is being extracted: the backend
   // streams per-frame progress through the activity store.
   let scrubJob = $derived.by(() => {
-    if (!isVideo || strip || scrub == null) return null;
+    if (!isVideo || strip || (!building && scrub == null)) return null;
     const j = activity.jobs[`scrub:${item.path}`];
     return j && j.state === "running" ? j : null;
   });
@@ -184,11 +218,13 @@
     {#if isVideo && settings.s.liveScrub && scrub != null}
       <span class="scrubRail"><span style="width:{scrub * 100}%"></span></span>
       {#if !strip}<span class="scrubHint" style="left:{scrub * 100}%"></span>{/if}
-      {#if scrubJob}
-        <span class="scrubBuild">
-          {scrubJob.total > 0 ? `scrub ${Math.round((scrubJob.done / scrubJob.total) * 100)}%` : "scrub…"}
-        </span>
-      {/if}
+    {/if}
+    {#if isVideo && settings.s.liveScrub && (scrubJob || (building && !strip))}
+      <span class="scrubBuild">
+        {scrubJob && scrubJob.total > 0
+          ? `scrub ${Math.round((scrubJob.done / scrubJob.total) * 100)}%`
+          : "scrub…"}
+      </span>
     {/if}
     {#if isVideo}<span class="play">▶</span>{/if}
   {:else if isVideo}

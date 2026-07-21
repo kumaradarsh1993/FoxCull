@@ -1,75 +1,69 @@
-# FoxCull v1.1.0-nightly.6 — video-view polish: fullscreen, seeking, calmer scrub
+# FoxCull v1.1.0-nightly.7 — skimming that actually works, honest deletes, undo that reaches into the Trash
 
-## Fixes in this build (over nightly.5)
+## Live Scrub: the whole thing, gone over properly
 
-- **Fullscreen `F` is now a clean 3-step cycle.** Press once for play mode with
-  the filmstrip (dimmed ~20% so your eye stays on the photo), again for just the
-  photo/video, again to exit. No more hunting the very bottom edge to coax the
-  strip back — it's simply there or not. `Esc` exits from anywhere.
-- **Shift+←/→ scrubs a video** ±5 s in Focus view (it used to only extend the
-  selection). `,` / `.` still step too.
-- **Grid skimming stopped misfiring.** Hover-scrub now only runs on the clip you
-  actually **click to select** — sweeping the pointer across a wall of videos no
-  longer kicks off (and cancels) a build on every tile. Click a clip to arm it,
-  then hover it to skim frames.
+Skimming had accumulated three separate faults that hid each other. All three
+are fixed.
 
-## The video view gets out of the way
+- **The clip you click is now the clip that skims.** Selecting a video arms it
+  for skimming — but the pointer is already sitting on the tile when you click,
+  so the app never noticed the hover it had been waiting for, and quietly built
+  a preview for every tile you'd swept *past* and none for the one you'd chosen.
+  You saw the scrub bar appear and the picture never change. Click a clip, move
+  across it, frames follow.
+- **Portrait clips skim at a sane speed.** The timeline used to be squeezed into
+  just the part of the tile the picture covers — on a 9:16 phone clip that's a
+  narrow strip down the middle, so a centimetre of pointer travel jumped a third
+  of the video while the space either side did nothing. Skimming is now measured
+  across the whole tile, portrait and landscape alike.
+- **A preview being built is no longer thrown away.** Drifting off the tile used
+  to cancel a build that was seconds from finishing, and coming back started it
+  from zero — which is why it could feel like it never worked at all. Once
+  you've selected a clip, its preview finishes.
 
-- **The transport bar is gone until you want it.** Open a video and you see the
-  picture edge-to-edge with just a thin, quiet progress line at the bottom.
-  Move your pointer to the bottom of the frame and the full controls — play,
-  time, scrub track, Info, Clip tools — slide up; move away while it's playing
-  and they tuck back down. It's the VLC/YouTube feel. Prefer the old
-  always-visible bar? **Settings → Minimal video bar → Off.**
-- **The first frame is sharp now.** The still shown before a video plays (and
-  with autoplay off) used to be a pixelated low-res blowup on a big screen.
-  It's now generated at high resolution for Focus and full-screen. Grid
-  thumbnails are untouched, so this costs the grid nothing.
-- **Play mode (F) is a clean full picture.** The bottom filmstrip no longer
-  sits in play mode — reach the very bottom edge and it slides up when you want
-  it.
+**In Focus view, the preview starts when you open the clip.** Previously it
+waited until your pointer happened to touch the seek bar, then made you watch a
+ten-second build with no indication of what was happening. Now, with Live Scrub
+on, it begins immediately and a small counter at the top-left tells you how far
+along it is. Live Scrub off still means genuinely off — opening a video does no
+preview work at all.
 
-## Video previews respect you again
+**New: pre-build nearby clips** (Settings, appears when Live Scrub is on). While
+you're watching one clip, the three either side quietly get their previews
+ready, so stepping to the next one can be skimmed the moment you arrive. Off by
+default — it's real background work, and on a slow drive you may not want it.
 
-- **Live Scrub OFF now means OFF.** The previous nightly built a scrub
-  filmstrip for every video the moment you opened it in Focus — a minute-plus
-  of disk and CPU churn per clip on a hard-drive library, toggle be damned.
-  Opening a video now does zero preview work: anything already built still
-  shows for free, and the plain seek bar just works.
-- **Live Scrub ON got much faster and politer.** The filmstrip builds only
-  when you actually reach for the timeline (hover, drag, or step keys) — and
-  it now decodes on your GPU, so a build that took ~70 seconds lands in
-  roughly 10–20. Fewer, smarter frames too; you won't see the difference,
-  your disk will.
+## Deletes tell you the truth now
 
-## HEIC photos work now
+Deleting a couple of large clips could fail with "still in use?" when nothing
+was using them. The real cause was Windows refusing permission — the same reason
+Explorer asks for administrator rights on those files — and the app was guessing
+wrong and telling you to close a preview that didn't exist.
 
-- **Phone HEIC photos show and open.** Samsung/iPhone `.heic` files were
-  showing a grey "HEIC" tile in the grid and "can't preview this file" in
-  Focus, while JPEGs worked fine. The cause: phone HEICs are stored as a *grid
-  of tiles*, and the decode step used a filter that can't sit on top of the
-  tile-stitching ffmpeg does to reassemble them — it failed before producing
-  anything. Fixed; full-res HEIC now decodes, scales, and rotates correctly
-  everywhere. No Windows codec packs involved or needed — HEIC is handled
-  entirely inside FoxCull.
-- When an image genuinely can't be decoded, the reason now lands in the log
-  instead of being swallowed — the next such bug is a one-look diagnosis.
+- A file that's genuinely open by another program, and a file Windows won't let
+  us touch, now say so separately, by name, in a message you can read in full.
+- A read-only file is un-set and retried automatically instead of failing.
+- If you're hitting the permissions case on a whole drive, it's an ownership
+  leftover from reinstalling Windows, not something inside FoxCull — taking
+  ownership of the folder once (Properties → Security → Advanced → Change owner,
+  apply to contents) clears it for good.
 
-## Deletes can't freeze the app anymore
+## Undo can bring deleted files back
 
-- Deleting a huge clip that something was still reading (a preview build, a
-  playing video) used to grind the whole app into "not responding" — the
-  fallback quietly copied the entire multi-GB file and then failed anyway.
-  Now: background work is cancelled first, the delete runs off the UI thread,
-  and if a file is still locked you get a clear "couldn't delete — still in
-  use?" notice instead of a frozen window.
+Ctrl+Z after a delete now offers to restore that batch out of the in-app Trash —
+with a confirmation first, showing how many files will come back, because
+stepping back through a long undo history shouldn't silently start moving files
+around. Deletes are never *re*-done by Ctrl+Y, for the same reason.
 
-## Casting follows you now
+## Filmstrip on the left
 
-- **Start casting once — the TV then shows whatever you're on.** Move through
-  photos and videos with the arrow keys and the TV keeps up (small debounce so
-  holding a key doesn't spam the TV). Photos and videos both, one session.
-- **HEIC and RAW cast correctly** (previously the TV got a format it can't
-  render and showed nothing) — they cast their high-res preview instead.
-- Videos still stream the untouched original file — your 4K60 HEVC plays at
-  full native quality via the TV's own decoder.
+The filmstrip can now sit between the folder tree and the picture, not only at
+the bottom or on the right. **Settings → Filmstrip → Left.** Drag its edge to
+resize as usual.
+
+## Prepare, but only what you want
+
+Prepare still covers the whole folder when you click it. The new ▾ beside it
+narrows the job: just the selection, just the videos, or just the photos & RAW —
+each showing how many items that is. Useful when a folder is twenty 4K clips and
+you only care about three of them.

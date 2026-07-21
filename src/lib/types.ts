@@ -54,6 +54,9 @@ export interface TrashOutcome {
   deleted: number;
   failed: string[];
   errors: string[];
+  /** Trash keys of what this dispose put in the in-app Trash — the handle an
+   *  Undo needs to restore exactly this batch. Empty in OS-recycle-bin mode. */
+  trashed: string[];
 }
 
 export interface LibraryInfo {

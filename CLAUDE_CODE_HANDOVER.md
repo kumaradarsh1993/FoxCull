@@ -12,6 +12,66 @@ Claude-built `fox-cull` project.
 > **historical record** of names in effect at the time — left as-is for
 > accuracy; don't "fix" them.
 
+## 2026-07-21 (2): Scrub module audit, delete diagnosis, undo-restore (nightly.7)
+
+Base-machine session, Opus. Owner installed nightly.6 and came back with one
+compound report — skimming "still broken", a delete failing on his `E:\Bali
+trip` folder of 4K60 HEVC clips with an unreadable error, undo not reaching the
+Trash, no left filmstrip, Prepare stuck at folder scope. Handled as one audit of
+the video-preview subsystem, not four point fixes. Module-level detail:
+`docs/changes/2026-07-21-scrub-audit-delete-undo.md`.
+
+**The three scrub bugs, and why they hid each other:**
+
+1. *Arming never triggered a build.* nightly.6 made hover-scrub require the tile
+   to be armed (clicked/selected) — but you arm by clicking, and the pointer is
+   already inside the tile then, so the `pointerenter` handler that scheduled
+   builds had fired **before** arming and never fired again. Result: builds for
+   every tile swept past, none for the tile actually selected. Fixed by driving
+   the build from an `$effect` on `(armed && hovering)` as *state*, so the two
+   orderings are the same thing.
+2. *Pointer→time mapped to the letterboxed picture*, not the cell — a 9:16 clip
+   paints ~30% of a landscape cell, so the timeline was crammed into that sliver.
+   Now mapped across the full cell.
+3. *Leaving an armed tile cancelled its build*, so drifting off and back
+   restarted a 10 s extraction from zero. Only unarmed tiles cancel now.
+
+Also: with Live Scrub ON the Focus filmstrip builds on clip **open** (was: first
+pointer contact with the seek bar, silently) with a progress chip. This
+deliberately reverses a nightly.5 decision and is safe **only** because it stays
+gated on the Live Scrub setting — ungate it and the nightly.3 "a minute of
+ffmpeg per clip on an HDD" bug returns.
+
+**Delete on `E:` was never an app lock.** `move_into_recycle` reported every
+rename failure as "file is in use"; the actual errno was `PermissionDenied`.
+Explorer refuses those same files with "You'll need to provide administrator
+permission" — an ACL leftover from the Windows reinstall, since the files carry
+the old install's SID. The backend now separates sharing violations from
+permission denials, clears a read-only attribute and retries once, names the
+file, and the frontend shows the real reasons in a modal instead of a truncated
+chip. **The OS-level fix (take ownership of the folder once) is the owner's to
+run; the app can only report it accurately.**
+
+**Undo now reaches into the Trash.** The undo stack became a discriminated union
+(`marks` | `delete`); a dispose into the in-app Trash pushes a `delete` entry
+carrying the new `TrashOutcome.trashed` keys. Undoing one confirms first ("N
+files will be moved back"), and delete entries are deliberately **not** redoable
+— Ctrl+Y re-trashing files mid-history is exactly the misfire the owner flagged.
+
+**New: `docs/design/precache-policy.md`** — owner-requested authoritative record
+of every cached artifact, its key, its build triggers, the concurrency doctrine,
+and an honest gaps list, in both prose and a machine-readable YAML block. It is
+now in the doc map and must be updated in the same commit as any caching change.
+Read it before touching thumbs/posters/sprites; it is the thing this session
+wished existed.
+
+Smaller: filmstrip can dock **left**; Prepare is a split button (folder /
+selection / videos / photos); opt-in `scrubPrefetch` builds strips for the ±3
+clips around the one open in Focus.
+
+Gates: `npm run check` 0/0, `cargo check` clean. libmpv work stays parked on
+`feat/libmpv-video` (M2 unresolved — see `docs/design/libmpv-transplant.md`).
+
 ## 2026-07-20 (3): Video-focus UX pass — minimal transport, sharp poster, fullscreen filmstrip (nightly.5, being pushed)
 
 Base-machine session, Opus. Owner lifted the push hold ("push all these changes,

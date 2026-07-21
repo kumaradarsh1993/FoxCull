@@ -5,7 +5,7 @@
   import { cast, type CastDevice, type CastStatus } from "$lib/cast";
   import { settings } from "$lib/settings.svelte";
   import { activity, fmtEta } from "$lib/activity.svelte";
-  import { resetThumbs, prefetchLoupe, loaderStats } from "$lib/thumbnail-loader";
+  import { resetThumbs, prefetchLoupe, loaderStats, loadVideoScrubstrip } from "$lib/thumbnail-loader";
   import {
     LABELS,
     LABEL_BY_DIGIT,
@@ -210,7 +210,7 @@
 
   /** True while any toolbar popover/menu is open (they share light-dismiss). */
   function anyPopoverOpen(): boolean {
-    return settingsOpen || filtersOpen || arrangeOpen || clearOpen || castOpen;
+    return settingsOpen || filtersOpen || arrangeOpen || clearOpen || castOpen || prepMenuOpen;
   }
   function closeAllPopovers() {
     settingsOpen = false;
@@ -218,6 +218,7 @@
     arrangeOpen = false;
     clearOpen = false;
     castOpen = false;
+    prepMenuOpen = false;
   }
   // Light dismiss, the way every native menu works: pressing anywhere outside
   // an open popover (or its toggle) closes it. Toggles keep working because
@@ -225,7 +226,7 @@
   function onGlobalPointerDown(e: PointerEvent) {
     if (!anyPopoverOpen()) return;
     const t = e.target as HTMLElement | null;
-    if (t?.closest(".pop, .filtermenu, .arrangeMenu, .clearMenu, .castMenu, .arrange, .filterwrap, .clearWrap, .castWrap, .gear")) return;
+    if (t?.closest(".pop, .filtermenu, .arrangeMenu, .clearMenu, .castMenu, .arrange, .filterwrap, .clearWrap, .castWrap, .prepWrap, .gear")) return;
     closeAllPopovers();
   }
   let editOpen = $state(false);
@@ -1239,6 +1240,35 @@
     prefetchAroundActive();
   });
 
+  // ── neighbouring-clip scrub prefetch (opt-in) ──────────────────────────────
+  // The photo equivalent above is cheap; a video scrub strip is ~40 keyframe
+  // decodes, so this one is a SETTING and off by default. When it's on, the
+  // clips either side of the one you're watching get their hover strip built in
+  // the background, so stepping to the next clip finds skimming already live.
+  // Deliberately conservative: only while a video is open in Focus, only with
+  // Live Scrub on, a settle delay so arrowing through a folder doesn't queue a
+  // build per clip you passed, and the backend still serializes the builds.
+  const SCRUB_PREFETCH_SPAN = 3;
+  const SCRUB_PREFETCH_SETTLE_MS = 900;
+  let scrubPrefetchTimer: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    const i = activeIndex;
+    const vm = viewMode;
+    const on = settings.s.liveScrub && settings.s.scrubPrefetch;
+    const list = view;
+    clearTimeout(scrubPrefetchTimer);
+    if (!on || vm !== "loupe" || list[i]?.kind !== "video") return;
+    scrubPrefetchTimer = setTimeout(() => {
+      for (let k = 1; k <= SCRUB_PREFETCH_SPAN; k++) {
+        for (const j of [i + k, i - k]) {
+          const it = list[j];
+          if (it?.kind === "video") void loadVideoScrubstrip(it.path);
+        }
+      }
+    }, SCRUB_PREFETCH_SETTLE_MS);
+    return () => clearTimeout(scrubPrefetchTimer);
+  });
+
   // Restore grid position when returning from Focus: bring the shot you were
   // looking at back into the middle of the grid, instead of snapping to the top
   // (which happened because the grid component remounts at scroll 0).
@@ -1268,8 +1298,27 @@
   let prepTotal = $state(0);
   let prepEta = $state("");
   let prepPct = $derived(prepTotal ? Math.round((prepDone / prepTotal) * 100) : 0);
-  async function prepareFolder() {
-    if (!currentDir || preparing || !baseView.length) return;
+  /** What Prepare covers. Default stays the whole folder — the scopes exist so
+   *  a 20-clip 4K folder can be narrowed to "just what I selected" instead of
+   *  committing to the full pass. */
+  type PrepScope = "all" | "selection" | "videos" | "photos";
+  let prepMenuOpen = $state(false);
+  const PREP_SCOPES: { key: PrepScope; label: string }[] = [
+    { key: "all", label: "Everything in this folder" },
+    { key: "selection", label: "Selection only" },
+    { key: "videos", label: "Videos in this folder" },
+    { key: "photos", label: "Photos & RAW in this folder" },
+  ];
+  function prepScopeItems(scope: PrepScope): MediaItem[] {
+    if (scope === "selection") return actionTargets;
+    if (scope === "videos") return baseView.filter((i) => i.kind === "video");
+    if (scope === "photos") return baseView.filter((i) => i.kind === "image" || i.kind === "raw");
+    return baseView;
+  }
+  async function prepareFolder(scope: PrepScope = "all") {
+    if (!currentDir || preparing) return;
+    const src = prepScopeItems(scope);
+    if (!src.length) return;
     preparing = true;
     prepared = false;
     const dir = currentDir;
@@ -1279,8 +1328,8 @@
     // seconds each, not milliseconds). Keeping the phases separate is what
     // makes the ETA honest: one blended per-item rate over a folder that's
     // 90% photos and 10% long videos claims "5 minutes" for a 20-minute job.
-    const photoPaths = baseView.filter((i) => i.kind === "image" || i.kind === "raw").map((i) => i.path);
-    const videoPaths = baseView.filter((i) => i.kind === "video").map((i) => i.path);
+    const photoPaths = src.filter((i) => i.kind === "image" || i.kind === "raw").map((i) => i.path);
+    const videoPaths = src.filter((i) => i.kind === "video").map((i) => i.path);
     prepTotal = photoPaths.length + videoPaths.length;
     prepDone = 0;
     prepEta = "";
@@ -1342,12 +1391,33 @@
   // own safety nets (in-app Trash, uniquified outputs) and silently undoing
   // filesystem changes is scarier than helpful.
   type MarkSnap = { path: string; rating: number; label: string | null; flag: MediaItem["flag"]; tags: string[] };
-  type UndoEntry = { label: string; before: MarkSnap[]; after: MarkSnap[] };
+  type MarkEntry = { kind: "marks"; label: string; before: MarkSnap[]; after: MarkSnap[] };
+  /** A dispose that went to the in-app Trash. Undoing it restores the files —
+   *  a filesystem move, so unlike a mark it asks first, and it is deliberately
+   *  NOT redoable: "redo" on a delete would silently re-trash files while the
+   *  user is stepping back through history. */
+  type DeleteEntry = { kind: "delete"; label: string; stored: string[] };
+  type UndoEntry = MarkEntry | DeleteEntry;
   const UNDO_CAP = 100;
   let undoStack = $state<UndoEntry[]>([]);
   let redoStack = $state<UndoEntry[]>([]);
   let undoToast = $state<string | null>(null);
   let undoToastTimer: ReturnType<typeof setTimeout> | undefined;
+  /** One in-app modal, used both to confirm a filesystem action and to show a
+   *  failure the activity chip is too small to explain (`onconfirm` omitted =
+   *  a notice with a single Close button). */
+  type Ask = {
+    title: string;
+    body: string;
+    confirmLabel?: string;
+    onconfirm?: () => void | Promise<void>;
+  };
+  let ask = $state<Ask | null>(null);
+  async function runAsk() {
+    const a = ask;
+    ask = null;
+    await a?.onconfirm?.();
+  }
   function showUndoToast(msg: string) {
     undoToast = msg;
     clearTimeout(undoToastTimer);
@@ -1362,9 +1432,16 @@
     const byPath = new Map(items.map((i) => [i.path, i]));
     const after = snapMarks(before.map((s) => byPath.get(s.path)).filter((i): i is MediaItem => !!i));
     if (JSON.stringify(before) === JSON.stringify(after)) return;
-    undoStack = [...undoStack.slice(-(UNDO_CAP - 1)), { label, before, after }];
+    undoStack = [...undoStack.slice(-(UNDO_CAP - 1)), { kind: "marks", label, before, after }];
     redoStack = [];
     api.logEvent(`MARK ${label} (${before.length} item${before.length === 1 ? "" : "s"})`);
+  }
+  /** Record a dispose so Undo can pull it back out of the in-app Trash. */
+  function commitDeleteUndo(stored: string[]) {
+    if (!stored.length) return;
+    const label = `Delete ${stored.length} file${stored.length === 1 ? "" : "s"}`;
+    undoStack = [...undoStack.slice(-(UNDO_CAP - 1)), { kind: "delete", label, stored }];
+    redoStack = [];
   }
   /** Re-apply a snapshot: reconcile each item's marks to it and persist only the
    *  fields that actually differ. Items gone from the open folder are skipped. */
@@ -1403,6 +1480,32 @@
       showUndoToast("Nothing to undo");
       return;
     }
+    if (e.kind === "delete") {
+      // Files come back out of the Trash — a real filesystem move, and one that
+      // can arrive mid-way through a run of rapid Ctrl+Z presses. Confirm before
+      // undoing it, and never consume the entry unless the user says yes.
+      const n = e.stored.length;
+      ask = {
+        title: "Restore deleted files?",
+        body: `${n} file${n === 1 ? "" : "s"} will be moved back out of the Trash to ${
+          n === 1 ? "its" : "their"
+        } original location.`,
+        confirmLabel: `Restore ${n}`,
+        onconfirm: async () => {
+          undoStack = undoStack.slice(0, -1);
+          const out = await api.restoreTrash(e.stored);
+          showUndoToast(
+            out.failed.length
+              ? `Restored ${out.restored} · ${out.failed.length} couldn't be restored`
+              : `Restored ${out.restored} file${out.restored === 1 ? "" : "s"}`,
+          );
+          api.logEvent(`UNDO ${e.label} → restored ${out.restored}`);
+          if (trashOpen) trashItems = await api.listTrash();
+          if (currentDir) await openFolder(currentDir, { selectIndex: activeIndex });
+        },
+      };
+      return;
+    }
     undoStack = undoStack.slice(0, -1);
     redoStack = [...redoStack, e];
     await applySnaps(e.before);
@@ -1416,6 +1519,7 @@
       return;
     }
     redoStack = redoStack.slice(0, -1);
+    if (e.kind === "delete") return; // never re-delete from history (see DeleteEntry)
     undoStack = [...undoStack, e];
     await applySnaps(e.after);
     showUndoToast(`Redid: ${e.label}`);
@@ -1765,13 +1869,23 @@
     // "folder" -> the active drive's _FoxCull/recycle (recoverable in-app Trash);
     // "recycle" → the OS Recycle Bin / Trash.
     const out = await api.disposeRejected(paths, settings.s.deleteMode);
+    // Deletes into the in-app Trash are undoable — record the batch BEFORE the
+    // folder reload, so Ctrl+Z right after a delete pulls exactly these back.
+    commitDeleteUndo(out.trashed);
     if (out.failed.length) {
-      // Don't fail silently: a locked or permission-denied file stays in the
-      // grid, and the user needs to know why nothing happened to it.
+      // Don't fail silently, and don't guess: the backend now says WHY each file
+      // survived (locked by another program vs. Windows permissions), and those
+      // need opposite responses. The activity chip is one line, so the real
+      // reasons go in a modal the user can actually read.
+      const reasons = [...new Set(out.errors)];
       activity.error(
         "delete",
-        `${out.failed.length} file${out.failed.length === 1 ? "" : "s"} couldn't be deleted (still in use?) — try again in a moment`,
+        `${out.failed.length} file${out.failed.length === 1 ? "" : "s"} couldn't be deleted`,
       );
+      ask = {
+        title: `${out.failed.length} file${out.failed.length === 1 ? "" : "s"} couldn't be deleted`,
+        body: reasons.join("\n\n"),
+      };
     }
     // Stay where we were — after the rejected shots vanish, the same index lands
     // on the next surviving photo, not back at the top of the folder.
@@ -1796,11 +1910,18 @@
   }
   function startStripResize(e: PointerEvent) {
     e.preventDefault();
-    const right = settings.s.filmstripPos === "right";
-    const start = right ? e.clientX : e.clientY;
+    const pos = settings.s.filmstripPos;
+    const vertical = pos === "right" || pos === "left";
+    const start = vertical ? e.clientX : e.clientY;
     const startS = settings.s.filmstripSize;
     const move = (ev: PointerEvent) => {
-      const d = right ? start - ev.clientX : start - ev.clientY;
+      // Drag AWAY from the viewport grows the strip: that's -x for a right dock
+      // and a bottom dock (both handles sit before the panel), but +x on the
+      // left, where the handle is on the panel's far edge.
+      const d =
+        pos === "left"
+          ? ev.clientX - start
+          : start - (vertical ? ev.clientX : ev.clientY);
       settings.s.filmstripSize = Math.max(84, Math.min(520, startS + d));
     };
     const up = () => {
@@ -1925,6 +2046,14 @@
     const t = e.target as HTMLElement;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
     const k = e.key.toLowerCase();
+    // A confirm/notice modal is exclusive: it swallows every key but Escape and
+    // Enter, so a stray shortcut can't act on the grid behind an open question.
+    if (ask) {
+      if (e.key === "Escape") ask = null;
+      else if (e.key === "Enter") void runAsk();
+      e.preventDefault();
+      return;
+    }
     // Overlays and popovers first, in every mode: ? toggles the shortcut guide,
     // Escape closes the topmost open thing before doing anything else.
     if (e.key === "?") {
@@ -2483,21 +2612,41 @@
       <div class="rightTools">
         {#if !editOpen}
         <!-- actions (top-right) -->
-        <button
-          class="btn sm prep"
-          class:on={preparing || prepared}
-          onclick={prepareFolder}
-          disabled={!baseView.length || preparing}
-          title={"Prepare · make this whole folder instant.\n\nPhotos & RAW: caches every shot's full-size Focus preview (no loading blur).\nVideos: caches the poster frame AND the hover scrub strip, so skimming works immediately.\n\nPhotos run first, then videos; progress and a time estimate show here and in the activity chip. One click, once per folder — safe to keep working meanwhile."}
-        >
-          {#if preparing}<span class="prep-fill" style="width:{prepPct}%"></span>{/if}
-          <span class="prep-lbl">
-            <span class="prep-ico" aria-hidden="true">
-              {#if preparing}◌{:else if prepared}✓{:else}<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M13 2 4.5 13.2c-.4.5 0 1.3.7 1.3H11l-1.4 8.2c-.1.7.8 1.1 1.2.5L19.5 12c.4-.5 0-1.3-.7-1.3H12.9L14.2 2.6c.1-.7-.8-1.1-1.2-.6Z"/></svg>{/if}
+        <div class="grp prepWrap">
+          <button
+            class="btn sm prep"
+            class:on={preparing || prepared}
+            onclick={() => prepareFolder("all")}
+            disabled={!baseView.length || preparing}
+            title={"Prepare · make this whole folder instant.\n\nPhotos & RAW: caches every shot's full-size Focus preview (no loading blur).\nVideos: caches the poster frame AND the hover scrub strip, so skimming works immediately.\n\nPhotos run first, then videos; progress and a time estimate show here and in the activity chip. Use the ▾ to prepare only the selection, only videos, or only photos. Safe to keep working meanwhile."}
+          >
+            {#if preparing}<span class="prep-fill" style="width:{prepPct}%"></span>{/if}
+            <span class="prep-lbl">
+              <span class="prep-ico" aria-hidden="true">
+                {#if preparing}◌{:else if prepared}✓{:else}<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M13 2 4.5 13.2c-.4.5 0 1.3.7 1.3H11l-1.4 8.2c-.1.7.8 1.1 1.2.5L19.5 12c.4-.5 0-1.3-.7-1.3H12.9L14.2 2.6c.1-.7-.8-1.1-1.2-.6Z"/></svg>{/if}
+              </span>
+              {#if preparing}{prepPct}%{prepEta ? ` ${prepEta}` : ""}{:else if prepared}Ready{:else}Prepare{/if}
             </span>
-            {#if preparing}{prepPct}%{prepEta ? ` ${prepEta}` : ""}{:else if prepared}Ready{:else}Prepare{/if}
-          </span>
-        </button>
+          </button>
+          <button
+            class="btn sm prepCaret"
+            class:on={prepMenuOpen}
+            onclick={() => (prepMenuOpen = !prepMenuOpen)}
+            disabled={!baseView.length || preparing}
+            aria-label="Choose what to prepare"
+            title="Choose what to prepare"
+          >▾</button>
+          {#if prepMenuOpen}
+            <div class="clearMenu prepMenu">
+              {#each PREP_SCOPES as s}
+                {@const n = prepScopeItems(s.key).length}
+                <button disabled={n === 0} onclick={() => { prepMenuOpen = false; void prepareFolder(s.key); }}>
+                  {s.label}<span class="prepCount">{n}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
         <button class="btn sm danger" onclick={rejectSelected} disabled={actionTargets.length === 0} title="Toggle rejected on the active item or selection (X)">
           <svg class="btn-ico" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
           {allTargetsRejected ? "Unreject" : "Reject"}{selected.size > 1 ? ` ${selected.size}` : ""}
@@ -2597,7 +2746,7 @@
         </div>
         <div class="row"><span>Filmstrip</span>
           <div class="seg">
-            {#each [["bottom", "Bottom"], ["right", "Right"], ["hidden", "Off"]] as [v, l]}
+            {#each [["bottom", "Bottom"], ["left", "Left"], ["right", "Right"], ["hidden", "Off"]] as [v, l]}
               <button class="chip" class:on={settings.s.filmstripPos === v} onclick={() => settings.set({ filmstripPos: v as typeof settings.s.filmstripPos })}>{l}</button>
             {/each}
           </div>
@@ -2615,6 +2764,14 @@
             <button class="chip" class:on={!settings.s.liveScrub} onclick={() => settings.set({ liveScrub: false })}>Off</button>
           </div>
         </div>
+        {#if settings.s.liveScrub}
+          <div class="row"><span>Pre-build nearby clips</span>
+            <div class="seg" title="While watching a clip in Focus, quietly build the hover scrub strips for the 3 clips either side, so stepping to the next one can be skimmed immediately. Costs background disk/CPU — leave off on a slow drive.">
+              <button class="chip" class:on={settings.s.scrubPrefetch} onclick={() => settings.set({ scrubPrefetch: true })}>On</button>
+              <button class="chip" class:on={!settings.s.scrubPrefetch} onclick={() => settings.set({ scrubPrefetch: false })}>Off</button>
+            </div>
+          </div>
+        {/if}
         <div class="row"><span>Video autoplay</span>
           <div class="seg">
             <button class="chip" class:on={settings.s.videoAutoplay} onclick={() => settings.set({ videoAutoplay: true })}>On</button>
@@ -2740,8 +2897,32 @@
       <div class="undoToast" aria-live="polite">{undoToast}</div>
     {/if}
 
-    <!-- body: viewport (+ optional right filmstrip) -->
+    <!-- Confirm/notice modal: filesystem actions that undo can trigger, and
+         delete failures whose real reason doesn't fit in the activity chip. -->
+    {#if ask}
+      <button class="kbBackdrop" aria-label="Close" onclick={() => (ask = null)}></button>
+      <div class="askBox" role="dialog" aria-label={ask.title}>
+        <div class="askTitle">{ask.title}</div>
+        <div class="askBody">{ask.body}</div>
+        <div class="askRow">
+          {#if ask.onconfirm}
+            <button class="askBtn" onclick={() => (ask = null)}>Cancel</button>
+            <button class="askBtn primary" onclick={runAsk}>{ask.confirmLabel ?? "Confirm"}</button>
+          {:else}
+            <button class="askBtn primary" onclick={() => (ask = null)}>Close</button>
+          {/if}
+        </div>
+      </div>
+    {/if}
+
+    <!-- body: viewport, with the filmstrip optionally docked left or right -->
     <div class="body">
+      {#if !editOpen && settings.s.filmstripPos === "left" && view.length}
+        <aside class="lstrip" style="width:{settings.s.filmstripSize}px">
+          <VirtualStrip items={view} {activeIndex} orientation="v" cellSize={stripCell} cell={stripCellSnip} />
+        </aside>
+        <div class="vsplit" role="separator" tabindex="-1" onpointerdown={startStripResize}></div>
+      {/if}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="viewport"
@@ -2876,6 +3057,7 @@
   .app.fs .banner,
   .app.fs .info,
   .app.fs .rstrip,
+  .app.fs .lstrip,
   .app.fs .pop,
   .app.fs .treeRestore { display: none; }
   .tree { display: flex; flex-direction: column; background: var(--bg-panel); border-right: 1px solid var(--border); flex: 0 0 auto; min-width: 0; transition: width 0.14s ease; }
@@ -3024,6 +3206,20 @@
   .clearMenu button { text-align: left; padding: 7px 9px; border-radius: 6px; color: var(--text-dim); font-size: 12px; }
   .clearMenu button:hover { background: var(--bg-hover); color: var(--text); }
   .clearMenu .dangerText { color: var(--reject); }
+  /* Prepare split button: primary action + a caret for the scope menu. */
+  .prepWrap { position: relative; display: flex; }
+  .prepWrap .prep { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  .prepCaret {
+    margin-left: -1px;
+    padding-left: 6px;
+    padding-right: 6px;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+  }
+  .prepMenu { width: 232px; }
+  .prepMenu button { display: flex; justify-content: space-between; gap: 10px; }
+  .prepMenu button:disabled { opacity: 0.45; }
+  .prepCount { color: var(--text-faint); font-variant-numeric: tabular-nums; }
   /* Inline icon inside a toolbar text button — optically aligned with the label. */
   .btn-ico { vertical-align: -1px; margin-right: 4px; }
   .hold-lbl .btn-ico { margin-right: 3px; }
@@ -3059,6 +3255,43 @@
     box-shadow: var(--shadow);
     pointer-events: none;
   }
+
+  /* Confirm / notice modal (shares the shortcut guide's backdrop). */
+  .askBox {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 296;
+    width: min(520px, 90vw);
+    padding: 16px 18px 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg-elev);
+    box-shadow: var(--shadow);
+  }
+  .askTitle { font-size: 14px; font-weight: 650; color: var(--text); }
+  .askBody {
+    margin-top: 8px;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--text-dim);
+    white-space: pre-wrap;
+    max-height: 46vh;
+    overflow-y: auto;
+  }
+  .askRow { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  .askBtn {
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text);
+    font-size: 12.5px;
+    cursor: pointer;
+  }
+  .askBtn:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+  .askBtn.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
 
   /* Keyboard shortcut guide (?): centered card over a dim backdrop. */
   .kbBackdrop {
@@ -3218,6 +3451,7 @@
   .viewport { flex: 1; min-width: 0; background: var(--viewport-bg); overflow: hidden; display: flex; flex-direction: column; }
   .viewport.lit { position: relative; z-index: 50; }
   .rstrip { flex: 0 0 auto; border-left: 1px solid var(--border); }
+  .lstrip { flex: 0 0 auto; border-right: 1px solid var(--border); background: var(--bg-panel); }
   .bstrip { flex: 0 0 auto; }
   /* Play mode (fsMode 1): the strip stays in view but dimmed ~20% so attention
      stays on the photo/video. fsMode 2 doesn't render it at all. */

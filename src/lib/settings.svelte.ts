@@ -5,7 +5,9 @@ import { Store } from "@tauri-apps/plugin-store";
 
 export type Theme = "light" | "dark" | "neutral" | "warm";
 export type ViewMode = "grid" | "details" | "loupe";
-export type FilmstripPos = "bottom" | "right" | "hidden";
+/** Where the filmstrip docks. "left" sits between the folder tree and the
+ *  viewport — the same column your eye is already in when picking folders. */
+export type FilmstripPos = "bottom" | "left" | "right" | "hidden";
 export type SortBy = "name" | "date" | "capture" | "type" | "size";
 export type SortDir = "asc" | "desc";
 export type GroupBy = "none" | "folder" | "type" | "year" | "month" | "week";
@@ -28,6 +30,12 @@ export interface AppSettings {
   typeFilter: TypeFilter;
   includeSub: boolean;
   liveScrub: boolean;
+  /** With Live Scrub on, also pre-build the hover strips for the few clips
+   *  either side of the one open in Focus, so stepping to the next clip finds
+   *  skimming already live. Off by default: each strip is ~40 keyframe decodes,
+   *  and on an HDD library that background work is worth opting into, not
+   *  inheriting. */
+  scrubPrefetch: boolean;
   videoAutoplay: boolean;
   /** Collapse the video transport to a thin hover-to-expand line (vs a pinned
    *  always-visible bar). Keeps the picture edge-to-edge in Focus/full-screen. */
@@ -62,6 +70,7 @@ const DEFAULTS: AppSettings = {
   typeFilter: "all",
   includeSub: true,
   liveScrub: false,
+  scrubPrefetch: false,
   videoAutoplay: false,
   minimalVideoBar: true,
   padEnabled: true,

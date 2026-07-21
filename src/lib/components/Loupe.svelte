@@ -276,6 +276,28 @@
     return () => clearTimeout(slow);
   });
 
+  // With Live Scrub ON, the strip build starts the moment a clip OPENS — not
+  // when the pointer happens to graze the seek bar. Waiting for "scrub intent"
+  // was a nightly.5 measure against building strips nobody asked for, but the
+  // toggle already says whether they're wanted: with it on, reaching the
+  // timeline and finding a 10-second build still ahead of you is the exact
+  // friction the feature exists to remove. Live Scrub OFF still builds nothing.
+  // (Separate effect, not folded into the open effect above, so flipping the
+  // setting mid-clip doesn't tear down and re-open the video.)
+  $effect(() => {
+    const it = item;
+    if (!it || it.kind !== "video" || !settings.s.liveScrub) return;
+    ensureFilmstrip();
+  });
+
+  /// Live build feedback for the dense Focus filmstrip, so a clip that's still
+  /// extracting frames says so instead of looking like a dead seek bar.
+  let stripJob = $derived.by(() => {
+    if (!item || strip) return null;
+    const j = activity.jobs[`strip:${item.path}`];
+    return j && j.state === "running" ? j : null;
+  });
+
   $effect(() => {
     infoVisible = showInfo;
   });
@@ -637,6 +659,11 @@
         {/if}
         {#if usingProxy}
           <span class="proxytag" title="The original couldn't decode in-app; you're watching the cached H.264 conversion. Trim still cuts the original.">converted preview</span>
+        {/if}
+        {#if stripJob}
+          <span class="stripbuild" title="Extracting preview frames so scrubbing this clip is instant. Playback is unaffected.">
+            scrub preview{stripJob.total > 0 ? ` ${Math.round((stripJob.done / stripJob.total) * 100)}%` : "…"}
+          </span>
         {/if}
         <!-- Collapsed state: a thin, unobtrusive progress line at the very bottom
              so you sense position/length without any bar eating the picture. -->
@@ -1205,6 +1232,21 @@
     background: rgba(0, 0, 0, 0.55);
     color: rgba(255, 255, 255, 0.85);
     font-size: 11px;
+    pointer-events: auto;
+    z-index: 5;
+  }
+  /* Build feedback for the scrub filmstrip — top-LEFT, so it never collides
+     with the converted-preview tag on the right. */
+  .stripbuild {
+    position: absolute;
+    top: 10px;
+    left: 12px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.55);
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
     pointer-events: auto;
     z-index: 5;
   }

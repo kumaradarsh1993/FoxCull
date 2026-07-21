@@ -266,6 +266,11 @@ pub struct TrashOutcome {
     pub deleted: usize,
     pub failed: Vec<String>,
     pub errors: Vec<String>,
+    /// Trash keys (`stored`) of the files that landed in the in-app Trash, in
+    /// dispose order — the frontend keeps these so an Undo can restore exactly
+    /// this batch. Empty in OS-recycle-bin mode, where we hold no handle on
+    /// what the shell took.
+    pub trashed: Vec<String>,
 }
 
 /// Path relative to the active library root, using `/` separators so the same
@@ -3368,16 +3373,85 @@ fn move_into_recycle(root: &Path, recycle: &Path, src: &Path) -> Result<(String,
     // path that made deleting a big in-use HEVC clip hang the app ("not
     // responding"). Surface a clear, retryable error instead of copying.
     if let Err(e) = std::fs::rename(src, &target) {
-        return Err(format!(
-            "file is in use — close its preview/playback and try again ({e})"
-        ));
+        // A read-only attribute denies the move exactly like an ACL does, but is
+        // ours to clear — do that once and retry before blaming the user.
+        if is_permission_denied(&e) && clear_readonly(src) {
+            if std::fs::rename(src, &target).is_ok() {
+                return finish_move(recycle, &rel, &target, orig);
+            }
+        }
+        return Err(describe_move_failure(src, &e));
     }
+    finish_move(recycle, &rel, &target, orig)
+}
+
+fn finish_move(
+    recycle: &Path,
+    rel: &Path,
+    target: &Path,
+    orig: String,
+) -> Result<(String, String), String> {
     let stored = target
         .strip_prefix(recycle)
-        .unwrap_or(&rel)
+        .unwrap_or(rel)
         .to_string_lossy()
         .replace('\\', "/");
     Ok((stored, orig))
+}
+
+fn is_permission_denied(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::PermissionDenied
+}
+
+/// Drop the read-only attribute so a retry can proceed. Returns whether anything
+/// changed (false = it wasn't read-only, so the denial is a real ACL problem).
+fn clear_readonly(src: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(src) else {
+        return false;
+    };
+    let mut perms = meta.permissions();
+    if !perms.readonly() {
+        return false;
+    }
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    std::fs::set_permissions(src, perms).is_ok()
+}
+
+/// Explain a failed dispose in terms the user can act on.
+///
+/// The previous version called EVERY failure "file is in use", which sent the
+/// owner hunting a phantom lock when the real cause was an ACL: media copied to
+/// a data drive BEFORE a Windows reinstall carries the old installation's SID,
+/// so the new account inherits no delete right. The tell is that Explorer also
+/// refuses — "File Access Denied · You'll need to provide administrator
+/// permission to delete this file" — while playback works fine, because reading
+/// is allowed and only the directory write is not. A sharing violation and a
+/// permission denial need opposite responses from the user, so name them apart.
+fn describe_move_failure(src: &Path, e: &std::io::Error) -> String {
+    let name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    #[cfg(windows)]
+    {
+        const ERROR_SHARING_VIOLATION: i32 = 32;
+        const ERROR_LOCK_VIOLATION: i32 = 33;
+        match e.raw_os_error() {
+            Some(ERROR_SHARING_VIOLATION) | Some(ERROR_LOCK_VIOLATION) => {
+                return format!(
+                    "{name}: another program still has this file open — close whatever is playing or reading it, then delete again"
+                )
+            }
+            _ => {}
+        }
+    }
+    if is_permission_denied(e) {
+        return format!(
+            "{name}: Windows denied permission to move this file. Its folder's security settings don't grant your account delete rights — Explorer asks for administrator permission on it too. This usually means the files predate a Windows reinstall. Take ownership of the folder once (Properties → Security → Advanced → Change owner, apply to contents) and it will delete normally."
+        );
+    }
+    format!("{name}: could not be moved to Trash ({e})")
 }
 
 /// Dispose of rejected files. `mode` = "recycle" (OS Recycle Bin / Trash) or
@@ -3404,6 +3478,7 @@ pub async fn dispose_rejected(
                 deleted: 0,
                 failed: paths,
                 errors: vec![e],
+                trashed: Vec::new(),
             })
         }
     };
@@ -3464,6 +3539,7 @@ pub async fn dispose_rejected(
         deleted,
         failed,
         errors,
+        trashed: trash_rows.iter().map(|r| r.0.clone()).collect(),
     })
 }
 
