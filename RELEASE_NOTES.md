@@ -1,102 +1,52 @@
-# FoxCull v1.1.0
+# FoxCull v1.2.0-nightly.1
 
-The first stable since 1.0.1, and a big one. Casting, a real editing Look
-panel, controller culling, RAW→JPEG export, stacks, undo/redo — and a long
-run of work on video: previewing it, skimming it, playing it, deleting it.
+**Scrubbing a video in Focus now shows the real frame under your cursor.**
 
-This release is also a deliberate checkpoint. Everything here plays video
-through the built-in web view, which is what limits scrub smoothness on large
-4K footage. The next line of work replaces that player outright; 1.1.0 is the
-mark of how far the current approach goes.
+Grab the playhead on a 546-second 4K60 clip and drag. The picture follows the
+cursor at full resolution — no waiting, nothing to prepare, no cached frames,
+no progress chip. It works the instant the clip opens, on any clip.
 
----
+This is the feature the last release was a checkpoint for, and it arrived by a
+different route than announced. v1.1.0 said the next step was to replace the
+video player with a native one. That was tried properly and abandoned for a
+better answer — the full story is in the repo, but the short version:
 
-## Video
+- Playback in the web view was never the problem. Your clips already decode on
+  the graphics card.
+- The problem was **how seeking was asked for**. Every drag position asked for
+  an exact frame, which means rewinding to the previous keyframe and decoding
+  forward — thirty times a second, while you drag. That is what lagged.
+- Players like VLC feel instant because while you drag they show the nearest
+  *keyframe* — cheap — and only compute the exact frame when you let go.
 
-**Skimming (Live Scrub).** Hover a clip and watch it move without opening it.
-Off by default; turn it on in Settings.
+FoxCull now does exactly that, inside the app, with a decoder of its own. On the
+test machine a full-resolution 4K frame lands in about 40 milliseconds, and the
+exact frame you release on takes about 150.
 
-- **Click a clip to arm it, then skim it.** Only the selected tile responds, so
-  sweeping across a folder of 4K clips doesn't set the whole drive working.
-- The timeline maps across the whole tile, so portrait and landscape clips skim
-  at the same speed.
-- Frames are extracted once and kept on the drive, so a clip you've skimmed
-  before is instant forever — on any machine that reads that drive.
-- One set of frames now serves both the grid and the Focus timeline. It used to
-  build two, which is why opening a clip you'd just skimmed appeared to start
-  over.
-- Extraction is keyframe-based and runs several frames at a time: a strip that
-  once took over a minute on a long clip now lands in seconds.
+### What you'll notice
 
-**Playback and the transport.**
+- **Dragging is smooth and sharp.** The old preview frames were small stand-ins
+  extracted in advance; these are the real thing at full size.
+- **No preparation.** No "scrub preview 40%" chip, no build to wait through, no
+  disk filling with preview frames. Opening a clip is enough.
+- **Hovering the timeline** shows a real decoded frame in the thumbnail too.
+- **Letting go doesn't jump.** The frame you released on stays on screen until
+  the video has caught up to that same frame underneath.
+- **Live Scrub is now about grid tiles only** — skimming a clip by hovering its
+  thumbnail in the grid still uses prepared frames, because a video decoder per
+  tile isn't practical. Settings labels it that way now.
 
-- **The bar gets out of the way.** A video plays edge-to-edge with a thin
-  progress line at the bottom; move toward it and the full controls rise. Prefer
-  a permanent bar? Settings → Minimal video bar → Off.
-- **Sharp first frame.** The still before playback is generated at high
-  resolution for Focus and full-screen instead of being a blown-up thumbnail.
-- **Shift+←/→** steps 5 seconds; `,` and `.` do the same.
-- Dragging the playhead shows the frame under your cursor immediately and lands
-  the exact one when you let go.
-- **Clips the app can't decode play anyway** — a capped H.264 version is made
-  once in the background and used for preview. Trimming still cuts the original.
-- Trim, in/out points and marked sub-clips persist per clip.
+### If a clip can't do it
 
-## Culling
+Some containers and codecs can't be decoded this way. Those clips quietly fall
+back to the previous behaviour — same as v1.1.0, nothing to configure. There's a
+"Focus scrub" setting (Live decode / Sprites) if you ever want to compare, but
+you shouldn't need it.
 
-- **PS5 / PS4 controller support.** Pair a pad and cull from the couch; every
-  button is remappable, with a pairing guide and an on-screen button map. Your
-  mouse's extra Back/Forward buttons are remappable too.
-- **Play mode (F) is a 3-step cycle**: picture with the filmstrip (dimmed so
-  your eye stays on the shot) → bare picture → back to normal. `Esc` always
-  exits. The filmstrip stays wherever you docked it and stays resizable.
-- **Filmstrip docks bottom, left or right** — left sits between the folder tree
-  and the picture.
-- **Stacks.** RAW+JPEG pairs and edits/exports group under their original, fold
-  and unfold, and are labelled by what they are.
-- **Filters** on rating (≥ ≤ =), multiple colour labels at once, kind, and tags.
-- **Undo / redo** across ratings, labels, picks, rejects and tags — and now
-  **deletes**: Ctrl+Z after a delete offers to restore that batch from the
-  in-app Trash, asking first. (Ctrl+Y deliberately never re-deletes.)
-- **Prepare** caches a whole folder up front so a culling pass has no waiting.
-  The ▾ beside it narrows the job to your selection, just videos, or just
-  photos & RAW.
+### Please test
 
-## Photos
-
-- **HEIC works.** Phone HEICs — stored as a grid of tiles — now decode, scale
-  and rotate correctly everywhere. No Windows codec pack needed.
-- **RAW→JPEG export** in bulk, pulling the camera's own embedded preview.
-- **The Look panel** was rebuilt: 12 grouped presets and sliders that actually
-  move the image, with the on-screen preview and the exported file matched by
-  construction rather than by eye.
-- Flipping between photos no longer flashes a blur — the next shot swaps in only
-  once it's fully decoded.
-
-## Cast to TV
-
-- **Casting follows you.** Start it once and the TV shows whatever you're on as
-  you arrow through the folder — photos and videos in one session.
-- **HEIC and RAW cast correctly** (they send their high-resolution preview).
-- Videos stream the untouched original, so the TV's own decoder plays your 4K60
-  HEVC at full quality.
-
-## Deleting
-
-- **Deletes explain themselves.** A file genuinely held open by another program
-  and a file Windows won't give permission for are different problems, and now
-  say so separately, by name, in a message you can read in full. Read-only files
-  are handled automatically.
-- **Deleting a huge clip can't freeze the app.** Background work is cancelled
-  first and the delete runs off the UI thread.
-- Everything deleted goes to a per-drive Trash you can browse, restore from, or
-  purge.
-
-## Smaller things
-
-- **Show in Explorer selects the file**, rather than dropping you in a folder of
-  six hundred.
-- A keyboard shortcut guide on `?`, light-dismiss on every menu, honest
-  time-remaining estimates, and no more filename tooltip popping up over the
-  tile you're skimming.
-- Instagram-ready export with quality shown as real time cost.
+This is the first build with the new engine wired into the interface. The engine
+itself has been measured hard, but the on-screen behaviour — dragging, releasing,
+hovering, fullscreen, portrait clips — wants real hands. Try it on the Osmo
+footage and on phone clips; H.264 phone video takes a slightly different path
+inside and hasn't been exercised on real files yet.
