@@ -257,6 +257,13 @@
     exportNote = null;
     probe = null;
     clipToolsOpen = false;
+    // Reset the live-decode flags unconditionally, not just in the video
+    // branch's cleanup: stepping from a video to a PHOTO runs no cleanup for
+    // the photo, and a stale `enginePending` would block the sprite fallback
+    // for every clip after it.
+    engineReady = false;
+    enginePending = false;
+    canvasHold = false;
     strip = null;
     preview = null;
     scrubbing = false;
