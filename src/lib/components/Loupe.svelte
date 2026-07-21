@@ -104,13 +104,42 @@
   /// landed on that frame, so the hand-off shows no flicker or jump.
   let canvasHold = $state(false);
 
+  /// Which hold a decode belongs to. Bumped every time the still is handed back
+  /// to <video>, so a frame that finishes decoding AFTER the hand-off is
+  /// discarded instead of re-covering the stage.
+  ///
+  /// This is the whole of the "video freezes on one frame while the audio keeps
+  /// playing" bug (reported against nightly.2, intermittent, and sticky once it
+  /// started on a clip). Clicking the timeline during playback races two async
+  /// events: the exact-frame decode (~150 ms) and the element's `seeked`. When
+  /// `seeked` won, it cleared the hold AND its 1500 ms safety timer — then the
+  /// late frame raised the hold again with nothing left alive to ever lower it.
+  /// Whether `seeked` won was a property of the file's seek latency, which is
+  /// why it looked random but then stuck to one clip.
+  let holdGen = 0;
+  /// Safety net for the case where the element never fires `seeked` (it was
+  /// already at that exact time), so the still can't sit there indefinitely.
+  let holdTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Give the stage back to <video>: drop the still and invalidate any decode
+   *  still in flight for it. */
+  function releaseHold() {
+    holdGen++;
+    clearTimeout(holdTimer);
+    canvasHold = false;
+  }
+
   /** Paint the frame at `t` onto the full-stage canvas (drag/step scrub).
    *  `canvasHold` is raised INSIDE the callback — i.e. only once real pixels
    *  are on the canvas — so the still never flashes empty over the video. */
   function paintStage(t: number, exact = false) {
     const e = engine;
     if (!e) return;
+    const gen = holdGen;
     e.request(t, exact, (f) => {
+      // Stale: the stage went back to live video while this was decoding.
+      // Dropping it is not a compromise — <video> has already landed on the
+      // same frame, which is exactly what the still would have shown.
+      if (gen !== holdGen) return;
       if (!stageCanvas) return;
       paintFrame(stageCanvas, f, stageW, stageH, e.index.rotation);
       canvasHold = true;
@@ -178,16 +207,12 @@
     step();
   }
 
-  /** Safety net: if the element never fires `seeked` (already at that exact
-   *  time), don't leave the still frozen over a live video. */
-  let holdTimer: ReturnType<typeof setTimeout> | undefined;
   function releaseHoldSoon() {
     clearTimeout(holdTimer);
-    holdTimer = setTimeout(() => (canvasHold = false), 1500);
+    holdTimer = setTimeout(releaseHold, 1500);
   }
   function onSeeked() {
-    clearTimeout(holdTimer);
-    canvasHold = false;
+    releaseHold();
   }
   /** Paint the frame at `t` into the small hover thumbnail above the timeline. */
   function paintPreview(t: number) {
@@ -325,7 +350,7 @@
     // for every clip after it.
     engineReady = false;
     enginePending = false;
-    canvasHold = false;
+    releaseHold();
     glimpsing = false;
     clearTimeout(glimpseTimer);
     strip = null;
@@ -419,7 +444,7 @@
         engine?.close();
         engine = null;
         engineReady = false;
-        canvasHold = false;
+        releaseHold();
         glimpsing = false;
         clearTimeout(glimpseTimer);
       };
@@ -688,7 +713,15 @@
     };
   }
   function onTime() {
-    if (vid) cur = vid.currentTime || 0;
+    if (!vid) return;
+    cur = vid.currentTime || 0;
+    // Invariant, enforced rather than assumed: a PLAYING video is never sitting
+    // under the scrub still. Every deliberate hold happens with the element
+    // paused (drag, Glimpse) or lasts only until `seeked`, so if we are here
+    // with the video running and no gesture in progress, the hold is stale.
+    // `timeupdate` fires ~4x/second, so any path that leaks a hold self-heals
+    // in ~250 ms instead of freezing the picture until the clip is changed.
+    if (canvasHold && !scrubbing && !glimpsing && !vid.paused) releaseHold();
   }
   function setIn() {
     inS = cur;
@@ -889,11 +922,11 @@
              pixels. It shows the frame under the cursor while dragging, and
              stays up after release until <video> has landed on the same frame,
              so the swap back is invisible. -->
+        <!-- No timestamp pill over the picture: it floated in the middle of the
+             frame while dragging and read as a glitch, not a readout. The
+             transport's own clock (bolder since nightly.3) carries the time. -->
         <div class="liveScrub" class:shown={liveScrubActive}>
           <canvas bind:this={stageCanvas}></canvas>
-          {#if preview != null && scrubbing}
-            <span class="stageTs">{fmt(preview * (dur || engine?.index.durationS || 0))}</span>
-          {/if}
         </div>
         {#if !engineReady && scrubbing && preview != null && strip && stripSrc}
           <!-- Final Cut-style drag scrub: the sprite frame under the cursor
@@ -908,7 +941,6 @@
                      background-size:{strip.cols * 100}% {strip.rows * 100}%;
                      background-position:{c.x}% {c.y}%;"
             ></div>
-            <span class="stageTs">{fmt(preview * (dur || strip.duration))}</span>
           </div>
         {/if}
         {#if usingProxy}
@@ -942,7 +974,7 @@
                 ? (glimpsing ? "Stop Glimpse (Ctrl+Space)" : "Glimpse — sweep the clip's keyframes to see what's in it (Ctrl+Space)")
                 : "Glimpse needs the live decoder, which this clip doesn't support"}
             >{glimpsing ? "⏹" : "⏩"}</button>
-            <span class="time">{fmt(cur)} <span class="sep">/</span> {fmt(dur)}</span>
+            <span class="time"><b>{fmt(cur)}</b><span class="sep">/</span>{fmt(dur)}</span>
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="track"
@@ -1170,19 +1202,6 @@
   .liveScrub canvas {
     display: block;
   }
-  .liveScrub .stageTs,
-  .scrubStage .stageTs {
-    position: absolute;
-    left: 50%;
-    bottom: 12px;
-    transform: translateX(-50%);
-    padding: 2px 10px;
-    border-radius: 999px;
-    background: rgba(0, 0, 0, 0.6);
-    color: #fff;
-    font-size: 12.5px;
-    font-variant-numeric: tabular-nums;
-  }
   /* Transport overlays the bottom of the stage (not a panel below it), so the
      picture stays edge-to-edge. A soft top-fading scrim keeps the controls
      legible over any frame. Shown/hidden by the .shown class (hover reveal). */
@@ -1262,15 +1281,24 @@
     border-color: var(--accent);
     color: #fff;
   }
+  /* The clock is the only time readout left on the stage now that the floating
+     pill is gone, and it has to stay legible over an arbitrary bright frame —
+     hence the shadow and the weight on the current position. */
   .playrow .time {
-    font-size: 12.5px;
+    font-size: 13px;
     color: var(--text-dim);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
+  }
+  .playrow .time b {
+    font-size: 14px;
+    font-weight: 650;
+    color: #fff;
   }
   .playrow .time .sep {
     color: var(--text-faint);
-    margin: 0 1px;
+    margin: 0 4px;
   }
   /* tiny dot on the collapsed Clip tools toggle when a trim/marks exist */
   .ctdot {

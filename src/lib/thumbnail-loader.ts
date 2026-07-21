@@ -24,6 +24,7 @@
 //  - generation token abandons queued work for the old folder on a switch.
 
 import { api } from "./api";
+import { activity } from "./activity.svelte";
 import type { FilmstripInfo } from "./types";
 
 const MAX_INFLIGHT = 6; // parallel decodes — enough to fill a viewport, gentle on the USB SSD
@@ -76,9 +77,72 @@ function pump() {
   }
 }
 
+// ── progress reporting for on-demand loads ──────────────────────────────────
+//
+// This queue used to be completely silent. The backend announces `warm_thumbnails`
+// and sprite builds, but neither covers what actually happens when you open a
+// folder: tiles ask for their own thumbnails one at a time through here, and
+// warming SKIPS video entirely unless it was asked to be heavy (Prepare). So a
+// folder of clips whose posters aren't cached yet renders for ten or fifteen
+// seconds behind a grid of blank tiles with nothing anywhere saying why. That
+// was invisible while old caches existed and became obvious the moment they
+// were wiped.
+//
+// A batch is only announced once it has been running for a beat: warm caches
+// resolve in single-digit milliseconds and a chip flashing on every folder step
+// would be worse than silence.
+const JOB_ID = "thumbs";
+const JOB_LABEL = "Loading thumbnails";
+const ANNOUNCE_AFTER_MS = 700;
+let jobDone = 0; // completions since this batch began
+let jobShown = false;
+let jobTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Outstanding = queued but not started, plus running. Reported as part of the
+ *  total so the denominator is honest while a scroll keeps adding work. */
+function jobReport() {
+  const outstanding = queue.length + inflight;
+  if (outstanding === 0) {
+    // Drained. Close the job out (if it was ever shown) and reset the batch.
+    clearTimeout(jobTimer);
+    jobTimer = undefined;
+    if (jobShown && jobDone > 0) activity.local(JOB_ID, JOB_LABEL, jobDone, jobDone);
+    jobShown = false;
+    jobDone = 0;
+    return;
+  }
+  if (jobShown) activity.local(JOB_ID, JOB_LABEL, jobDone, jobDone + outstanding);
+  else if (!jobTimer) {
+    jobTimer = setTimeout(() => {
+      jobTimer = undefined;
+      // Still busy after the grace period — this one is worth showing.
+      if (queue.length + inflight > 0) {
+        jobShown = true;
+        jobReport();
+      }
+    }, ANNOUNCE_AFTER_MS);
+  }
+}
+
+/** A queued request finished (or failed — either way it stopped being work). */
+function jobFinished() {
+  jobDone++;
+  jobReport();
+}
+
+/** Folder switch: whatever was queued is abandoned, so the batch is over. */
+function jobReset() {
+  clearTimeout(jobTimer);
+  jobTimer = undefined;
+  if (jobShown) activity.end(JOB_ID);
+  jobShown = false;
+  jobDone = 0;
+}
+
 /** Abandon queued (not-yet-started) work — call when the folder changes. */
 export function resetThumbs() {
   generation++;
+  jobReset();
   queue = [];
   pending.clear();
   stripPending.clear();
@@ -101,6 +165,10 @@ function cancel(key: string) {
       queue.splice(i, 1);
       pending.delete(key);
       stripPending.delete(key);
+      // The batch just got smaller without anything completing — re-report, or
+      // a job whose whole remainder scrolled away would sit at its last
+      // percentage forever.
+      jobReport();
     }
   }
 }
@@ -178,6 +246,7 @@ function enqueue(key: string, fetchFsPath: () => Promise<string>): Promise<strin
         pending.delete(key);
         resolve(null);
         pump();
+        jobFinished();
         return;
       }
       inflight++;
@@ -192,10 +261,12 @@ function enqueue(key: string, fetchFsPath: () => Promise<string>): Promise<strin
           inflight--;
           pending.delete(key);
           pump();
+          jobFinished();
         });
     };
     queue.push({ key, run });
     pump();
+    jobReport();
   });
 
   pending.set(key, promise);
@@ -223,6 +294,7 @@ function enqueueStrip(key: string, fetchInfo: () => Promise<FilmstripInfo>): Pro
         stripPending.delete(key);
         resolve(null);
         pump();
+        jobFinished();
         return;
       }
       inflight++;
@@ -239,10 +311,12 @@ function enqueueStrip(key: string, fetchInfo: () => Promise<FilmstripInfo>): Pro
           // outlive it while a FRESH request for the same clip is registered.
           if (stripPending.get(key) === promise) stripPending.delete(key);
           pump();
+          jobFinished();
         });
     };
     queue.push({ key, run });
     pump();
+    jobReport();
   });
 
   stripPending.set(key, promise);

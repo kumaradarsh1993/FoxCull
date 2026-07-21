@@ -1897,6 +1897,23 @@
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   }
+  // ── filmstrip show/hide ───────────────────────────────────────────────────
+  // `filmstripPos: "hidden"` was already a valid dock, but the only way to reach
+  // it was the Arrange popover — the folder tree has a one-click collapse and
+  // the strip deserved the same. Hiding remembers the dock you were in, so
+  // unhiding puts it back rather than defaulting to the bottom.
+  let lastDock = $state<"bottom" | "left" | "right">("bottom");
+  let stripHidden = $derived(settings.s.filmstripPos === "hidden");
+  function toggleFilmstrip() {
+    const pos = settings.s.filmstripPos;
+    if (pos === "hidden") {
+      settings.set({ filmstripPos: lastDock });
+      return;
+    }
+    lastDock = pos;
+    settings.set({ filmstripPos: "hidden" });
+  }
+
   function startStripResize(e: PointerEvent) {
     e.preventDefault();
     const pos = settings.s.filmstripPos;
@@ -2163,6 +2180,7 @@
     if (k === "l") { dimLevel = (dimLevel + 1) % 3; return; }
     if (k === "g") { setView("grid"); return; }
     if (k === "d") { setView("details"); return; }
+    if (k === "b") { toggleFilmstrip(); return; }
     if (e.key >= "1" && e.key <= "5") { rate(Number(e.key)); return; }
     if (e.key === "`") { rate(0); return; }
     if (e.key in LABEL_BY_DIGIT) { label(LABEL_BY_DIGIT[e.key]); return; }
@@ -2414,7 +2432,6 @@
           <button class="btn sm" onclick={openFolderPicker} title="Jump to a folder">Open</button>
         </div>
       </div>
-      <ActivityBar />
       <div class="tree-body">
         {#if drives.length}
           {#each drives as d (d.path)}
@@ -2424,12 +2441,19 @@
           <p class="hint">No drives detected.</p>
         {/if}
       </div>
+      <!-- Background activity sits at the BOTTOM of the sidebar, where a status
+           bar belongs — it spent long enough tucked under the header where it
+           read as part of the folder chrome. It renders nothing when idle. -->
+      <ActivityBar />
     </aside>
     <div class="vsplit treeSplit" role="separator" tabindex="-1" onpointerdown={startTreeResize}></div>
   {:else}
     <button class="treeRestore ico sm" onclick={() => (treeCollapsed = false)} title="Show folders" aria-label="Show folders">
       <svg class="panelGlyph" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><line x1="9.4" y1="4.6" x2="9.4" y2="19.4"/><path d="M13.5 9.5 16 12l-2.5 2.5"/></svg>
     </button>
+    <!-- Sidebar hidden: the same chip floats bottom-left instead of disappearing
+         with it. "Why is the disk busy" must be answerable in every layout. -->
+    <div class="actFloat"><ActivityBar /></div>
   {/if}
 
   <!-- ░ center ░ -->
@@ -2859,6 +2883,7 @@
             <div class="kbRow"><span class="keys"><kbd>F</kbd></span><span>Play mode — cycle: + strip → bare → off</span></div>
             <div class="kbRow"><span class="keys"><kbd>L</kbd></span><span>Dim lights (cycle)</span></div>
             <div class="kbRow"><span class="keys"><kbd>I</kbd></span><span>Info overlay</span></div>
+            <div class="kbRow"><span class="keys"><kbd>B</kbd></span><span>Hide / show the filmstrip</span></div>
             <div class="kbGroup">Files</div>
             <div class="kbRow"><span class="keys"><kbd>Ctrl</kbd>+<kbd>X</kbd> <kbd>Ctrl</kbd>+<kbd>V</kbd></span><span>Move files (cut → paste in folder)</span></div>
             <div class="kbRow"><span class="keys"><kbd>Ctrl</kbd>+<kbd>A</kbd></span><span>Select all (filtered)</span></div>
@@ -3037,11 +3062,37 @@
 
     <!-- bottom filmstrip — hidden in the bare fullscreen state (fsMode 2), shown
          and dimmed in play-mode-with-strip (fsMode 1), normal otherwise. -->
-    {#if !editOpen && settings.s.filmstripPos === "bottom" && view.length && fsMode !== 2}
-      <div class="hsplit" role="separator" tabindex="-1" onpointerdown={startStripResize} title="Drag to resize"><span class="grip"></span></div>
-      <div class="bstrip" class:fsDim={fullscreen} style="height:{settings.s.filmstripSize}px">
-        <VirtualStrip items={view} {activeIndex} orientation="h" cellSize={stripCell} cell={stripCellSnip} />
+    <!-- The 8px handle doubles as the show/hide control and stays put when the
+         strip is hidden, so there is always something to click to bring it back
+         (and it costs 8px, not a panel). Hiding from a left/right dock parks the
+         control here too — one consistent place for "the strip is away". -->
+    {#if !editOpen && view.length && fsMode !== 2 && (settings.s.filmstripPos === "bottom" || stripHidden)}
+      <div
+        class="hsplit"
+        class:collapsed={stripHidden}
+        role="separator"
+        tabindex="-1"
+        onpointerdown={stripHidden ? undefined : startStripResize}
+        title={stripHidden ? "" : "Drag to resize"}
+      >
+        <span class="grip"></span>
+        <button
+          class="stripToggle"
+          onpointerdown={(e) => e.stopPropagation()}
+          onclick={toggleFilmstrip}
+          title={stripHidden ? "Show filmstrip (B)" : "Hide filmstrip (B)"}
+          aria-label={stripHidden ? "Show filmstrip" : "Hide filmstrip"}
+        >
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d={stripHidden ? "M6 15l6-6 6 6" : "M6 9l6 6 6-6"} />
+          </svg>
+        </button>
       </div>
+      {#if !stripHidden}
+        <div class="bstrip" class:fsDim={fullscreen} style="height:{settings.s.filmstripSize}px">
+          <VirtualStrip items={view} {activeIndex} orientation="h" cellSize={stripCell} cell={stripCellSnip} />
+        </div>
+      {/if}
     {/if}
   </main>
 
@@ -3080,6 +3131,22 @@
     top: 8px;
     box-shadow: var(--shadow);
   }
+  /* Floating stand-in for the sidebar's activity chip while the sidebar is
+     collapsed. Self-hides when idle (the component renders nothing), so it only
+     ever overlaps the filmstrip corner while there is something to report. */
+  .actFloat {
+    position: absolute;
+    z-index: 80;
+    left: 8px;
+    bottom: 8px;
+    width: 260px;
+    max-width: 40vw;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+  }
+  .app.fs .actFloat { display: none; }
   .tree-actions { display: flex; align-items: center; gap: 6px; }
   .ico.sm { width: 26px; height: 26px; font-size: 13px; }
   .ico.spin { animation: spin 0.5s linear; color: var(--accent); border-color: var(--accent); }
@@ -3090,10 +3157,34 @@
 
   .vsplit { flex: 0 0 5px; cursor: col-resize; background: transparent; }
   .vsplit:hover { background: color-mix(in srgb, var(--accent) 40%, transparent); }
-  .hsplit { flex: 0 0 8px; cursor: row-resize; display: flex; align-items: center; justify-content: center; background: var(--bg-panel); border-top: 1px solid var(--border); }
+  .hsplit { position: relative; flex: 0 0 8px; cursor: row-resize; display: flex; align-items: center; justify-content: center; background: var(--bg-panel); border-top: 1px solid var(--border); }
   .hsplit .grip { width: 46px; height: 3px; border-radius: 3px; background: var(--text-faint); opacity: 0.4; }
   .hsplit:hover { background: color-mix(in srgb, var(--accent) 22%, var(--bg-panel)); }
   .hsplit:hover .grip { opacity: 0.9; background: var(--accent); }
+  /* With the strip hidden there is nothing to resize — only to restore. */
+  .hsplit.collapsed { flex-basis: 14px; cursor: default; }
+  .hsplit.collapsed:hover { background: var(--bg-panel); }
+  .hsplit.collapsed .grip { opacity: 0.22; }
+  /* Overhangs its 8px rail so it stays a real click target without the rail
+     having to grow. */
+  .stripToggle {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 17px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--bg-panel);
+    color: var(--text-dim);
+    cursor: pointer;
+    z-index: 3;
+  }
+  .stripToggle:hover { color: var(--accent); border-color: var(--accent); }
 
   .center { display: flex; flex-direction: column; flex: 1; min-width: 0; height: 100vh; }
 

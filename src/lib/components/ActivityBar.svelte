@@ -72,8 +72,9 @@
 {/if}
 
 <style>
+  /* Docked at the BOTTOM of the sidebar, so the rule goes on top. */
   .act {
-    border-bottom: 1px solid var(--border);
+    border-top: 1px solid var(--border);
     background: var(--bg-panel);
     flex: 0 0 auto;
   }

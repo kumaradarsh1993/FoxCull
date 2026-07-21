@@ -1,58 +1,60 @@
-# FoxCull v1.2.0-nightly.2
+# FoxCull v1.2.0-nightly.3
 
-Built on your feedback from nightly.1. The scrubbing engine now runs everywhere
-it should, and there's a new way to see what's inside a long clip.
+A bug fix that deserved the deep look you asked for, plus the smaller things
+around it.
 
-## Glimpse — press Ctrl+Space
+## The picture freezing while the audio played on
 
-The culling problem: a long clip's cover frame tells you almost nothing, and
-dragging the playhead to find out is work you have to do by hand.
+You found a real one. Clicking or dragging the timeline during playback could
+leave the frame stuck while the sound carried on — intermittently, and once it
+started on a clip it kept happening on that clip.
 
-**Glimpse sweeps the whole clip for you.** Press `Ctrl+Space`, or the ⏩ button
-beside play, and FoxCull flips through the clip's keyframes fast enough to be
-quick and slow enough to read — the way you'd thumb through footage in an
-editor. A nine-minute clip takes about fourteen seconds. Press it again, hit
-space, or grab the playhead to stop; it lands cleanly on wherever you stopped.
+**What was happening.** Releasing the playhead starts two things at once: FoxCull
+decodes the exact frame you landed on, and the video itself seeks to it.
+Whichever finishes second was supposed to hand the picture back to live video.
+If the video won that race, the still was cleared correctly — and then the
+late-arriving decoded frame put itself back on screen, with nothing left to ever
+take it down again. Hence a frozen picture over a perfectly healthy, playing
+video.
 
-Short clips are never rushed: however high the speed, a sweep always takes at
-least a few seconds. **Settings → Glimpse speed** runs from 10× to 100× real
-time if you want it brisker or calmer.
+That also explains why it felt random but then stuck: which side wins depends on
+how fast that particular file seeks, so a clip that loses the race once loses it
+every time.
 
-## Skimming in the grid is decoded now too
+**The fix** tags each decode with the hand-off it belongs to, so a frame that
+arrives after the video has already taken over is discarded — it would only have
+shown the frame the video is already displaying. On top of that, FoxCull now
+checks four times a second that a playing video is never sitting behind a still,
+so anything similar recovers on its own instead of freezing.
 
-Hovering an armed tile in the grid used to paint small frames extracted in
-advance. It now decodes the real frame under your cursor, exactly like Focus.
-Full resolution, and it works on a clip the first time you touch it.
+## Scrubbing readouts
 
-**So video pre-caching is gone entirely.**
+- The timestamp that floated in the middle of the picture while dragging is
+  **gone** — it read as a glitch, not a readout.
+- The transport's own clock takes over the job: the current position is bigger,
+  white and bold, and legible over a bright frame.
 
-- **Prepare** no longer builds scrub frames for videos — just the poster. On a
-  folder of 4K clips that was most of the work it was doing.
-- The "Pre-build nearby clips" setting is gone; there is nothing left to
-  pre-build.
-- Nothing is written to your drives for scrubbing any more, anywhere.
+## Hide the filmstrip — press B
 
-Clips whose codec can't be decoded this way quietly fall back to the old
-behaviour, building frames on demand as before.
+The filmstrip now hides and comes back, like the folder panel: press **B**, or
+click the small chevron on the divider above it. What's left behind is a 14-pixel
+rail, so there is always something to click to bring it back. Hiding remembers
+where the strip was docked, so it returns to the bottom, left or right as you had
+it.
 
-## The blip when opening a clip
+## "Is it doing anything?"
 
-You spotted a frame appearing and then being replaced a few milliseconds later.
-It was real: the still shown while a clip opens was taken **one second in**,
-while the video itself starts at **zero** — two different moments of the same
-clip, swapping. The Focus still is now taken at zero, so there's nothing to see.
-(The grid's thumbnail keeps its one-second frame, since frame zero is often
-black.)
+Opening a folder whose thumbnails aren't built yet used to render in silence —
+sometimes for ten or fifteen seconds — because only bulk jobs like Prepare ever
+reported progress, and video posters weren't part of those at all. Loading now
+reports itself like any other job, so you can see it working and roughly how far
+along it is.
 
-## Smaller things
+The activity indicator has also moved to the **bottom-left**, where a status
+readout belongs, and it no longer disappears when you collapse the folder panel.
 
-- **Arrange** has icons beside Sort, Group and Subgroup, and the sort-direction
-  arrow is now a proper button instead of a faint mark.
-- **Prepare** is narrower, and its bolt is bigger and gold.
+## Still worth testing
 
-## Worth testing
-
-Glimpse's pacing is the main thing — tell me if 40× feels right as the default,
-or if it wants to be quicker. Also worth a look: grid skimming on portrait
-clips, and phone (H.264) video, which takes a slightly different path inside
-and hasn't met a real file yet.
+Glimpse's pacing — tell me if 40× is right as a default. And phone (H.264)
+video, which takes a slightly different path inside and still hasn't met a real
+file.
