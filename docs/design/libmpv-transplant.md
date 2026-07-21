@@ -93,7 +93,101 @@ Corollary for FFI here: keep native Win32 usage **hand-declared** (as `mpv.rs`
 does for `user32`) rather than pulling `windows-sys`/`windows` features — those
 add ~100k exported symbols and, if the cdylib ever comes back, re-trip the limit.
 
-## M2 probe result (2026-07-21)
+## RESOLVED (2026-07-21): the surface works, and it goes BEHIND the webview
+
+Everything below this section is superseded — kept because the wrong turns are
+the useful part of the record.
+
+### What the three failures actually were
+
+1. **`loadfile` rejected every Windows path.** `mpv_command_string` runs mpv's
+   own parser, and inside a quoted argument **backslash is an escape character**,
+   so `loadfile "P:\All media MASTER\…"` was read as the escapes `\A`, `\M`, `\P`
+   and returned error -4. mpv had a perfectly good window and had been handed
+   nothing to play. Fixed by using `mpv_command`'s **argv** form, which parses
+   nothing. *(This is what the original "no picture" probe was actually seeing.)*
+2. **A diagnostics read taken 1.2 s after start** reported `vo-configured=no`.
+   D3D11 context creation plus first-run shader compilation takes ~6 s. The
+   sample was simply too early. Now sampled later, and mpv's own verbose log
+   (`%APPDATA%/com.foxcull.app/mpv.log`) is enabled while the flag is on.
+3. **`SWP_NOZORDER` on every reposition** preserved whatever order existed, so a
+   webview recreation could put the video permanently on the wrong side. Z-order
+   is now restated explicitly on every move.
+
+Once those were fixed the surface rendered correctly: 3840×2160 HEVC Main 10,
+`hwdec=d3d11va` on the GTX 1070, flip-model presentation, and the owner's verdict
+on seeking was *"this is the kind of behavior I was expecting."*
+
+### The layering decision, and why it changed
+
+**First working version put mpv IN FRONT** (`HWND_TOP`, commit `4ae90ae`). It
+composited fine. But a window in front of the page cannot be drawn over by
+anything *in* the page, so every overlay in the app — Settings, Prepare, Filters,
+Arrange, context menus, the Info panel, dialogs — was invisible behind it. The
+workaround was to hide the video whenever an overlay opened, which produced a
+visible frame-switch each time, plus a reserved transport strip, a pinned bar,
+and `overlayOpen` plumbing through the component tree. The owner's read was
+blunt and correct: *"these trade-offs are just piling up… it just switches
+frames, it looks odd."* The trade-offs were a symptom of the layering choice.
+
+**Current design: mpv BEHIND a transparent webview.**
+
+- The window is created with `transparent: true`.
+- The page still paints an opaque background **by default**, so with no video
+  showing the app looks and behaves exactly as before — the transparency is
+  invisible.
+- While the native surface is up, `<html>` gets the `nativeHole` class
+  (`app.css`). That drops the page background and the `.viewport` background, so
+  the Focus video stage becomes a genuine hole. Every other region paints its own
+  background (see the `:global(html.nativeHole)` rules in `+page.svelte`), or the
+  desktop would show through the gaps.
+- mpv's child window sits at `HWND_BOTTOM` (`VIDEO_Z` in `mpv.rs`) and shows
+  through the hole.
+
+What this buys, all of it deleted rather than worked around:
+
+- Menus, dialogs, the Info panel and the transport are **ordinary HTML on top**.
+- Semi-transparent overlays (the transport's gradient) **alpha-blend over the
+  video** for free.
+- The minimal hover-reveal bar works again; no reserved strip, no pinned bar.
+- Clicking the picture is a plain HTML handler (`.nativeHit`) — mpv never sees a
+  click, so its own `MBTN_LEFT` binding is redundant.
+- Fullscreen needs no special casing.
+
+**The hole is only opened once mpv has actually started** (`nativeReady`).
+Punching it earlier would briefly show the desktop, because there is no video
+window behind it yet.
+
+### How to revert to the in-front design
+
+1. `VIDEO_Z = HWND_TOP` (null) in `mpv.rs`.
+2. `"transparent": false` in `tauri.conf.json`.
+3. Restore the reserved-strip / `overlayOpen` / hide-on-overlay code from
+   `4ae90ae`.
+
+Worth keeping documented because the behind-approach depends on WebView2
+transparency, which is the piece most likely to misbehave on another machine or
+a future WebView2 release. `native_video_set_visible` is retained for that path.
+
+### Still open
+
+- In/out point marking doesn't take effect in the native path (keys are wired
+  and exported; cause not yet diagnosed — do not guess at it).
+- Fullscreen (F) positioning of the surface is untested.
+- Prepare has no cancel button (owner request, unrelated to this work).
+- macOS embedding is a different API entirely (NSView) — untouched.
+
+### Dev-environment trap that wasted a round of testing
+
+`tauri dev` on this machine had a **72 KB stub `ffmpeg.exe`** beside the built
+exe (the placeholder that satisfies `cargo check`), not the real 144 MB binary.
+Every ffmpeg operation therefore failed silently in dev — video posters, scrub
+sprites, HEIC decode, proxies — and was misreported as thumbnail/live-scrub
+regressions. Videos still *played*, because mpv brings its own decoders. Copy the
+real binary to `src-tauri/binaries/ffmpeg-<triple>.exe` (gitignored) before
+trusting any media behaviour seen in a dev run.
+
+## M2 probe result (2026-07-21) — superseded, see above
 
 First on-device test: toggling **Native video ON/OFF made no visible difference**
 — the `<video>` element kept playing either way, no mpv picture appeared. So the

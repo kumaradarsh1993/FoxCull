@@ -1282,6 +1282,34 @@ pub fn native_video_start(
     Ok("ok".into())
 }
 
+/// Show/hide the native surface without tearing the player down.
+///
+/// Necessary because the surface is a real window IN FRONT of the webview: any
+/// menu, popover or dialog that would overlap it is simply invisible. Rather
+/// than fight that, the UI hides the video for as long as such an overlay is
+/// open (playback continues; only the picture is hidden) and shows it again
+/// after. Cheap — no reload, no seek, no decoder restart.
+#[cfg(windows)]
+#[tauri::command]
+pub fn native_video_set_visible(state: State<'_, crate::mpv::NativeVideoState>, visible: bool) {
+    if let Some(p) = state.0.lock().as_ref() {
+        p.set_visible(visible);
+    }
+}
+
+/// Playback position/length/paused for the transport. Polled a few times a
+/// second while a clip is open, so it stays deliberately cheap — three property
+/// reads, no logging.
+#[cfg(windows)]
+#[tauri::command]
+pub fn native_video_state(
+    state: State<'_, crate::mpv::NativeVideoState>,
+) -> Result<(f64, f64, bool), String> {
+    let guard = state.0.lock();
+    let p = guard.as_ref().ok_or("no native player running")?;
+    Ok(p.state())
+}
+
 /// Dump the live player's state to the log (and return it). Called by the UI a
 /// beat after start so the log shows mpv AFTER it has opened the file — the
 /// evidence that separates "failed" from "rendering where we can't see it".
@@ -1353,6 +1381,14 @@ pub fn native_video_stop() {}
 pub fn native_video_diagnostics() -> Result<String, String> {
     Err("native video player is Windows-only for now".into())
 }
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn native_video_state() -> Result<(f64, f64, bool), String> {
+    Err("native video player is Windows-only for now".into())
+}
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn native_video_set_visible() {}
 
 #[derive(Serialize)]
 pub struct FilmstripInfo {

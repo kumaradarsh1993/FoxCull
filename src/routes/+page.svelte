@@ -1418,6 +1418,7 @@
     ask = null;
     await a?.onconfirm?.();
   }
+
   function showUndoToast(msg: string) {
     undoToast = msg;
     clearTimeout(undoToastTimer);
@@ -1695,6 +1696,7 @@
   const revealLabel = isMac ? "Reveal in Finder" : "Show in Explorer";
   let menu = $state<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
 
+
   async function copyPath(p: string) {
     try {
       await navigator.clipboard.writeText(p);
@@ -1890,6 +1892,15 @@
     // Stay where we were — after the rejected shots vanish, the same index lands
     // on the next surviving photo, not back at the top of the folder.
     if (currentDir) await openFolder(currentDir, { selectIndex: activeIndex });
+  }
+
+  /** Ctrl+wheel over the grid resizes the tiles — the gesture every photo tool
+   *  has, and the one the toolbar slider otherwise makes you reach for. */
+  function onViewportWheel(e: WheelEvent) {
+    if (!e.ctrlKey || viewMode === "loupe" || editOpen) return;
+    e.preventDefault();
+    const next = settings.s.gridSize + (e.deltaY < 0 ? 12 : -12);
+    settings.set({ gridSize: Math.max(110, Math.min(360, next)) });
   }
 
   // ── panel resizing ──────────────────────────────────────────────────────
@@ -2933,6 +2944,7 @@
       <div
         class="viewport"
         class:lit={dimLevel > 0}
+        onwheel={onViewportWheel}
         oncontextmenu={(e) => {
           if (viewMode === "loupe" && active) openContextMenu(e, active, activeIndex);
         }}
@@ -2961,7 +2973,12 @@
             {/if}
           </div>
         {:else if viewMode === "loupe"}
-          <Loupe item={active} showInfo={showInfoOverlay} onchanged={refreshAfterMediaOutput} bind:this={loupeComp} />
+          <Loupe
+            item={active}
+            showInfo={showInfoOverlay}
+            onchanged={refreshAfterMediaOutput}
+            bind:this={loupeComp}
+          />
         {:else if viewMode === "details"}
           <DetailsView
             items={view}
@@ -3455,6 +3472,20 @@
 
   .body { flex: 1; display: flex; min-height: 0; }
   .viewport { flex: 1; min-width: 0; background: var(--viewport-bg); overflow: hidden; display: flex; flex-direction: column; }
+
+  /* ── native-video hole: chrome opaque, viewport transparent ────────────────
+     With `html.nativeHole` set (see app.css) the page no longer paints a
+     background, so anything that was relying on it would show the DESKTOP.
+     Every region except the viewport therefore states its own background here.
+     The viewport is the hole — mpv renders behind it and shows through.
+
+     `.app`, `main` and `.body` deliberately stay transparent: they are the
+     ancestors of the viewport, and an opaque background on any of them would
+     fill the hole back in. */
+  :global(html.nativeHole) .viewport { background: transparent; }
+  :global(html.nativeHole) .vsplit,
+  :global(html.nativeHole) .rstrip,
+  :global(html.nativeHole) .bstrip { background: var(--bg-panel); }
   .viewport.lit { position: relative; z-index: 50; }
   .rstrip { flex: 0 0 auto; border-left: 1px solid var(--border); }
   .lstrip { flex: 0 0 auto; border-right: 1px solid var(--border); background: var(--bg-panel); }

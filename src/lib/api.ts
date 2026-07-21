@@ -61,6 +61,11 @@ export const api = {
     invoke("native_video_set_rect", { x, y, w, h }).catch(() => {}),
   nativeVideoCommand: (cmd: string) =>
     invoke("native_video_command", { cmd }).catch(() => {}),
+  /** Hide/show the native surface (kept playing) so HTML overlays can be seen. */
+  nativeVideoSetVisible: (visible: boolean) =>
+    invoke<void>("native_video_set_visible", { visible }),
+  /** [position, duration, paused] from the native player — polled by the transport. */
+  nativeVideoState: () => invoke<[number, number, boolean]>("native_video_state"),
   /** Log + return the live native player's state (M2 instrumentation). */
   nativeVideoDiagnostics: () => invoke<string>("native_video_diagnostics"),
   nativeVideoStop: () => invoke("native_video_stop").catch(() => {}),

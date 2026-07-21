@@ -132,6 +132,28 @@ html, body {
   -webkit-user-select: none;
 }
 
+/* ── native-video "hole" ─────────────────────────────────────────────────────
+   The window is created with `transparent: true`, but the page paints an opaque
+   background by default (above), so normally the app looks exactly as it always
+   has and the transparency is invisible.
+
+   When the experimental native player is showing a clip, `<html>` gets the
+   `nativeHole` class. That drops the page's own background so the video stage
+   becomes a genuine hole through which mpv — which sits BEHIND the webview —
+   shows. Every piece of chrome then has to paint its own background, or you'd
+   see the desktop through the gaps: that is what the rules in +page.svelte's
+   style block are for.
+
+   Why this shape rather than putting mpv in front: a window in front of the page
+   cannot be drawn over by anything in the page, so every menu, dialog and
+   overlay had to hide the video while open. Behind + transparent means overlays
+   are just HTML again, and semi-transparent ones (the transport gradient) blend
+   over the video for free. */
+html.nativeHole,
+html.nativeHole body {
+  background: transparent;
+}
+
 button { font-family: inherit; color: inherit; background: transparent; border: none; cursor: pointer; }
 
 /* Keyboard-driven app ⇒ keyboard focus must be visible. Only :focus-visible,

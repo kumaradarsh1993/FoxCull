@@ -94,6 +94,7 @@
   let preview = $state<number | null>(null); // fraction 0..1 to preview, or null
   let scrubbing = $state(false);
   let trackEl = $state<HTMLDivElement | null>(null);
+  let trimEl = $state<HTMLDivElement | null>(null); // transport strip
   let infoVisible = $state(false);
   let pendingSeek: number | null = null;
   let seekRAF = 0;
@@ -128,9 +129,6 @@
   // to pin the bar open like a classic player.
   let bottomHover = $state(false);
   let minimalBar = $derived(settings.s.minimalVideoBar);
-  let showTransport = $derived(
-    !minimalBar || bottomHover || scrubbing || clipToolsOpen,
-  );
   function onStagePointerMove(e: PointerEvent) {
     const el = stageEl;
     if (!el) return;
@@ -143,13 +141,70 @@
     bottomHover = false;
   }
 
-  // ── experimental native (libmpv) surface — M2 probe ───────────────────────
-  // When the setting is on and we're on a video, spin up the native player over
-  // the stage rect and let it play. This is the compositing probe: it tells us
-  // whether the native surface renders over the webview and where our overlays
-  // land relative to it. The <video> element is muted meanwhile to avoid double
-  // audio. All failures are swallowed → the built-in player still works.
+  // ── experimental native (libmpv) surface ──────────────────────────────────
+  // mpv renders into a child window placed BEHIND the webview; the page leaves
+  // the video stage transparent so it shows through (see app.css .nativeHole and
+  // the VIDEO_Z comment in mpv.rs). Overlays are therefore ordinary HTML drawn
+  // on top. Every failure is swallowed → the <video> element still works.
   let nativeVideo = $derived(settings.s.experimentalNativeVideo);
+  /// True while the native surface is actually the thing painting this clip.
+  let nativeActive = $derived(nativeVideo && item?.kind === "video");
+
+  // The transport behaves identically whether the native player is on or not —
+  // mpv now renders BEHIND the page, so the bar can float over the picture and
+  // hover-reveal exactly as it always did. (When the surface was in front, this
+  // had to be pinned open and given reserved space; see the VIDEO_Z comment in
+  // mpv.rs for why that whole class of special-casing is gone.)
+  let showTransport = $derived(
+    !minimalBar || bottomHover || scrubbing || clipToolsOpen,
+  );
+
+  /// Set once mpv has actually started for the current clip. The hole is only
+  /// opened after that: punch it earlier and there is no video window behind it
+  /// yet, so the "hole" would show the DESKTOP for a beat. While false the page
+  /// stays opaque and paints the cached poster, exactly as the normal player.
+  let nativeReady = $state(false);
+
+  /// True once mpv is genuinely painting through the hole — the point at which
+  /// the <video> element must get out of the way.
+  let nativeShowing = $derived(nativeActive && nativeReady);
+
+  // Open the hole in the page while the native surface is up (app.css
+  // `.nativeHole`). Closing it again on teardown matters: leave it set and the
+  // grid would be see-through.
+  $effect(() => {
+    const root = document.documentElement;
+    if (nativeActive && nativeReady) root.classList.add("nativeHole");
+    else root.classList.remove("nativeHole");
+    return () => root.classList.remove("nativeHole");
+  });
+
+  // Leaving Focus (or turning the flag off) must take the video window down —
+  // it is a real window and would otherwise sit over the grid.
+  $effect(() => {
+    if (nativeActive) return;
+    api.nativeVideoStop().catch(() => {});
+  });
+
+  // Position/length come from mpv, not the <video> element, while it is driving.
+  let nativePoll: ReturnType<typeof setInterval> | undefined;
+  $effect(() => {
+    clearInterval(nativePoll);
+    if (!nativeActive) return;
+    nativePoll = setInterval(async () => {
+      try {
+        const [t, d, p] = await api.nativeVideoState();
+        if (!scrubbing) cur = t;
+        if (d > 0) dur = d;
+        paused = p;
+      } catch {
+        /* player not up yet */
+      }
+    }, 250);
+    return () => clearInterval(nativePoll);
+  });
+  /// The rect mpv is given: the WHOLE stage. No space is reserved for controls
+  /// any more — they are HTML on top of the transparent page, over the video.
   function nativeRect(): { x: number; y: number; w: number; h: number } | null {
     const el = stageEl;
     if (!el) return null;
@@ -176,7 +231,13 @@
       .nativeVideoStart(it.path, rect.x, rect.y, rect.w, rect.h)
       .then(() => {
         if (my !== epoch) return;
-        api.nativeVideoCommand("set pause no");
+        // Respect the autoplay setting. The probe hard-coded "play" so the
+        // surface would definitely show something; leaving it in meant every
+        // clip started itself regardless of the toggle.
+        const play = settings.s.videoAutoplay;
+        paused = !play;
+        api.nativeVideoCommand(`set pause ${play ? "no" : "yes"}`);
+        nativeReady = true;
         // mpv opens the file asynchronously, so state read at start() is still
         // empty. Sample it a beat later — that log line is the M2 evidence.
         setTimeout(() => {
@@ -194,6 +255,9 @@
     const it = item;
     void stageW;
     void stageH;
+    // Clip tools change the strip's height, so the reserved area must follow.
+    void clipToolsOpen;
+    void showTransport;
     if (!on || !it || it.kind !== "video" || !stageEl) return;
     const rect = nativeRect();
     if (rect) api.nativeVideoSetRect(rect.x, rect.y, rect.w, rect.h);
@@ -255,6 +319,7 @@
     scrubbing = false;
     showLow = false;
     lowSrc = null;
+    nativeReady = false; // re-opened per clip; see the nativeHole effect
     if (!it) {
       curSrc = null;
       vsrc = null;
@@ -394,11 +459,27 @@
 
   // ── playback (exposed to the page's global key handler) ──
   export function togglePlay() {
+    // With the native surface driving, the <video> element is covered and
+    // irrelevant — toggling it did nothing visible, which is why Space appeared
+    // dead. mpv also ignores keyboard by design (input-default-bindings=no), so
+    // every control has to be routed to it explicitly.
+    if (nativeActive) {
+      paused = !paused;
+      api.nativeVideoCommand(`set pause ${paused ? "yes" : "no"}`).catch(() => {});
+      return;
+    }
     if (!vid) return;
     if (vid.paused) vid.play().catch(() => {});
     else vid.pause();
   }
   export function seekBy(d: number) {
+    if (nativeActive) {
+      const max = dur || 0;
+      if (max <= 0) return;
+      cur = Math.max(0, Math.min(max, cur + d));
+      api.nativeVideoCommand(`seek ${cur.toFixed(3)} absolute+exact`).catch(() => {});
+      return;
+    }
     if (!vid) return;
     ensureFilmstrip(); // key/controller seeking is scrub intent too
     const max = dur || strip?.duration || vid.duration || 0;
@@ -431,6 +512,14 @@
   }
   function applySeek(frac: number, final = false) {
     const d = dur || strip?.duration || 0;
+    if (nativeActive) {
+      // No throttling and no "fast vs exact" split: mpv keeps its decoder hot
+      // and seeks exactly, which is the entire reason for the native player.
+      if (d <= 0) return;
+      cur = frac * d;
+      api.nativeVideoCommand(`seek ${cur.toFixed(3)} absolute+exact`).catch(() => {});
+      return;
+    }
     if (vid && d > 0) {
       const t = frac * d;
       cur = t;
@@ -474,6 +563,11 @@
   function ensureFilmstrip() {
     const it = item;
     if (!it || it.kind !== "video") return;
+    // The native player makes the sprite sheet pointless HERE: mpv seeks to real
+    // frames instantly, so pre-extracting low-res stand-ins would be pure cost.
+    // Grid skimming still needs them (you cannot run a decoder per tile), which
+    // is why this is gated on the Focus path rather than on the setting.
+    if (nativeActive) return;
     if (!settings.s.liveScrub || denseRequested) return;
     denseRequested = true;
     const my = epoch;
@@ -491,8 +585,13 @@
   function onTrackDown(e: PointerEvent) {
     ensureFilmstrip();
     scrubbing = true;
-    resumeAfterScrub = !!vid && !vid.paused;
-    vid?.pause();
+    if (nativeActive) {
+      resumeAfterScrub = !paused;
+      if (!paused) api.nativeVideoCommand("set pause yes").catch(() => {});
+    } else {
+      resumeAfterScrub = !!vid && !vid.paused;
+      vid?.pause();
+    }
     api.cancelWarm();
     try {
       trackEl?.setPointerCapture(e.pointerId);
@@ -513,7 +612,10 @@
     const f = fracFromEvent(e);
     preview = f;
     seekTo(f, true);
-    if (resumeAfterScrub) vid?.play().catch(() => {});
+    if (resumeAfterScrub) {
+      if (nativeActive) api.nativeVideoCommand("set pause no").catch(() => {});
+      else vid?.play().catch(() => {});
+    }
     resumeAfterScrub = false;
     try {
       trackEl?.releasePointerCapture(e.pointerId);
@@ -686,10 +788,19 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="stagewrap"
+          class:nativeArea={nativeActive}
           bind:this={stageEl}
           onpointermove={onStagePointerMove}
           onpointerleave={onStagePointerLeave}
         >
+        <!-- Once mpv is up, the <video> element is removed entirely: it would
+             paint over the transparent hole and hide the native picture behind
+             it. Until then it stays, so the poster/first frame still shows. -->
+        {#if nativeShowing}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <div class="nativeHit" onclick={togglePlay}></div>
+        {:else}
         <!-- svelte-ignore a11y_media_has_caption -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -732,7 +843,8 @@
             }
           }}
         ></video>
-        {#if scrubbing && preview != null && strip && stripSrc}
+        {/if}
+        {#if scrubbing && preview != null && strip && stripSrc && !nativeActive}
           <!-- Final Cut-style drag scrub: the sprite frame under the cursor
                paints the WHOLE stage instantly (decode-free) while the real
                decoder chases underneath; releasing lands the accurate frame. -->
@@ -761,7 +873,7 @@
         {#if minimalBar && !showTransport}
           <div class="thinline"><div class="thinfill" style="width:{pct(cur)}%"></div></div>
         {/if}
-        <div class="trim" class:shown={showTransport}>
+        <div class="trim" class:shown={showTransport} bind:this={trimEl}>
           <!-- Compact single-row transport: play, time, inline scrubber, then the
                Info + Clip tools toggles. Trim/mark/export controls only unfold
                below when Clip tools is open. Overlays the bottom of the stage;
@@ -951,6 +1063,15 @@
   .stagewrap video {
     width: 100%;
     height: 100%;
+  }
+  /* Transparent click target over the hole: the page is on top of the video, so
+     clicking to play/pause is plain HTML again (mpv itself never sees a click). */
+  .nativeHit {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    background: transparent;
+    cursor: pointer;
   }
   .scrubStage {
     position: absolute;

@@ -31,6 +31,10 @@ type FnInitialize = unsafe extern "C" fn(MpvHandle) -> c_int;
 type FnSetOption = unsafe extern "C" fn(MpvHandle, *const c_char, c_int, *mut c_void) -> c_int;
 type FnSetOptionString = unsafe extern "C" fn(MpvHandle, *const c_char, *const c_char) -> c_int;
 type FnCommandString = unsafe extern "C" fn(MpvHandle, *const c_char) -> c_int;
+/// `mpv_command` — NULL-terminated argv. Unlike `mpv_command_string` this does
+/// no parsing, which is the only safe way to pass a Windows path (see
+/// `Mpv::command_args`).
+type FnCommand = unsafe extern "C" fn(MpvHandle, *const *const c_char) -> c_int;
 type FnSetPropertyString = unsafe extern "C" fn(MpvHandle, *const c_char, *const c_char) -> c_int;
 type FnGetPropertyString = unsafe extern "C" fn(MpvHandle, *const c_char) -> *mut c_char;
 type FnFree = unsafe extern "C" fn(*mut c_void);
@@ -46,6 +50,7 @@ struct MpvFns {
     set_option: RawSymbol<FnSetOption>,
     set_option_string: RawSymbol<FnSetOptionString>,
     command_string: RawSymbol<FnCommandString>,
+    command: RawSymbol<FnCommand>,
     set_property_string: RawSymbol<FnSetPropertyString>,
     get_property_string: RawSymbol<FnGetPropertyString>,
     free: RawSymbol<FnFree>,
@@ -73,6 +78,13 @@ fn dirs_local_appdata() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
 }
 
+/// Where mpv should write its own verbose log, beside our `foxcull.log`.
+fn mpv_log_path() -> Option<PathBuf> {
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .map(|p| p.join("com.foxcull.app").join("mpv.log"))
+}
+
 /// Load the dll and resolve every symbol we need. Returns the opened `Library`
 /// (kept alive by the caller) plus the detached symbol table.
 unsafe fn open(dll: &Path) -> Result<(Library, MpvFns), String> {
@@ -94,6 +106,7 @@ unsafe fn open(dll: &Path) -> Result<(Library, MpvFns), String> {
         set_option: sym!(b"mpv_set_option\0", FnSetOption),
         set_option_string: sym!(b"mpv_set_option_string\0", FnSetOptionString),
         command_string: sym!(b"mpv_command_string\0", FnCommandString),
+        command: sym!(b"mpv_command\0", FnCommand),
         set_property_string: sym!(b"mpv_set_property_string\0", FnSetPropertyString),
         get_property_string: sym!(b"mpv_get_property_string\0", FnGetPropertyString),
         free: sym!(b"mpv_free\0", FnFree),
@@ -165,9 +178,27 @@ impl Mpv {
             );
             me.check(rc, "set wid")?;
 
+            // mpv writes its OWN diagnostics here. Our `diagnostics()` can say
+            // "vo-configured=no" but never WHY; mpv's log names the failing
+            // context/decoder outright. Cheap, and only ever written while the
+            // experimental flag is on.
+            if let Some(p) = mpv_log_path() {
+                let _ = me.set_opt("log-file", &p.to_string_lossy());
+                let _ = me.set_opt("msg-level", "all=v");
+            }
+
             me.set_opt("hwdec", "auto-safe")?; // NVDEC/d3d11va when available
             me.set_opt("vo", "gpu")?;
-            me.set_opt("osc", "no")?; // our HTML overlay is the controller
+            // Three separate mpv features draw on screen and ALL must be off:
+            // `osc` is the mouse-driven controller, `osd-bar` is the white
+            // progress bar mpv flashes on every seek (that one appeared over the
+            // picture the moment the slider was dragged), and `osd-level=0`
+            // suppresses the text overlays too. Our HTML strip is the only
+            // controller, and mpv's window is in front of it — anything mpv
+            // draws wins, so it must draw nothing.
+            me.set_opt("osc", "no")?;
+            me.set_opt("osd-bar", "no")?;
+            me.set_opt("osd-level", "0")?;
             me.set_opt("input-default-bindings", "no")?;
             me.set_opt("input-vo-keyboard", "no")?;
             me.set_opt("keep-open", "yes")?; // hold the last frame, don't close
@@ -189,10 +220,32 @@ impl Mpv {
 
     /// Load a file for playback (replaces whatever is playing).
     pub fn loadfile(&self, path: &Path) -> Result<(), String> {
-        // `command_string` handles quoting for a single argument reasonably; use
-        // the property/command split to avoid path-escaping pitfalls later.
-        let cmd = format!("loadfile \"{}\"", path.to_string_lossy().replace('"', "\\\""));
-        self.command(&cmd)
+        // MUST be the argv form, not `mpv_command_string`.
+        //
+        // `mpv_command_string` runs mpv's own command parser, and inside a
+        // quoted argument BACKSLASH IS AN ESCAPE CHARACTER. So
+        // `loadfile "P:\All media MASTER\Pics\…"` is read as the escapes \A, \M,
+        // \P — invalid, and mpv rejects the whole command with error -4
+        // (invalid parameter). Every Windows path failed this way, which is
+        // exactly why the first compositing probe showed no picture: mpv was
+        // fine, the window was fine, the file was simply never opened.
+        // `mpv_command` takes argv and parses nothing.
+        self.command_args(&["loadfile", &path.to_string_lossy()])
+    }
+
+    /// Run a command as an argv array — no parsing, so arguments may contain
+    /// backslashes, spaces and quotes freely.
+    pub fn command_args(&self, args: &[&str]) -> Result<(), String> {
+        let owned: Vec<CString> = args
+            .iter()
+            .map(|a| CString::new(*a))
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        let mut ptrs: Vec<*const c_char> = owned.iter().map(|c| c.as_ptr()).collect();
+        ptrs.push(std::ptr::null()); // mpv reads argv until NULL
+        // SAFETY: valid handle; `owned` keeps every string alive across the call.
+        let rc = unsafe { (self.fns.command)(self.ctx, ptrs.as_ptr()) };
+        self.check(rc, args.first().copied().unwrap_or("command"))
     }
 
     pub fn set_paused(&self, paused: bool) -> Result<(), String> {
@@ -205,7 +258,7 @@ impl Mpv {
     /// Absolute seek to `secs`. Frame-accurate ("exact") — mpv keeps the decoder
     /// hot so this is the smooth, VLC-like scrub the whole transplant is for.
     pub fn seek_abs(&self, secs: f64) -> Result<(), String> {
-        self.command(&format!("seek {secs:.3} absolute+exact"))
+        self.command_args(&["seek", &format!("{secs:.3}"), "absolute+exact"])
     }
 
     pub fn command(&self, cmd: &str) -> Result<(), String> {
@@ -277,11 +330,31 @@ const SWP_NOSIZE: u32 = 0x0001;
 const SWP_NOMOVE: u32 = 0x0002;
 const SWP_NOACTIVATE: u32 = 0x0010;
 const SWP_SHOWWINDOW: u32 = 0x0040;
-/// `HWND_TOP` — front of the sibling z-order. The whole compositing question is
-/// whether our child sits in front of WebView2's host window or behind it, so
-/// every placement call states it explicitly rather than preserving whatever
-/// order creation happened to produce.
-const HWND_TOP: HWND = std::ptr::null_mut();
+
+// ── which side of the webview the video sits on ──────────────────────────────
+//
+// **Current design: BEHIND.** The window is `transparent: true`, the page paints
+// its own opaque chrome, and the Focus video stage is left genuinely
+// transparent — a hole. mpv renders underneath and shows through it. Every
+// overlay (menus, Info panel, dialogs, the transport, in/out markers) is then
+// ordinary HTML drawn on top, and semi-transparent ones alpha-blend over the
+// video for free.
+//
+// **Previously: IN FRONT** (`HWND_TOP`, commit 4ae90ae). That worked — mpv did
+// composite over WebView2 — but a window in front of the page cannot be drawn
+// over by anything in the page, so every overlay in the app needed the video
+// hidden while it was open. That produced a visible frame-switch each time a
+// menu opened, and a growing pile of special cases (reserved transport strip,
+// pinned bar, `overlayOpen` plumbing, hide-on-Info). The trade-offs were the
+// symptom of the layering choice, not of the overlays.
+//
+// **To revert to the in-front design:** set this to `HWND_TOP` (null), set
+// `transparent: false` in `tauri.conf.json`, and restore the reserved-strip
+// code from 4ae90ae. Kept explicit because the behind-approach depends on
+// WebView2 transparency, which is the part most likely to bite on some machine.
+const HWND_BOTTOM: HWND = 1 as HWND;
+/// Where the video window is placed relative to the webview. See above.
+const VIDEO_Z: HWND = HWND_BOTTOM;
 const SW_HIDE: i32 = 0;
 const SW_SHOW: i32 = 5;
 
@@ -368,15 +441,14 @@ fn create_child(parent: isize, x: i32, y: i32, w: i32, h: i32) -> Result<isize, 
     if hwnd.is_null() {
         return Err("CreateWindowExW returned null".into());
     }
-    // Force it to the FRONT of the sibling z-order. A new child usually lands on
-    // top anyway, but "usually" is not good enough for the one question this
-    // whole milestone turns on, and the webview host is a sibling that is itself
-    // repositioned by Tauri.
+    // Push it to the BACK of the sibling z-order, behind the (transparent)
+    // webview — see the VIDEO_Z comment. A new child lands on top by default,
+    // so this has to be stated, and `set_rect` re-states it on every move.
     // SAFETY: valid child handle we just created.
     unsafe {
         SetWindowPos(
             hwnd,
-            HWND_TOP,
+            VIDEO_Z,
             0,
             0,
             0,
@@ -431,11 +503,23 @@ impl NativePlayer {
                 return Err(e);
             }
         };
-        mpv.loadfile(path)?;
-        Ok(NativePlayer {
+        // Build the player BEFORE loading, so a failed load unwinds through Drop
+        // (mpv terminated, then its window destroyed) instead of leaking both —
+        // the previous `mpv.loadfile(path)?` returned early past that cleanup,
+        // and with loadfile failing on every Windows path it leaked a child
+        // window and an mpv context on each attempt.
+        let player = NativePlayer {
             mpv,
             win: WindowGuard(hwnd),
-        })
+        };
+        // Clicking the picture toggles play/pause. It has to be mpv's OWN
+        // binding: mpv's window is in front, so the click never reaches the
+        // <video> element's handler underneath. `input-default-bindings` stays
+        // off — this is the single binding we opt into, and the transport polls
+        // `pause` back out, so the UI stays in sync either way.
+        let _ = player.mpv.command_args(&["keybind", "MBTN_LEFT", "cycle pause"]);
+        player.mpv.loadfile(path)?;
+        Ok(player)
     }
 
     pub fn load(&self, path: &Path) -> Result<(), String> {
@@ -444,14 +528,13 @@ impl NativePlayer {
 
     pub fn set_rect(&self, x: i32, y: i32, w: i32, h: i32) {
         // SAFETY: reposition the child within its parent's client area, and
-        // RE-ASSERT the top of the z-order. The previous version passed
-        // SWP_NOZORDER here, which preserves the existing order — so if the
-        // webview host ever got in front (it is recreated on some resize and
-        // DPI events), the video silently went behind it and stayed there.
+        // RE-ASSERT the z-order every time. Tauri recreates/repositions the
+        // webview host on some resize and DPI events, which can reorder the
+        // siblings; without restating it the video ends up on the wrong side.
         unsafe {
             SetWindowPos(
                 self.win.0 as HWND,
-                HWND_TOP,
+                VIDEO_Z,
                 x,
                 y,
                 w.max(1),
@@ -476,6 +559,17 @@ impl NativePlayer {
 
     pub fn command(&self, cmd: &str) -> Result<(), String> {
         self.mpv.command(cmd)
+    }
+
+    /// (position, duration, paused) for the transport. Missing values read as
+    /// 0 / paused, which is what an unloaded player should look like to the UI.
+    pub fn state(&self) -> (f64, f64, bool) {
+        let num = |k: &str| self.mpv.get(k).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+        (
+            num("time-pos"),
+            num("duration"),
+            self.mpv.get("pause").map(|v| v == "yes").unwrap_or(true),
+        )
     }
 
     /// One-line state dump for the log. This is the instrument the M2 probe was
