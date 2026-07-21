@@ -1241,24 +1241,60 @@ pub fn native_video_start(
     w: i32,
     h: i32,
 ) -> Result<String, String> {
+    // Every step logs. The first M2 probe reported only "toggling made no
+    // visible difference", which is the one observation that cannot distinguish
+    // a silent failure from a perfectly-rendering surface hidden behind the
+    // webview. Nothing here is swallowed any more.
     let parent = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()));
     let dll = crate::mpv::resolve_dll(exe_dir.as_deref())?;
+    crate::log::line(&format!(
+        "MPV start parent_hwnd=0x{parent:x} rect={x},{y} {w}x{h} dll={} path={path}",
+        dll.display()
+    ));
     let src = PathBuf::from(&path);
     let mut guard = state.0.lock();
+    let reused = guard.is_some();
     match guard.as_ref() {
         Some(p) => {
             p.set_rect(x, y, w, h);
             p.set_visible(true);
-            p.load(&src)?;
+            if let Err(e) = p.load(&src) {
+                crate::log::line(&format!("MPV loadfile FAILED (reused player): {e}"));
+                return Err(e);
+            }
         }
-        None => {
-            *guard = Some(crate::mpv::NativePlayer::start(&dll, parent, &src, x, y, w, h)?);
-        }
+        None => match crate::mpv::NativePlayer::start(&dll, parent, &src, x, y, w, h) {
+            Ok(p) => *guard = Some(p),
+            Err(e) => {
+                crate::log::line(&format!("MPV start FAILED: {e}"));
+                return Err(e);
+            }
+        },
+    }
+    // mpv opens the file asynchronously, so a diagnostics read taken right now
+    // would show an empty player. Sample it shortly after, off-thread.
+    if let Some(p) = guard.as_ref() {
+        crate::log::line(&format!("MPV started (reused={reused}) {}", p.diagnostics()));
     }
     Ok("ok".into())
+}
+
+/// Dump the live player's state to the log (and return it). Called by the UI a
+/// beat after start so the log shows mpv AFTER it has opened the file — the
+/// evidence that separates "failed" from "rendering where we can't see it".
+#[cfg(windows)]
+#[tauri::command]
+pub fn native_video_diagnostics(
+    state: State<'_, crate::mpv::NativeVideoState>,
+) -> Result<String, String> {
+    let guard = state.0.lock();
+    let p = guard.as_ref().ok_or("no native player running")?;
+    let d = p.diagnostics();
+    crate::log::line(&format!("MPV diag {d}"));
+    Ok(d)
 }
 
 #[cfg(windows)]
@@ -1312,6 +1348,11 @@ pub fn native_video_command() -> Result<(), String> {
 #[cfg(not(windows))]
 #[tauri::command]
 pub fn native_video_stop() {}
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn native_video_diagnostics() -> Result<String, String> {
+    Err("native video player is Windows-only for now".into())
+}
 
 #[derive(Serialize)]
 pub struct FilmstripInfo {

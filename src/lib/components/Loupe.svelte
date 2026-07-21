@@ -175,7 +175,16 @@
     api
       .nativeVideoStart(it.path, rect.x, rect.y, rect.w, rect.h)
       .then(() => {
-        if (my === epoch) api.nativeVideoCommand("set pause no");
+        if (my !== epoch) return;
+        api.nativeVideoCommand("set pause no");
+        // mpv opens the file asynchronously, so state read at start() is still
+        // empty. Sample it a beat later — that log line is the M2 evidence.
+        setTimeout(() => {
+          api
+            .nativeVideoDiagnostics()
+            .then((d) => console.info("[native video]", d))
+            .catch(() => {});
+        }, 1200);
       })
       .catch((e) => console.error("native video start:", e));
   });

@@ -151,6 +151,7 @@ pub fn run() {
             commands::native_video_set_rect,
             commands::native_video_command,
             commands::native_video_stop,
+            commands::native_video_diagnostics,
             commands::video_filmstrip,
             commands::video_scrubstrip,
             commands::video_scrubstrip_cached,

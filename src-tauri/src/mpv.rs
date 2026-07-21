@@ -32,6 +32,8 @@ type FnSetOption = unsafe extern "C" fn(MpvHandle, *const c_char, c_int, *mut c_
 type FnSetOptionString = unsafe extern "C" fn(MpvHandle, *const c_char, *const c_char) -> c_int;
 type FnCommandString = unsafe extern "C" fn(MpvHandle, *const c_char) -> c_int;
 type FnSetPropertyString = unsafe extern "C" fn(MpvHandle, *const c_char, *const c_char) -> c_int;
+type FnGetPropertyString = unsafe extern "C" fn(MpvHandle, *const c_char) -> *mut c_char;
+type FnFree = unsafe extern "C" fn(*mut c_void);
 type FnTerminateDestroy = unsafe extern "C" fn(MpvHandle);
 type FnErrorString = unsafe extern "C" fn(c_int) -> *const c_char;
 
@@ -45,6 +47,8 @@ struct MpvFns {
     set_option_string: RawSymbol<FnSetOptionString>,
     command_string: RawSymbol<FnCommandString>,
     set_property_string: RawSymbol<FnSetPropertyString>,
+    get_property_string: RawSymbol<FnGetPropertyString>,
+    free: RawSymbol<FnFree>,
     terminate_destroy: RawSymbol<FnTerminateDestroy>,
     error_string: RawSymbol<FnErrorString>,
 }
@@ -91,6 +95,8 @@ unsafe fn open(dll: &Path) -> Result<(Library, MpvFns), String> {
         set_option_string: sym!(b"mpv_set_option_string\0", FnSetOptionString),
         command_string: sym!(b"mpv_command_string\0", FnCommandString),
         set_property_string: sym!(b"mpv_set_property_string\0", FnSetPropertyString),
+        get_property_string: sym!(b"mpv_get_property_string\0", FnGetPropertyString),
+        free: sym!(b"mpv_free\0", FnFree),
         terminate_destroy: sym!(b"mpv_terminate_destroy\0", FnTerminateDestroy),
         error_string: sym!(b"mpv_error_string\0", FnErrorString),
     };
@@ -209,6 +215,26 @@ impl Mpv {
         self.check(rc, "command")
     }
 
+    /// Read a property as a string, or `None` if mpv has no value for it yet.
+    /// This is how we prove — from the log, without eyes on the screen — that
+    /// mpv actually opened the file and configured a video output, which is the
+    /// thing that separates "it errored silently" from "it rendered somewhere
+    /// we can't see".
+    pub fn get(&self, name: &str) -> Option<String> {
+        let n = CString::new(name).ok()?;
+        // SAFETY: mpv allocates the returned string; we copy it and hand the
+        // original back to mpv_free, as the C API requires.
+        unsafe {
+            let p = (self.fns.get_property_string)(self.ctx, n.as_ptr());
+            if p.is_null() {
+                return None;
+            }
+            let s = std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned();
+            (self.fns.free)(p as *mut c_void);
+            Some(s)
+        }
+    }
+
     fn check(&self, rc: c_int, what: &str) -> Result<(), String> {
         if rc >= 0 {
             return Ok(());
@@ -247,8 +273,15 @@ type HWND = *mut c_void;
 const WS_CHILD: u32 = 0x4000_0000;
 const WS_VISIBLE: u32 = 0x1000_0000;
 const WS_CLIPSIBLINGS: u32 = 0x0400_0000;
-const SWP_NOZORDER: u32 = 0x0004;
+const SWP_NOSIZE: u32 = 0x0001;
+const SWP_NOMOVE: u32 = 0x0002;
 const SWP_NOACTIVATE: u32 = 0x0010;
+const SWP_SHOWWINDOW: u32 = 0x0040;
+/// `HWND_TOP` — front of the sibling z-order. The whole compositing question is
+/// whether our child sits in front of WebView2's host window or behind it, so
+/// every placement call states it explicitly rather than preserving whatever
+/// order creation happened to produce.
+const HWND_TOP: HWND = std::ptr::null_mut();
 const SW_HIDE: i32 = 0;
 const SW_SHOW: i32 = 5;
 
@@ -279,6 +312,19 @@ extern "system" {
         flags: u32,
     ) -> i32;
     fn ShowWindow(hwnd: HWND, cmd: i32) -> i32;
+    fn BringWindowToTop(hwnd: HWND) -> i32;
+    fn GetWindowRect(hwnd: HWND, rect: *mut Rect) -> i32;
+    fn IsWindowVisible(hwnd: HWND) -> i32;
+}
+
+/// Win32 `RECT`, for reading back where the child actually landed.
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub struct Rect {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -321,6 +367,23 @@ fn create_child(parent: isize, x: i32, y: i32, w: i32, h: i32) -> Result<isize, 
     };
     if hwnd.is_null() {
         return Err("CreateWindowExW returned null".into());
+    }
+    // Force it to the FRONT of the sibling z-order. A new child usually lands on
+    // top anyway, but "usually" is not good enough for the one question this
+    // whole milestone turns on, and the webview host is a sibling that is itself
+    // repositioned by Tauri.
+    // SAFETY: valid child handle we just created.
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+        BringWindowToTop(hwnd);
     }
     Ok(hwnd as isize)
 }
@@ -380,16 +443,20 @@ impl NativePlayer {
     }
 
     pub fn set_rect(&self, x: i32, y: i32, w: i32, h: i32) {
-        // SAFETY: reposition the child within its parent's client area.
+        // SAFETY: reposition the child within its parent's client area, and
+        // RE-ASSERT the top of the z-order. The previous version passed
+        // SWP_NOZORDER here, which preserves the existing order — so if the
+        // webview host ever got in front (it is recreated on some resize and
+        // DPI events), the video silently went behind it and stayed there.
         unsafe {
             SetWindowPos(
                 self.win.0 as HWND,
-                std::ptr::null_mut(),
+                HWND_TOP,
                 x,
                 y,
                 w.max(1),
                 h.max(1),
-                SWP_NOZORDER | SWP_NOACTIVATE,
+                SWP_NOACTIVATE,
             );
         }
     }
@@ -409,6 +476,39 @@ impl NativePlayer {
 
     pub fn command(&self, cmd: &str) -> Result<(), String> {
         self.mpv.command(cmd)
+    }
+
+    /// One-line state dump for the log. This is the instrument the M2 probe was
+    /// missing: without it, "toggling made no difference" is unfalsifiable —
+    /// mpv erroring silently and mpv rendering perfectly behind the webview look
+    /// identical from the outside. `vo-configured=yes` with a real
+    /// `video-out-params` proves the decoder and video output are live, which
+    /// narrows the problem to compositing alone.
+    pub fn diagnostics(&self) -> String {
+        let mut r = Rect::default();
+        // SAFETY: valid child handle; GetWindowRect only writes the RECT.
+        let (visible, rect) = unsafe {
+            let v = IsWindowVisible(self.win.0 as HWND) != 0;
+            let ok = GetWindowRect(self.win.0 as HWND, &mut r) != 0;
+            (v, if ok { Some(r) } else { None })
+        };
+        let g = |k: &str| self.mpv.get(k).unwrap_or_else(|| "-".into());
+        format!(
+            "hwnd=0x{:x} visible={visible} screen_rect={} | path={} idle={} vo-configured={} dwidth={} dheight={} hwdec={} vo={} pause={} time={} duration={}",
+            self.win.0,
+            rect.map(|r| format!("{},{} {}x{}", r.left, r.top, r.right - r.left, r.bottom - r.top))
+                .unwrap_or_else(|| "?".into()),
+            g("path"),
+            g("idle-active"),
+            g("vo-configured"),
+            g("dwidth"),
+            g("dheight"),
+            g("hwdec-current"),
+            g("current-vo"),
+            g("pause"),
+            g("time-pos"),
+            g("duration"),
+        )
     }
 }
 

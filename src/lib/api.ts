@@ -61,6 +61,8 @@ export const api = {
     invoke("native_video_set_rect", { x, y, w, h }).catch(() => {}),
   nativeVideoCommand: (cmd: string) =>
     invoke("native_video_command", { cmd }).catch(() => {}),
+  /** Log + return the live native player's state (M2 instrumentation). */
+  nativeVideoDiagnostics: () => invoke<string>("native_video_diagnostics"),
   nativeVideoStop: () => invoke("native_video_stop").catch(() => {}),
   /** Tiled sprite of frames for decode-free scrubbing (built lazily, cached). */
   videoFilmstrip: (path: string) =>
