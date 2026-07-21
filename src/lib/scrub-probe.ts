@@ -87,6 +87,25 @@ async function exerciseEngine(path: string): Promise<Record<string, unknown>> {
     // AND the ones that did paint are spread across the clip (not a prefix).
     out.dragLastT = painted.length ? painted[painted.length - 1].t : null;
 
+    // Glimpse walks the clip with nextKeyTimeAfter. If that ever returned a
+    // time <= the one it was given, the sweep would stall on one frame forever;
+    // if it skipped, the sweep would gap. Walk it and check it's strictly
+    // increasing and actually lands on keyframes.
+    // NB: check the RAW times, not rounded ones. Rounding 0.5004 to 0.500 puts
+    // the probe *before* that keyframe, so keyTimeFor() correctly returns the
+    // previous one and the assertion fails on a system that is working fine.
+    const walk: number[] = [];
+    let wt = 0;
+    for (let i = 0; i < 12; i++) {
+      const n = engine.nextKeyTimeAfter(wt);
+      if (n == null) break;
+      walk.push(n);
+      wt = n;
+    }
+    out.keyWalk = walk.map((v) => +v.toFixed(3));
+    out.keyWalkStrictlyIncreasing = walk.every((v, i) => i === 0 || v > walk[i - 1]);
+    out.keyWalkAllKeyframes = walk.every((v) => Math.abs(engine.keyTimeFor(v) - v) < 1e-6);
+
     // Release: the exact frame. Ask for a time deliberately BETWEEN keyframes
     // so "exact" is distinguishable from "nearest keyframe".
     const target = Math.min(dur * 0.5 + 0.37, dur - 0.05);

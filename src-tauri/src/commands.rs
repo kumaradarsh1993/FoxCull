@@ -1525,28 +1525,18 @@ pub async fn warm_thumbnails(
                     return;
                 }
                 let ok = match kind {
-                    // Videos get their grid/strip poster; images and RAW get
-                    // the requested-size preview (the RAW path extracts the
-                    // embedded camera JPEG, same as loupe_src). Videos only
-                    // reach here via heavy (Prepare), which ALSO pre-builds the
-                    // hover scrub strip — a prepared folder skims instantly,
-                    // Final Cut-style, with zero on-hover work. Keyframe-seek
-                    // extraction keeps this ~seconds per clip; the warm-gen
-                    // check makes a folder switch abandon it mid-strip.
-                    Kind::Video => {
-                        let ok = video::ensure_poster(&cache_dir, ffmpeg.as_deref(), p).is_ok();
-                        if ok {
-                            let cancel = || gen.load(Ordering::SeqCst) != my_gen;
-                            let _ = video::ensure_filmstrip(
-                                &cache_dir,
-                                ffmpeg.as_deref(),
-                                p,
-                                &cancel,
-                                &|_, _| {},
-                            );
-                        }
-                        ok
-                    }
+                    // Videos get their grid poster; images and RAW get the
+                    // requested-size preview (the RAW path extracts the embedded
+                    // camera JPEG, same as loupe_src).
+                    //
+                    // Prepare NO LONGER pre-builds scrub sprites (2026-07-21).
+                    // Both Focus and armed grid tiles now decode frames live, so
+                    // a sprite built here would be extracted, written and cached
+                    // for nobody — the sprite path survives only as the
+                    // per-clip fallback for codecs the decoder rejects, and that
+                    // builds on demand. This is the bulk of what Prepare used to
+                    // spend its time on for video folders.
+                    Kind::Video => video::ensure_poster(&cache_dir, ffmpeg.as_deref(), p).is_ok(),
                     kind => thumbs::ensure(&cache_dir, p, *kind, max).is_ok(),
                 };
                 if ok {

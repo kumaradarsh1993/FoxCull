@@ -116,6 +116,68 @@
       canvasHold = true;
     });
   }
+  // ── Glimpse: sweep the clip by its keyframes ──────────────────────────────
+  // The culling problem this solves: a long clip's cover frame tells you almost
+  // nothing, and dragging the playhead by hand to find out is work. Glimpse
+  // flips through the clip's own keyframes fast enough to be quick and slow
+  // enough to read — the way an editor thumbs through footage. It costs nothing
+  // extra: the keyframes are already indexed and the decoder is already hot.
+  let glimpsing = $state(false);
+  let glimpseTimer: ReturnType<typeof setTimeout> | undefined;
+  /// ~9 steps/sec. Faster reads as a smear; slower stops feeling like a sweep.
+  const GLIMPSE_TICK_MS = 110;
+  /// No clip sweeps in less than this, however short it is or however high the
+  /// speed — a 20-second clip at 40x would otherwise be over in half a second.
+  const GLIMPSE_MIN_SWEEP_S = 4;
+
+  function stopGlimpse(land = true) {
+    if (!glimpsing) return;
+    glimpsing = false;
+    clearTimeout(glimpseTimer);
+    // Land properly: the exact frame, then hand back to <video> — same
+    // treatment as releasing a drag, so stopping never leaves a rough frame up.
+    if (land && vid && engineReady) {
+      paintStage(cur, true);
+      vid.currentTime = cur;
+      releaseHoldSoon();
+    }
+  }
+
+  export function toggleGlimpse() {
+    if (glimpsing) {
+      stopGlimpse();
+      return;
+    }
+    const e = engine;
+    const total = dur || e?.index.durationS || 0;
+    if (!e || !engineReady || total <= 0) return;
+    vid?.pause();
+    glimpsing = true;
+    // Nominal speed is x-realtime, but never faster than a full sweep in
+    // GLIMPSE_MIN_SWEEP_S, and never slower than one keyframe per tick (a
+    // sub-keyframe step would just redraw the same frame).
+    const nominal = settings.s.glimpseSpeed;
+    const capped = Math.min(nominal, total / GLIMPSE_MIN_SWEEP_S);
+    const perTick = Math.max(capped * (GLIMPSE_TICK_MS / 1000), 0.0001);
+    const step = () => {
+      if (!glimpsing) return;
+      let next = cur + perTick;
+      if (next >= total) {
+        cur = total;
+        stopGlimpse();
+        return;
+      }
+      // Snap forward: if the step lands inside the keyframe we're already on,
+      // jump to the next one so every tick actually changes the picture.
+      const key = e.keyTimeFor(next);
+      if (key <= cur) next = e.nextKeyTimeAfter(cur) ?? total;
+      cur = Math.min(next, total);
+      paintStage(cur, false);
+      glimpseTimer = setTimeout(step, GLIMPSE_TICK_MS);
+    };
+    step();
+  }
+
   /** Safety net: if the element never fires `seeked` (already at that exact
    *  time), don't leave the still frozen over a live video. */
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
@@ -264,6 +326,8 @@
     engineReady = false;
     enginePending = false;
     canvasHold = false;
+    glimpsing = false;
+    clearTimeout(glimpseTimer);
     strip = null;
     preview = null;
     scrubbing = false;
@@ -356,6 +420,8 @@
         engine = null;
         engineReady = false;
         canvasHold = false;
+        glimpsing = false;
+        clearTimeout(glimpseTimer);
       };
     }
     if (it.kind === "other") {
@@ -441,6 +507,12 @@
   // ── playback (exposed to the page's global key handler) ──
   export function togglePlay() {
     if (!vid) return;
+    // Play/pause always wins over a sweep in progress — pressing Space to stop
+    // a Glimpse and start watching is the obvious expectation.
+    if (glimpsing) {
+      stopGlimpse();
+      return;
+    }
     if (vid.paused) vid.play().catch(() => {});
     else vid.pause();
   }
@@ -561,6 +633,7 @@
       .catch(() => {});
   }
   function onTrackDown(e: PointerEvent) {
+    stopGlimpse(false); // taking the playhead by hand supersedes the sweep
     ensureFilmstrip();
     scrubbing = true;
     resumeAfterScrub = !!vid && !vid.paused;
@@ -860,6 +933,15 @@
             <button class="pp" onclick={togglePlay} title={paused ? "Play (Space)" : "Pause (Space)"}>
               {paused ? "▶" : "⏸"}
             </button>
+            <button
+              class="pp glimpse"
+              class:on={glimpsing}
+              onclick={toggleGlimpse}
+              disabled={!engineReady}
+              title={engineReady
+                ? (glimpsing ? "Stop Glimpse (Ctrl+Space)" : "Glimpse — sweep the clip's keyframes to see what's in it (Ctrl+Space)")
+                : "Glimpse needs the live decoder, which this clip doesn't support"}
+            >{glimpsing ? "⏹" : "⏩"}</button>
             <span class="time">{fmt(cur)} <span class="sep">/</span> {fmt(dur)}</span>
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
@@ -1165,6 +1247,20 @@
   }
   .playrow .pp:hover {
     background: var(--bg-hover);
+  }
+  /* Glimpse sits beside play and reads as a secondary action until it's
+     running, when it takes the accent so the sweep is obviously live. */
+  .playrow .pp.glimpse {
+    color: var(--text-dim);
+  }
+  .playrow .pp.glimpse:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .playrow .pp.glimpse.on {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
   }
   .playrow .time {
     font-size: 12.5px;

@@ -30,18 +30,21 @@ export interface AppSettings {
   typeFilter: TypeFilter;
   includeSub: boolean;
   liveScrub: boolean;
-  /** With Live Scrub on, also pre-build the hover strips for the few clips
-   *  either side of the one open in Focus, so stepping to the next clip finds
-   *  skimming already live. Off by default: each strip is ~40 keyframe decodes,
-   *  and on an HDD library that background work is worth opting into, not
-   *  inheriting. */
-  scrubPrefetch: boolean;
+  /** @deprecated Retired 2026-07-21 — skimming decodes live and needs no
+   *  pre-built strips. Kept in the type so a stored value from an older build
+   *  loads without a schema error; nothing reads it. */
+  scrubPrefetch?: boolean;
   /** Focus-view scrubbing decodes real frames on demand (WebCodecs) instead of
    *  painting a pre-built sprite sheet. Full resolution, no pre-caching, and it
    *  works on a clip the moment it opens. Falls back automatically per clip if
    *  the codec/container can't be decoded this way, so turning it off is only
    *  for diagnosis. See docs/design/video-player-migration.md. */
   liveDecodeScrub: boolean;
+  /** Glimpse sweep speed, x realtime. A clip is swept by its keyframes at this
+   *  rate, floored so even a short clip takes a few seconds. 40x puts a
+   *  9-minute clip at ~14 s — long enough to read, short enough to be worth
+   *  doing while culling. */
+  glimpseSpeed: number;
   videoAutoplay: boolean;
   /** Collapse the video transport to a thin hover-to-expand line (vs a pinned
    *  always-visible bar). Keeps the picture edge-to-edge in Focus/full-screen. */
@@ -76,8 +79,8 @@ const DEFAULTS: AppSettings = {
   typeFilter: "all",
   includeSub: true,
   liveScrub: false,
-  scrubPrefetch: false,
   liveDecodeScrub: true,
+  glimpseSpeed: 40,
   videoAutoplay: false,
   minimalVideoBar: true,
   padEnabled: true,

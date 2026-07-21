@@ -258,8 +258,8 @@ export class ScrubEngine {
     return this.decoder;
   }
 
-  /** Nearest keyframe at or before `t` (index into `samples`). */
-  private keyBefore(t: number): number {
+  /** Position within `syncIdx` of the last keyframe at or before `t`. */
+  private keyPos(t: number): number {
     const { samples, syncIdx } = this.index;
     let lo = 0,
       hi = syncIdx.length - 1,
@@ -271,13 +271,31 @@ export class ScrubEngine {
         lo = mid + 1;
       } else hi = mid - 1;
     }
-    return syncIdx[best];
+    return best;
+  }
+
+  /** Nearest keyframe at or before `t` (index into `samples`). */
+  private keyBefore(t: number): number {
+    return this.index.syncIdx[this.keyPos(t)];
   }
 
   /** Timeline position the next scrub frame will actually show — used to keep
    *  the on-screen timestamp honest while dragging. */
   keyTimeFor(t: number): number {
     return this.index.samples[this.keyBefore(t)].cts;
+  }
+
+  /** The first keyframe strictly after `t`, or null past the last one. Glimpse
+   *  steps on this so every tick is guaranteed to change the picture. */
+  nextKeyTimeAfter(t: number): number | null {
+    const { samples, syncIdx } = this.index;
+    const p = this.keyPos(t);
+    // `keyPos` clamps to 0 when `t` precedes the first keyframe, so that one
+    // may itself already be after `t`.
+    const here = samples[syncIdx[p]].cts;
+    if (here > t + 1e-6) return here;
+    const next = syncIdx[p + 1];
+    return next === undefined ? null : samples[next].cts;
   }
 
   /**

@@ -1,52 +1,58 @@
-# FoxCull v1.2.0-nightly.1
+# FoxCull v1.2.0-nightly.2
 
-**Scrubbing a video in Focus now shows the real frame under your cursor.**
+Built on your feedback from nightly.1. The scrubbing engine now runs everywhere
+it should, and there's a new way to see what's inside a long clip.
 
-Grab the playhead on a 546-second 4K60 clip and drag. The picture follows the
-cursor at full resolution — no waiting, nothing to prepare, no cached frames,
-no progress chip. It works the instant the clip opens, on any clip.
+## Glimpse — press Ctrl+Space
 
-This is the feature the last release was a checkpoint for, and it arrived by a
-different route than announced. v1.1.0 said the next step was to replace the
-video player with a native one. That was tried properly and abandoned for a
-better answer — the full story is in the repo, but the short version:
+The culling problem: a long clip's cover frame tells you almost nothing, and
+dragging the playhead to find out is work you have to do by hand.
 
-- Playback in the web view was never the problem. Your clips already decode on
-  the graphics card.
-- The problem was **how seeking was asked for**. Every drag position asked for
-  an exact frame, which means rewinding to the previous keyframe and decoding
-  forward — thirty times a second, while you drag. That is what lagged.
-- Players like VLC feel instant because while you drag they show the nearest
-  *keyframe* — cheap — and only compute the exact frame when you let go.
+**Glimpse sweeps the whole clip for you.** Press `Ctrl+Space`, or the ⏩ button
+beside play, and FoxCull flips through the clip's keyframes fast enough to be
+quick and slow enough to read — the way you'd thumb through footage in an
+editor. A nine-minute clip takes about fourteen seconds. Press it again, hit
+space, or grab the playhead to stop; it lands cleanly on wherever you stopped.
 
-FoxCull now does exactly that, inside the app, with a decoder of its own. On the
-test machine a full-resolution 4K frame lands in about 40 milliseconds, and the
-exact frame you release on takes about 150.
+Short clips are never rushed: however high the speed, a sweep always takes at
+least a few seconds. **Settings → Glimpse speed** runs from 10× to 100× real
+time if you want it brisker or calmer.
 
-### What you'll notice
+## Skimming in the grid is decoded now too
 
-- **Dragging is smooth and sharp.** The old preview frames were small stand-ins
-  extracted in advance; these are the real thing at full size.
-- **No preparation.** No "scrub preview 40%" chip, no build to wait through, no
-  disk filling with preview frames. Opening a clip is enough.
-- **Hovering the timeline** shows a real decoded frame in the thumbnail too.
-- **Letting go doesn't jump.** The frame you released on stays on screen until
-  the video has caught up to that same frame underneath.
-- **Live Scrub is now about grid tiles only** — skimming a clip by hovering its
-  thumbnail in the grid still uses prepared frames, because a video decoder per
-  tile isn't practical. Settings labels it that way now.
+Hovering an armed tile in the grid used to paint small frames extracted in
+advance. It now decodes the real frame under your cursor, exactly like Focus.
+Full resolution, and it works on a clip the first time you touch it.
 
-### If a clip can't do it
+**So video pre-caching is gone entirely.**
 
-Some containers and codecs can't be decoded this way. Those clips quietly fall
-back to the previous behaviour — same as v1.1.0, nothing to configure. There's a
-"Focus scrub" setting (Live decode / Sprites) if you ever want to compare, but
-you shouldn't need it.
+- **Prepare** no longer builds scrub frames for videos — just the poster. On a
+  folder of 4K clips that was most of the work it was doing.
+- The "Pre-build nearby clips" setting is gone; there is nothing left to
+  pre-build.
+- Nothing is written to your drives for scrubbing any more, anywhere.
 
-### Please test
+Clips whose codec can't be decoded this way quietly fall back to the old
+behaviour, building frames on demand as before.
 
-This is the first build with the new engine wired into the interface. The engine
-itself has been measured hard, but the on-screen behaviour — dragging, releasing,
-hovering, fullscreen, portrait clips — wants real hands. Try it on the Osmo
-footage and on phone clips; H.264 phone video takes a slightly different path
-inside and hasn't been exercised on real files yet.
+## The blip when opening a clip
+
+You spotted a frame appearing and then being replaced a few milliseconds later.
+It was real: the still shown while a clip opens was taken **one second in**,
+while the video itself starts at **zero** — two different moments of the same
+clip, swapping. The Focus still is now taken at zero, so there's nothing to see.
+(The grid's thumbnail keeps its one-second frame, since frame zero is often
+black.)
+
+## Smaller things
+
+- **Arrange** has icons beside Sort, Group and Subgroup, and the sort-direction
+  arrow is now a proper button instead of a faint mark.
+- **Prepare** is narrower, and its bolt is bigger and gold.
+
+## Worth testing
+
+Glimpse's pacing is the main thing — tell me if 40× feels right as the default,
+or if it wants to be quicker. Also worth a look: grid skimming on portrait
+clips, and phone (H.264) video, which takes a slightly different path inside
+and hasn't met a real file yet.

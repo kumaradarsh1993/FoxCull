@@ -90,6 +90,27 @@ the "trigger" column as the *complete* list — nothing else builds these.
 | Scrub sprite | cached-only paint on open with Live Scrub OFF | never builds |
 | H.264 proxy | the `<video>` element fails to decode the original | one at a time, process-wide lock |
 
+### Video pre-caching is retired everywhere (2026-07-22)
+
+The grid moved onto the same live decoder as Focus, which removes the last
+consumer of scrub sprites. The objection that had kept sprites in the grid — "a
+video decoder per tile is not viable" — turned out not to apply: **the armed
+rule already guarantees exactly one skimming tile at a time**, so there is
+exactly one decoder, the same as Focus. Consequences:
+
+- **`Prepare` no longer builds sprites.** For video folders it now builds
+  posters only, which was the smaller half of its work. `warm_thumbnails`
+  (heavy) dropped the `ensure_filmstrip` call.
+- **Neighbour scrub prefetch is gone**, setting and all. It existed to have a
+  neighbouring clip's sprite ready before you stepped onto it; nothing reads
+  sprites on that path any more, so it was pure disk and CPU spent on artifacts
+  no one would open. `scrubPrefetch` remains in the settings type, deprecated,
+  only so an older stored value still loads.
+- **Sprites are now strictly a per-clip fallback**, built on demand when
+  `ScrubEngine.open()` rejects a clip. Nothing pre-builds them, anywhere.
+- Everything else Prepare does — image previews, RAW previews, video posters —
+  is unchanged and still worth doing.
+
 ### Focus view no longer pre-caches anything (2026-07-21)
 
 **The single biggest change to this policy since it was written.** Focus-view
@@ -295,11 +316,13 @@ artifacts:
     tile_w: 240
     frames: {min: 16, max: 48, rate: "~1/sec clamped"}
     builder: "video::ensure_filmstrip"
-    triggers: [grid_tile_armed_and_hovered, focus_open_video, neighbour_prefetch, prepare]
+    triggers: [grid_tile_armed_and_hovered, focus_open_video]
     gated_by: [settings.liveScrub, "not (engineReady or enginePending)"]
-    note: "since 2026-07-21 Focus decodes frames live; the focus_open_video
-           trigger fires only when live-decode scrub is off or the clip's
-           codec/container was rejected by ScrubEngine.open()"
+    note: "FALLBACK ONLY since 2026-07-22. Focus and armed grid tiles both
+           decode frames live; these triggers fire only when live-decode scrub
+           is off or ScrubEngine.open() rejected the clip. Nothing pre-builds
+           sprites any more — `prepare` and `neighbour_prefetch` were removed as
+           triggers."
   - id: scrubstrip                     # legacy; read-only, never built
     file: "s<hash>.jpg + s<hash>.json"
     cols: 8
@@ -316,10 +339,16 @@ artifacts:
     triggers: [webview_decode_failed]
 settings:
   liveScrub: {default: false, gates: [scrubstrip, filmstrip], scope: "grid tiles"}
-  scrubPrefetch: {default: false, span: 3, settle_ms: 900, requires: liveScrub}
+  scrubPrefetch: {status: removed, on: 2026-07-22, reason: "nothing reads pre-built sprites"}
+  glimpseSpeed:
+    default: 40
+    unit: "x realtime"
+    range: [10, 100]
+    note: "Glimpse (Ctrl+Space) sweeps a clip's keyframes on the live decoder;
+           floored at a 4 s sweep so short clips stay readable. Caches nothing."
   liveDecodeScrub:
     default: true
-    scope: "Focus view"
+    scope: "Focus view AND armed grid tiles"
     builds: []                         # decodes on demand; caches NOTHING
     impl: "src/lib/scrub-engine.ts (WebCodecs VideoDecoder + mp4box moov index)"
     index_cost: "~300 ms, ~5 MB read, regardless of file size"

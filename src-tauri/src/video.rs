@@ -63,12 +63,26 @@ pub fn poster_hires_path(cache_dir: &Path, src: &Path) -> PathBuf {
     poster_path_pfx(cache_dir, src, 'w')
 }
 
-/// Extract one representative frame (~1s in) scaled to fit a `box_px` box and
-/// write it to `out`. Idempotent. Works for any codec the bundled ffmpeg
-/// supports — crucially including HEVC (the Osmo Pocket 3 footage the webview
-/// can't decode). `box_px` lets the grid use a light 480px poster while Focus
-/// view asks for a sharp ~1280px one (see `ensure_poster_hires`).
-pub fn make_poster(ffmpeg: &Path, src: &Path, out: &Path, box_px: u32) -> Result<(), String> {
+/// Extract one frame `at_s` seconds in, scaled to fit a `box_px` box, and write
+/// it to `out`. Idempotent. Works for any codec the bundled ffmpeg supports —
+/// crucially including HEVC (the Osmo Pocket 3 footage the webview can't
+/// decode).
+///
+/// `at_s` matters more than it looks. The GRID poster wants ~1 s in, because
+/// frame 0 of a real clip is often black or a fade-in and makes a useless tile.
+/// The FOCUS poster must be **frame 0**, because it is painted only until the
+/// `<video>` element renders its own first frame — and that frame is t=0. With
+/// the grid's 1 s frame used there, opening any clip showed one image and then
+/// visibly swapped to a different one a few milliseconds later. That is the
+/// "blip" reported on 2026-07-21; it was two different moments of the same clip,
+/// not a re-render.
+pub fn make_poster(
+    ffmpeg: &Path,
+    src: &Path,
+    out: &Path,
+    box_px: u32,
+    at_s: f64,
+) -> Result<(), String> {
     if out.exists() {
         return Ok(());
     }
@@ -80,7 +94,7 @@ pub fn make_poster(ffmpeg: &Path, src: &Path, out: &Path, box_px: u32) -> Result
     // on 4K60 HEVC that's one frame decoded instead of ~60, and visually the
     // poster is the same shot. The retry below stays exact for odd containers.
     let mut cmd = Command::new(ffmpeg);
-    cmd.args(["-v", "error", "-ss", "1", "-skip_frame", "nokey", "-i"])
+    cmd.args(["-v", "error", "-ss", &format!("{at_s:.3}"), "-skip_frame", "nokey", "-i"])
         .arg(src)
         .args(["-frames:v", "1", "-vf", &scale, "-q:v", "3", "-y"])
         .arg(out)
@@ -321,13 +335,14 @@ pub fn ensure_poster(cache_dir: &Path, ffmpeg: Option<&Path>, src: &Path) -> Res
         return Ok(out);
     }
     let ff = ffmpeg.ok_or("ffmpeg not available")?;
-    make_poster(ff, src, &out, 480)?;
+    // ~1 s in: a representative tile, since frame 0 is often black.
+    make_poster(ff, src, &out, 480, 1.0)?;
     Ok(out)
 }
 
-/// Ensure the sharp Focus-view poster exists; returns its cache path. Same
-/// keyframe extraction as `ensure_poster` but at ~1280px so it holds up on a
-/// full-screen stage.
+/// Ensure the sharp Focus-view poster exists; returns its cache path. ~1280px
+/// so it holds up on a full-screen stage, and taken at **t=0** so it is the
+/// same frame `<video>` paints when it finishes opening — see `make_poster`.
 pub fn ensure_poster_hires(
     cache_dir: &Path,
     ffmpeg: Option<&Path>,
@@ -338,7 +353,7 @@ pub fn ensure_poster_hires(
         return Ok(out);
     }
     let ff = ffmpeg.ok_or("ffmpeg not available")?;
-    make_poster(ff, src, &out, 1280)?;
+    make_poster(ff, src, &out, 1280, 0.0)?;
     Ok(out)
 }
 

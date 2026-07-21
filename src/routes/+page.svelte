@@ -235,7 +235,7 @@
   let countsGen = $state(0);
   let folderRefreshKey = $state(0);
   let gridComp = $state<{ scrollToIndex: (i: number, center?: boolean) => void; columnCount?: () => number } | null>(null);
-  let loupeComp = $state<{ togglePlay: () => void; seekBy: (d: number) => void; setInPoint?: () => void; setOutPoint?: () => void } | null>(null);
+  let loupeComp = $state<{ togglePlay: () => void; seekBy: (d: number) => void; setInPoint?: () => void; setOutPoint?: () => void; toggleGlimpse?: () => void } | null>(null);
   let editComp = $state<{
     setOutputPreview?: (on: boolean) => void | Promise<void>;
     setIn?: () => void;
@@ -1252,26 +1252,11 @@
   // Deliberately conservative: only while a video is open in Focus, only with
   // Live Scrub on, a settle delay so arrowing through a folder doesn't queue a
   // build per clip you passed, and the backend still serializes the builds.
-  const SCRUB_PREFETCH_SPAN = 3;
-  const SCRUB_PREFETCH_SETTLE_MS = 900;
-  let scrubPrefetchTimer: ReturnType<typeof setTimeout> | undefined;
-  $effect(() => {
-    const i = activeIndex;
-    const vm = viewMode;
-    const on = settings.s.liveScrub && settings.s.scrubPrefetch;
-    const list = view;
-    clearTimeout(scrubPrefetchTimer);
-    if (!on || vm !== "loupe" || list[i]?.kind !== "video") return;
-    scrubPrefetchTimer = setTimeout(() => {
-      for (let k = 1; k <= SCRUB_PREFETCH_SPAN; k++) {
-        for (const j of [i + k, i - k]) {
-          const it = list[j];
-          if (it?.kind === "video") void loadVideoFilmstrip(it.path);
-        }
-      }
-    }, SCRUB_PREFETCH_SETTLE_MS);
-    return () => clearTimeout(scrubPrefetchTimer);
-  });
+  // (Neighbour scrub prefetch was removed on 2026-07-21. It pre-built sprite
+  //  sheets for the clips either side of the open one so stepping to the next
+  //  could be skimmed immediately — worth it when skimming needed a sprite. It
+  //  no longer does: Focus and armed grid tiles both decode frames live, so the
+  //  prefetch was spending disk and CPU on artifacts nothing reads.)
 
   // Restore grid position when returning from Focus: bring the shot you were
   // looking at back into the middle of the grid, instead of snapping to the top
@@ -2141,6 +2126,12 @@
     // , / . and Shift+←/→ step the clip ±5s. For a video, Shift+←/→ seeks rather
     // than extending the selection (that stays the default for photos/grid).
     if (viewMode === "loupe" && active?.kind === "video" && loupeComp) {
+      // Ctrl+Space before plain Space, or the play toggle would swallow it.
+      if ((e.key === " " || e.code === "Space") && (e.ctrlKey || e.metaKey)) {
+        loupeComp.toggleGlimpse?.();
+        e.preventDefault();
+        return;
+      }
       if (e.key === " " || e.code === "Space") { loupeComp.togglePlay(); e.preventDefault(); return; }
       if (e.key === "[") { loupeComp.setInPoint?.(); e.preventDefault(); return; }
       if (e.key === "]") { loupeComp.setOutPoint?.(); e.preventDefault(); return; }
@@ -2475,7 +2466,7 @@
         {#if arrangeOpen}
           <div class="arrangeMenu">
             <div class="fm-row">
-              <span class="fm-lbl">Sort</span>
+              <span class="fm-lbl"><span class="fm-ico">⇅</span>Sort</span>
               <select class="sel wide" title="Sort order" bind:value={settings.s.sortBy} onchange={() => { settings.set({ sortBy: settings.s.sortBy }); maybeFetchCaptures(); }}>
                 <option value="name">Name</option>
                 <option value="date">Modified</option>
@@ -2483,12 +2474,16 @@
                 <option value="type">Type</option>
                 <option value="size">Size</option>
               </select>
-              <button class="ico" title="Sort direction" onclick={() => settings.set({ sortDir: settings.s.sortDir === "asc" ? "desc" : "asc" })}>
+              <button
+                class="ico dirbtn"
+                title={settings.s.sortDir === "asc" ? "Ascending — click for descending" : "Descending — click for ascending"}
+                onclick={() => settings.set({ sortDir: settings.s.sortDir === "asc" ? "desc" : "asc" })}
+              >
                 {settings.s.sortDir === "asc" ? "↑" : "↓"}
               </button>
             </div>
             <div class="fm-row">
-              <span class="fm-lbl">Group</span>
+              <span class="fm-lbl"><span class="fm-ico">▦</span>Group</span>
               <select class="sel wide" title="Primary grouped section" bind:value={settings.s.groupBy} onchange={() => { settings.set({ groupBy: settings.s.groupBy }); maybeFetchCaptures(); }}>
                 <option value="none">No groups</option>
                 <option value="folder">Folder</option>
@@ -2499,7 +2494,7 @@
               </select>
             </div>
             <div class="fm-row">
-              <span class="fm-lbl">Subgroup</span>
+              <span class="fm-lbl"><span class="fm-ico sub">▤</span>Subgroup</span>
               <select class="sel wide" title="Nested second grouping level" bind:value={settings.s.subgroupBy} onchange={() => { settings.set({ subgroupBy: settings.s.subgroupBy }); maybeFetchCaptures(); }}>
                 <option value="none">None</option>
                 <option value="folder">Folder</option>
@@ -2627,7 +2622,7 @@
             {#if preparing}<span class="prep-fill" style="width:{prepPct}%"></span>{/if}
             <span class="prep-lbl">
               <span class="prep-ico" aria-hidden="true">
-                {#if preparing}◌{:else if prepared}✓{:else}<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M13 2 4.5 13.2c-.4.5 0 1.3.7 1.3H11l-1.4 8.2c-.1.7.8 1.1 1.2.5L19.5 12c.4-.5 0-1.3-.7-1.3H12.9L14.2 2.6c.1-.7-.8-1.1-1.2-.6Z"/></svg>{/if}
+                {#if preparing}◌{:else if prepared}✓{:else}<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M13 2 4.5 13.2c-.4.5 0 1.3.7 1.3H11l-1.4 8.2c-.1.7.8 1.1 1.2.5L19.5 12c.4-.5 0-1.3-.7-1.3H12.9L14.2 2.6c.1-.7-.8-1.1-1.2-.6Z"/></svg>{/if}
               </span>
               {#if preparing}{prepPct}%{prepEta ? ` ${prepEta}` : ""}{:else if prepared}Ready{:else}Prepare{/if}
             </span>
@@ -2768,20 +2763,25 @@
             <button class="chip" class:on={!settings.s.liveDecodeScrub} onclick={() => settings.set({ liveDecodeScrub: false })}>Sprites</button>
           </div>
         </div>
+        <div class="row"><span>Glimpse speed</span>
+          <div class="slider" title="How fast Glimpse (Ctrl+Space) sweeps a clip, as a multiple of real time. 40x takes a 9-minute clip in about 14 seconds. Short clips are always given at least a few seconds, whatever this says.">
+            <input
+              type="range"
+              min="10"
+              max="100"
+              step="10"
+              value={settings.s.glimpseSpeed}
+              oninput={(e) => settings.set({ glimpseSpeed: +e.currentTarget.value })}
+            />
+            <span class="sliderVal">{settings.s.glimpseSpeed}×</span>
+          </div>
+        </div>
         <div class="row"><span>Live Scrub (grid tiles)</span>
           <div class="seg" title="Skim a video by hovering its GRID tile, using pre-built sprite frames. Focus view no longer needs this — it decodes real frames on demand.">
             <button class="chip" class:on={settings.s.liveScrub} onclick={() => settings.set({ liveScrub: true })}>On</button>
             <button class="chip" class:on={!settings.s.liveScrub} onclick={() => settings.set({ liveScrub: false })}>Off</button>
           </div>
         </div>
-        {#if settings.s.liveScrub}
-          <div class="row"><span>Pre-build nearby clips</span>
-            <div class="seg" title="While watching a clip in Focus, quietly build the hover scrub strips for the 3 clips either side, so stepping to the next one can be skimmed immediately. Costs background disk/CPU — leave off on a slow drive.">
-              <button class="chip" class:on={settings.s.scrubPrefetch} onclick={() => settings.set({ scrubPrefetch: true })}>On</button>
-              <button class="chip" class:on={!settings.s.scrubPrefetch} onclick={() => settings.set({ scrubPrefetch: false })}>Off</button>
-            </div>
-          </div>
-        {/if}
         <div class="row"><span>Video autoplay</span>
           <div class="seg">
             <button class="chip" class:on={settings.s.videoAutoplay} onclick={() => settings.set({ videoAutoplay: true })}>On</button>
@@ -2874,6 +2874,7 @@
             <div class="kbRow"><span class="keys"><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Y</kbd></span><span>Undo / redo marks</span></div>
             <div class="kbGroup">Video (Focus)</div>
             <div class="kbRow"><span class="keys"><kbd>Space</kbd></span><span>Play / pause</span></div>
+            <div class="kbRow"><span class="keys"><kbd>Ctrl</kbd>+<kbd>Space</kbd></span><span>Glimpse — sweep the clip to see what's in it</span></div>
             <div class="kbRow"><span class="keys"><kbd>,</kbd> <kbd>.</kbd> · <kbd>Shift</kbd>+<kbd>←/→</kbd></span><span>Step 5 s back / forward</span></div>
             <div class="kbRow"><span class="keys"><kbd>[</kbd> <kbd>]</kbd></span><span>Set in / out point</span></div>
             <div class="kbGroup">Beyond the keyboard</div>
@@ -3156,10 +3157,16 @@
   .editModeTitle span:last-child { color: var(--text-faint); font-size: 12px; white-space: nowrap; }
   .btn.sm { padding: 5px 9px; border-radius: 7px; font-size: 12.5px; }
   .btn.sm.on { border-color: var(--accent); color: var(--accent); }
-  .prep { position: relative; overflow: hidden; min-width: 96px; text-align: center; }
+  /* Sized to its own content. The old 96px floor existed to stop the button
+     resizing as the label cycles Prepare → 42% 1m → Ready, but it left the
+     idle state — the one you look at all day — visibly padded out. Now the
+     floor just fits "Prepare"; the progress label is allowed to grow it. */
+  .prep { position: relative; overflow: hidden; min-width: 84px; text-align: center; }
   .prep-fill { position: absolute; left: 0; top: 0; bottom: 0; background: color-mix(in srgb, var(--accent) 30%, transparent); transition: width 0.2s ease; }
   .prep-lbl { position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px; white-space: nowrap; }
-  .prep-ico { font-size: 13px; line-height: 1; color: var(--accent); display: inline-flex; align-items: center; }
+  /* The bolt is the button's identity in a crowded toolbar — gold (the same
+     token the rating stars use) and large enough to register at a glance. */
+  .prep-ico { font-size: 14px; line-height: 1; color: var(--star); display: inline-flex; align-items: center; }
   .prep-ico svg { display: block; }
 
   .div { flex: 0 0 auto; align-self: stretch; width: 1px; margin: 2px 4px; background: var(--border); }
@@ -3198,6 +3205,33 @@
   /* Wide enough for the longest label ("Subgroup") so every row's control
      column starts at the same x — mismatched indents read as misalignment. */
   .fm-lbl { flex: 0 0 58px; font-size: 12px; color: var(--text-dim); }
+  /* Arrange rows carry a glyph so Sort / Group / Subgroup are scannable
+     without reading. Wider basis than a plain label to fit glyph + word. */
+  .arrangeMenu .fm-lbl {
+    flex: 0 0 82px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .arrangeMenu .fm-ico {
+    font-size: 13px;
+    line-height: 1;
+    color: var(--text-faint);
+  }
+  /* Subgroup is a nested level — its glyph is indented to read that way. */
+  .arrangeMenu .fm-ico.sub { margin-left: 5px; font-size: 11px; }
+  /* The direction arrow is the one control here you flip constantly, so it
+     reads as a real button rather than a muted hint. */
+  .arrangeMenu .dirbtn {
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--text);
+    flex: 0 0 auto;
+  }
+  .arrangeMenu .dirbtn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
   .fm-tags { display: flex; flex-direction: column; gap: 2px; max-height: 200px; overflow-y: auto; }
   .fm-clr { font-size: 11px; color: var(--text-faint); padding: 0 4px; margin-left: 4px; }
   .fm-clr:hover { color: var(--text); }
@@ -3449,6 +3483,17 @@
   .pop .grpHead:first-child { margin-top: 0; }
   .pop .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; }
   .pop .row.sub { padding-left: 6px; flex-wrap: nowrap; }
+  /* Range control in a settings row (Glimpse speed). Sized so the numeric
+     readout can't reflow the row as the value changes width. */
+  .slider { display: flex; align-items: center; gap: 8px; }
+  .slider input[type="range"] { width: 120px; accent-color: var(--accent); }
+  .slider .sliderVal {
+    min-width: 34px;
+    text-align: right;
+    font-size: 12px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+  }
   .pop .path { flex: 1; min-width: 0; color: var(--text-dim); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pop .row.sub .tag { flex: 0 0 auto; }
   /* Prose row — MUST be block, not flex: flex + space-between turns the text
