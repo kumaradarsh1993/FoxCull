@@ -2193,7 +2193,7 @@
          .stackline CSS. Everything that still needs rounded-corner clipping
          (the thumbnail image, reject dim, badges) moves in here instead. -->
     <div class="cellclip">
-      <Thumb {item} size={gridThumbTier} />
+      <Thumb {item} size={gridThumbTier} armed={i === activeIndex} />
       <span class="ov">
         {#if rel}
           <span class="rel-badges">
@@ -2253,7 +2253,7 @@
     <!-- Same reasoning as gridCell: keep the stack line out of the clipped
          wrapper so it can bleed into the strip gap between same-stack tiles. -->
     <div class="cellclip">
-      <Thumb {item} size={stripThumbTier} />
+      <Thumb {item} size={stripThumbTier} armed={i === activeIndex} />
       {#if rel}
         <span class="s-rel">{shortRelatedBadge(rel)}</span>
         <span class="s-role">{relatedRoleLabel(rel).slice(0, 1)}</span>

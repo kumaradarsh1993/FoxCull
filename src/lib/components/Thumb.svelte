@@ -11,7 +11,10 @@
   import { activity } from "$lib/activity.svelte";
   import type { FilmstripInfo, MediaItem } from "$lib/types";
 
-  let { item, size = 320 }: { item: MediaItem; size?: number } = $props();
+  // `armed` = this tile is the selected/active item. Hover-scrub only runs when
+  // armed, so sweeping the pointer across a wall of videos never kicks off strip
+  // builds — you click a clip to arm it, THEN hover it to skim frames.
+  let { item, size = 320, armed = false }: { item: MediaItem; size?: number; armed?: boolean } = $props();
 
   const SCRUB_BUILD_DELAY_MS = 140;
 
@@ -90,6 +93,19 @@
     }
   });
 
+  // Disarming (selection moves to another tile) stops any pending build and
+  // clears the skim overlay immediately.
+  $effect(() => {
+    if (!armed) {
+      scrub = null;
+      if (scrubTimer) {
+        clearTimeout(scrubTimer);
+        scrubTimer = null;
+      }
+      if (isVideo && !strip) cancelVideoScrubstrip(item.path);
+    }
+  });
+
   function framePos(frac: number) {
     if (!strip) return { x: 0, y: 0 };
     const i = Math.max(0, Math.min(strip.count - 1, Math.floor(frac * strip.count)));
@@ -97,7 +113,7 @@
   }
 
   function updateScrub(e: PointerEvent) {
-    if (!isVideo || !settings.s.liveScrub) return;
+    if (!isVideo || !armed || !settings.s.liveScrub) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const visibleW = Math.max(1, scrubBox.w);
     const visibleLeft = rect.left + (rect.width - visibleW) / 2;
@@ -106,7 +122,7 @@
 
   function enterThumb(e: PointerEvent) {
     updateScrub(e);
-    if (!isVideo || !settings.s.liveScrub || strip || scrubTimer) return;
+    if (!isVideo || !armed || !settings.s.liveScrub || strip || scrubTimer) return;
     const path = item.path;
     scrubTimer = setTimeout(() => {
       scrubTimer = null;
