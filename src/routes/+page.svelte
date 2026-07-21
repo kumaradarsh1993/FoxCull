@@ -775,6 +775,10 @@
   });
 
   onMount(async () => {
+    // Dev-only WebCodecs feasibility probe (inert without VITE_SCRUB_PROBE).
+    if (import.meta.env.DEV) {
+      import("$lib/scrub-probe").then((m) => m.maybeRunScrubProbe());
+    }
     await settings.init();
     try {
       drives = await api.listDrives();

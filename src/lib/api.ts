@@ -20,6 +20,12 @@ import type {
 } from "./types";
 
 export const api = {
+  /** Raw byte-range read, returned as an ArrayBuffer (binary IPC — no JSON
+   *  overhead). I/O primitive of the WebCodecs scrub engine: the frontend
+   *  parses MP4 sample tables and fetches exactly the bytes it decodes.
+   *  A short/empty result means EOF. */
+  readFileRange: (path: string, offset: number, len: number) =>
+    invoke<ArrayBuffer>("read_file_range", { path, offset, len }),
   /** Activate the per-drive library for `root` and return where it lives. */
   setLibraryRoot: (root: string) =>
     invoke<LibraryInfo>("set_library_root", { root }),

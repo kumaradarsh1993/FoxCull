@@ -7,7 +7,12 @@ edition = "2021"
 
 [lib]
 name = "foxcull_codex_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# rlib ONLY. `cdylib`/`staticlib` were the mobile-template defaults and are
+# unused (desktop binary links the lib as an rlib) — and a cdylib makes GNU ld
+# auto-export every symbol, blowing the 65k DLL export-ordinal limit on the
+# local windows-gnu toolchain, so `tauri dev` could never link on the dev
+# machine. Validated on the libmpv branch 2026-07-21. CI (MSVC) is unaffected.
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

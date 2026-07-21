@@ -178,6 +178,8 @@ pub fn run() {
             commands::open_external,
             commands::folder_writable,
             commands::log_event,
+            commands::read_file_range,
+            commands::scrub_probe_report,
             cast::cast_discover,
             cast::cast_start,
             cast::cast_stop,

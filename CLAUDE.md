@@ -32,6 +32,7 @@ frozen history — never edit it.
 | `RELEASE_NOTES.md` | User-facing notes for the NEXT tag — release.yml prepends it to the release body. Refresh per tag. |
 | `docs/changes/` | **Per-push change ledger (L2).** One file per push — see "Per-push change ledger" below. |
 | `docs/DECISIONS.md` | ADR-lite log of standing technical decisions + reasoning. Read before re-litigating one. |
+| `docs/design/video-player-migration.md` | **Self-contained brief on replacing the video player.** DECIDED 2026-07-21: Architecture C — a WebCodecs scrub engine inside the webview (§10), probe-proven on real hardware (§11). Also the full record of the two libmpv architectures tried (one worked with costs, one is OS-level impossible — branches `archive/libmpv-A/B`). Read this before touching video playback. |
 | `docs/design/precache-policy.md` | **Authoritative cache/pre-cache policy** — every derived artifact, its key, what triggers its build, the concurrency doctrine, known gaps. Human + machine readable; update it in the SAME commit as any caching change. |
 
 **Convention: everything about FoxCull lives in this repo** — design notes,

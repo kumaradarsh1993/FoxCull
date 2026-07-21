@@ -1126,6 +1126,55 @@ pub fn log_event(msg: String) {
     crate::log::line(&format!("UI {msg}"));
 }
 
+/// Cap for a single `read_file_range` request. The scrub engine reads MP4
+/// metadata in ~2 MB chunks and individual video samples (a 4K60 HEVC keyframe
+/// is single-digit MB); anything near this cap indicates a caller bug, not a
+/// bigger need.
+const READ_RANGE_MAX: u64 = 64 * 1024 * 1024;
+
+/// Read `len` bytes at `offset` from a file, returned as a **raw binary** IPC
+/// response (an ArrayBuffer on the JS side — no JSON array-of-numbers
+/// overhead). This is the I/O primitive of the WebCodecs scrub engine (see
+/// docs/design/video-player-migration.md): the frontend parses the MP4 sample
+/// tables itself and fetches exactly the bytes of the samples it decodes.
+/// A short (or empty) result means EOF was hit — that is the caller's EOF
+/// signal, not an error.
+#[tauri::command]
+pub async fn read_file_range(
+    path: String,
+    offset: u64,
+    len: u64,
+) -> Result<tauri::ipc::Response, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    if len > READ_RANGE_MAX {
+        return Err(format!("read_file_range: len {len} exceeds {READ_RANGE_MAX}"));
+    }
+    let mut f = std::fs::File::open(&path).map_err(|e| format!("open {path}: {e}"))?;
+    f.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; len as usize];
+    let mut filled = 0usize;
+    while filled < buf.len() {
+        match f.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    buf.truncate(filled);
+    Ok(tauri::ipc::Response::new(buf))
+}
+
+/// Dev-only: persist the WebCodecs feasibility-probe verdict somewhere the
+/// agent driving the dev loop can read it (the webview console isn't visible
+/// from the terminal that runs `tauri dev`). Also mirrored into the app log.
+#[tauri::command]
+pub fn scrub_probe_report(report: String) -> Result<String, String> {
+    let path = std::env::temp_dir().join("foxcull-scrub-probe.json");
+    std::fs::write(&path, &report).map_err(|e| e.to_string())?;
+    crate::log::line(&format!("SCRUB-PROBE {report}"));
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// Cached, orientation-corrected thumbnail for the grid/filmstrip. Returns a
 /// filesystem path the frontend converts via `convertFileSrc`.
 #[tauri::command]
