@@ -2,11 +2,12 @@
   import {
     loadThumb,
     loadVideoPoster,
-    loadVideoScrubstrip,
+    loadVideoFilmstrip,
     cancelThumb,
     cancelVideoPoster,
-    cancelVideoScrubstrip,
+    cancelVideoFilmstrip,
   } from "$lib/thumbnail-loader";
+  import { api } from "$lib/api";
   import { settings } from "$lib/settings.svelte";
   import { activity } from "$lib/activity.svelte";
   import type { FilmstripInfo, MediaItem } from "$lib/types";
@@ -54,8 +55,9 @@
   });
 
   // Images/RAW -> cached orientation-baked thumbnail. Videos -> a real poster
-  // frame extracted by the bundled ffmpeg. Optional Live Scrub is separate and
-  // uses a much lighter sprite, requested only after the user actually hovers.
+  // frame extracted by the bundled ffmpeg. Optional Live Scrub is separate: the
+  // sprite sheet is shared with Focus view and only requested once the tile is
+  // armed and hovered.
   $effect(() => {
     const it = item;
     src = null;
@@ -73,11 +75,25 @@
       if (s) src = s;
       else failed = true;
     });
+    // Free instant skim for anything already extracted — never builds. Reads the
+    // legacy light `s` strip too, so folders Prepared before the sprites were
+    // unified keep skimming without a re-extraction.
+    if (it.kind === "video") {
+      const take = (s: FilmstripInfo | null) => {
+        if (alive && s && !strip) strip = { ...s, src: api.fileSrc(s.src) };
+      };
+      api.videoFilmstripCached(it.path).then(take).catch(() => {});
+      api.videoScrubstripCached(it.path).then(take).catch(() => {});
+    }
     return () => {
       alive = false;
       if (it.kind === "video") {
         cancelVideoPoster(it.path);
-        cancelVideoScrubstrip(it.path);
+        // Only an UNARMED tile abandons its build on teardown. The armed tile is
+        // the one you just double-clicked into Focus: cancelling here is what
+        // made the build appear to "restart from 10%" the moment the clip
+        // opened, because Focus then had to start it over.
+        if (!armed) cancelVideoFilmstrip(it.path);
       } else if (it.kind !== "other") {
         cancelThumb(it.path, size);
       }
@@ -93,7 +109,7 @@
       building = false;
       if (scrubTimer) clearTimeout(scrubTimer);
       scrubTimer = null;
-      if (item.kind === "video") cancelVideoScrubstrip(item.path);
+      if (item.kind === "video") cancelVideoFilmstrip(item.path);
     }
   });
 
@@ -107,7 +123,7 @@
         clearTimeout(scrubTimer);
         scrubTimer = null;
       }
-      if (isVideo && !strip) cancelVideoScrubstrip(item.path);
+      if (isVideo && !strip) cancelVideoFilmstrip(item.path);
     }
   });
 
@@ -127,7 +143,7 @@
     building = true;
     scrubTimer = setTimeout(() => {
       scrubTimer = null;
-      loadVideoScrubstrip(path)
+      loadVideoFilmstrip(path)
         .then((s) => {
           if (item.path !== path) return;
           if (settings.s.liveScrub && s) strip = s;
@@ -176,14 +192,14 @@
     // drifted off, then restarting it from zero on the way back, is how
     // skimming ended up feeling like it never worked. The disarm effect above
     // is what cancels it if the selection genuinely moves on.
-    if (isVideo && !armed && !strip) cancelVideoScrubstrip(item.path);
+    if (isVideo && !armed && !strip) cancelVideoFilmstrip(item.path);
   }
 
   // Live build feedback while the hover strip is being extracted: the backend
   // streams per-frame progress through the activity store.
   let scrubJob = $derived.by(() => {
     if (!isVideo || strip || (!building && scrub == null)) return null;
-    const j = activity.jobs[`scrub:${item.path}`];
+    const j = activity.jobs[`strip:${item.path}`];
     return j && j.state === "running" ? j : null;
   });
 

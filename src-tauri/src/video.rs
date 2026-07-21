@@ -370,10 +370,25 @@ const SCRUBSTRIP_COLS: u32 = 8;
 /// ever paints inside a grid cell.
 const FILMSTRIP_TILE_W: u32 = 240;
 const SCRUBSTRIP_TILE_W: u32 = 160;
-/// Concurrent per-frame extractions inside ONE sprite build. Two keeps the USB
-/// SSD's read queue shallow (same doctrine as the warm pool) while roughly
-/// halving wall time; sprite builds themselves are serialized process-wide.
-const SPRITE_PARALLEL: u32 = 2;
+/// Concurrent per-frame extractions inside ONE sprite build.
+///
+/// Measured on the Alienware (12 cores, 4K60 HEVC Main10 clips on the internal
+/// HDD, 2026-07-21) — 12 cold frames from a 1.8 GB clip:
+///   parallel 2 → 6.16 s · parallel 4 → 4.40 s · parallel 6 → 3.61 s
+///
+/// The old value of 2 was chosen to keep a USB SSD's read queue shallow, but
+/// the same benchmark shows this work is **not** I/O bound: re-extracting the
+/// identical frames with the OS cache warm took 5.04 s against 5.92 s cold, so
+/// only ~15% of the time is disk. The rest is ffmpeg startup plus re-parsing a
+/// multi-gigabyte container index, paid once per frame — CPU work that
+/// genuinely parallelises. Scaled by cores so the 4-core XPS 13 keeps the old
+/// conservative 2 while the 12-core machine takes the win.
+fn sprite_parallel() -> u32 {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(4);
+    (cores / 3).clamp(2, 4)
+}
 
 /// Error string a cancelled sprite build returns — callers match on it to stay
 /// quiet (a cancelled hover is not a failure).
@@ -719,7 +734,7 @@ fn ensure_sprite(
     let done = AtomicU32::new(0);
     let aborted = AtomicBool::new(false);
     std::thread::scope(|s| {
-        for _ in 0..SPRITE_PARALLEL.min(count) {
+        for _ in 0..sprite_parallel().min(count) {
             s.spawn(|| loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 if i >= count || aborted.load(Ordering::Relaxed) {

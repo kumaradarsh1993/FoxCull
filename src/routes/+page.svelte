@@ -5,7 +5,7 @@
   import { cast, type CastDevice, type CastStatus } from "$lib/cast";
   import { settings } from "$lib/settings.svelte";
   import { activity, fmtEta } from "$lib/activity.svelte";
-  import { resetThumbs, prefetchLoupe, loaderStats, loadVideoScrubstrip } from "$lib/thumbnail-loader";
+  import { resetThumbs, prefetchLoupe, loaderStats, loadVideoFilmstrip } from "$lib/thumbnail-loader";
   import {
     LABELS,
     LABEL_BY_DIGIT,
@@ -1262,7 +1262,7 @@
       for (let k = 1; k <= SCRUB_PREFETCH_SPAN; k++) {
         for (const j of [i + k, i - k]) {
           const it = list[j];
-          if (it?.kind === "video") void loadVideoScrubstrip(it.path);
+          if (it?.kind === "video") void loadVideoFilmstrip(it.path);
         }
       }
     }, SCRUB_PREFETCH_SETTLE_MS);
@@ -2303,7 +2303,7 @@
     draggable={true}
     ondragstart={(e) => beginMediaDrag(e, item, i)}
     ondragend={endMediaDrag}
-    title={relatedTitle(item)}
+    title={relatedFor(item) ? relatedTitle(item) : undefined}
   >
     {#if rel}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -2365,7 +2365,7 @@
     onclick={(e) => gridCellClick(e, i)}
     ondblclick={() => { setActiveTo(i); setView("loupe"); }}
     oncontextmenu={(e) => openContextMenu(e, item, i)}
-    title={rel ? relatedTitle(item) : item.name}
+    title={rel ? relatedTitle(item) : undefined}
   >
     {#if rel}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -2430,7 +2430,7 @@
         {/if}
       </div>
     </aside>
-    <div class="vsplit" role="separator" tabindex="-1" onpointerdown={startTreeResize}></div>
+    <div class="vsplit treeSplit" role="separator" tabindex="-1" onpointerdown={startTreeResize}></div>
   {:else}
     <button class="treeRestore ico sm" onclick={() => (treeCollapsed = false)} title="Show folders" aria-label="Show folders">
       <svg class="panelGlyph" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><line x1="9.4" y1="4.6" x2="9.4" y2="19.4"/><path d="M13.5 9.5 16 12l-2.5 2.5"/></svg>
@@ -2917,8 +2917,8 @@
 
     <!-- body: viewport, with the filmstrip optionally docked left or right -->
     <div class="body">
-      {#if !editOpen && settings.s.filmstripPos === "left" && view.length}
-        <aside class="lstrip" style="width:{settings.s.filmstripSize}px">
+      {#if !editOpen && settings.s.filmstripPos === "left" && view.length && fsMode !== 2}
+        <aside class="lstrip" class:fsDim={fullscreen} style="width:{settings.s.filmstripSize}px">
           <VirtualStrip items={view} {activeIndex} orientation="v" cellSize={stripCell} cell={stripCellSnip} />
         </aside>
         <div class="vsplit" role="separator" tabindex="-1" onpointerdown={startStripResize}></div>
@@ -2981,9 +2981,9 @@
         {/if}
       </div>
 
-      {#if !editOpen && settings.s.filmstripPos === "right" && view.length}
+      {#if !editOpen && settings.s.filmstripPos === "right" && view.length && fsMode !== 2}
         <div class="vsplit" role="separator" tabindex="-1" onpointerdown={startStripResize}></div>
-        <aside class="rstrip" style="width:{settings.s.filmstripSize}px">
+        <aside class="rstrip" class:fsDim={fullscreen} style="width:{settings.s.filmstripSize}px">
           <VirtualStrip items={view} {activeIndex} orientation="v" cellSize={stripCell} cell={stripCellSnip} />
         </aside>
       {/if}
@@ -3046,18 +3046,18 @@
 
 <style>
   .app { position: relative; display: flex; height: 100vh; overflow: hidden; }
-  /* Full-screen "play mode" (F): every panel and bar disappears EXCEPT the
-     bottom filmstrip — the photo stage plus the strip is the couch/TV review
-     layout (set Filmstrip to Off in Settings for a bare photo). The right-side
-     strip still hides: it competes with the photo for width. */
+  /* Full-screen "play mode" (F, state 1): every panel and bar disappears except
+     the filmstrip, which stays in WHICHEVER dock is configured — bottom, left or
+     right — dimmed ~20% and still resizable. (It used to be bottom-only: left
+     and right were hidden outright, and the resize handles went with them, so
+     picking a side dock meant losing the strip the moment you pressed F.)
+     State 2 is the bare picture and drops the strip entirely; that's what the
+     `fsMode !== 2` gates on the markup do. */
   .app.fs .tree,
-  .app.fs .vsplit,
-  .app.fs .hsplit,
+  .app.fs .treeSplit,
   .app.fs .bar,
   .app.fs .banner,
   .app.fs .info,
-  .app.fs .rstrip,
-  .app.fs .lstrip,
   .app.fs .pop,
   .app.fs .treeRestore { display: none; }
   .tree { display: flex; flex-direction: column; background: var(--bg-panel); border-right: 1px solid var(--border); flex: 0 0 auto; min-width: 0; transition: width 0.14s ease; }
@@ -3455,6 +3455,8 @@
   .bstrip { flex: 0 0 auto; }
   /* Play mode (fsMode 1): the strip stays in view but dimmed ~20% so attention
      stays on the photo/video. fsMode 2 doesn't render it at all. */
+  .app.fs .lstrip.fsDim,
+  .app.fs .rstrip.fsDim,
   .app.fs .bstrip.fsDim {
     filter: brightness(0.8);
     transition: filter 0.15s ease;

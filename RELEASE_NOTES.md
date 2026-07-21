@@ -1,69 +1,102 @@
-# FoxCull v1.1.0-nightly.7 — skimming that actually works, honest deletes, undo that reaches into the Trash
+# FoxCull v1.1.0
 
-## Live Scrub: the whole thing, gone over properly
+The first stable since 1.0.1, and a big one. Casting, a real editing Look
+panel, controller culling, RAW→JPEG export, stacks, undo/redo — and a long
+run of work on video: previewing it, skimming it, playing it, deleting it.
 
-Skimming had accumulated three separate faults that hid each other. All three
-are fixed.
+This release is also a deliberate checkpoint. Everything here plays video
+through the built-in web view, which is what limits scrub smoothness on large
+4K footage. The next line of work replaces that player outright; 1.1.0 is the
+mark of how far the current approach goes.
 
-- **The clip you click is now the clip that skims.** Selecting a video arms it
-  for skimming — but the pointer is already sitting on the tile when you click,
-  so the app never noticed the hover it had been waiting for, and quietly built
-  a preview for every tile you'd swept *past* and none for the one you'd chosen.
-  You saw the scrub bar appear and the picture never change. Click a clip, move
-  across it, frames follow.
-- **Portrait clips skim at a sane speed.** The timeline used to be squeezed into
-  just the part of the tile the picture covers — on a 9:16 phone clip that's a
-  narrow strip down the middle, so a centimetre of pointer travel jumped a third
-  of the video while the space either side did nothing. Skimming is now measured
-  across the whole tile, portrait and landscape alike.
-- **A preview being built is no longer thrown away.** Drifting off the tile used
-  to cancel a build that was seconds from finishing, and coming back started it
-  from zero — which is why it could feel like it never worked at all. Once
-  you've selected a clip, its preview finishes.
+---
 
-**In Focus view, the preview starts when you open the clip.** Previously it
-waited until your pointer happened to touch the seek bar, then made you watch a
-ten-second build with no indication of what was happening. Now, with Live Scrub
-on, it begins immediately and a small counter at the top-left tells you how far
-along it is. Live Scrub off still means genuinely off — opening a video does no
-preview work at all.
+## Video
 
-**New: pre-build nearby clips** (Settings, appears when Live Scrub is on). While
-you're watching one clip, the three either side quietly get their previews
-ready, so stepping to the next one can be skimmed the moment you arrive. Off by
-default — it's real background work, and on a slow drive you may not want it.
+**Skimming (Live Scrub).** Hover a clip and watch it move without opening it.
+Off by default; turn it on in Settings.
 
-## Deletes tell you the truth now
+- **Click a clip to arm it, then skim it.** Only the selected tile responds, so
+  sweeping across a folder of 4K clips doesn't set the whole drive working.
+- The timeline maps across the whole tile, so portrait and landscape clips skim
+  at the same speed.
+- Frames are extracted once and kept on the drive, so a clip you've skimmed
+  before is instant forever — on any machine that reads that drive.
+- One set of frames now serves both the grid and the Focus timeline. It used to
+  build two, which is why opening a clip you'd just skimmed appeared to start
+  over.
+- Extraction is keyframe-based and runs several frames at a time: a strip that
+  once took over a minute on a long clip now lands in seconds.
 
-Deleting a couple of large clips could fail with "still in use?" when nothing
-was using them. The real cause was Windows refusing permission — the same reason
-Explorer asks for administrator rights on those files — and the app was guessing
-wrong and telling you to close a preview that didn't exist.
+**Playback and the transport.**
 
-- A file that's genuinely open by another program, and a file Windows won't let
-  us touch, now say so separately, by name, in a message you can read in full.
-- A read-only file is un-set and retried automatically instead of failing.
-- If you're hitting the permissions case on a whole drive, it's an ownership
-  leftover from reinstalling Windows, not something inside FoxCull — taking
-  ownership of the folder once (Properties → Security → Advanced → Change owner,
-  apply to contents) clears it for good.
+- **The bar gets out of the way.** A video plays edge-to-edge with a thin
+  progress line at the bottom; move toward it and the full controls rise. Prefer
+  a permanent bar? Settings → Minimal video bar → Off.
+- **Sharp first frame.** The still before playback is generated at high
+  resolution for Focus and full-screen instead of being a blown-up thumbnail.
+- **Shift+←/→** steps 5 seconds; `,` and `.` do the same.
+- Dragging the playhead shows the frame under your cursor immediately and lands
+  the exact one when you let go.
+- **Clips the app can't decode play anyway** — a capped H.264 version is made
+  once in the background and used for preview. Trimming still cuts the original.
+- Trim, in/out points and marked sub-clips persist per clip.
 
-## Undo can bring deleted files back
+## Culling
 
-Ctrl+Z after a delete now offers to restore that batch out of the in-app Trash —
-with a confirmation first, showing how many files will come back, because
-stepping back through a long undo history shouldn't silently start moving files
-around. Deletes are never *re*-done by Ctrl+Y, for the same reason.
+- **PS5 / PS4 controller support.** Pair a pad and cull from the couch; every
+  button is remappable, with a pairing guide and an on-screen button map. Your
+  mouse's extra Back/Forward buttons are remappable too.
+- **Play mode (F) is a 3-step cycle**: picture with the filmstrip (dimmed so
+  your eye stays on the shot) → bare picture → back to normal. `Esc` always
+  exits. The filmstrip stays wherever you docked it and stays resizable.
+- **Filmstrip docks bottom, left or right** — left sits between the folder tree
+  and the picture.
+- **Stacks.** RAW+JPEG pairs and edits/exports group under their original, fold
+  and unfold, and are labelled by what they are.
+- **Filters** on rating (≥ ≤ =), multiple colour labels at once, kind, and tags.
+- **Undo / redo** across ratings, labels, picks, rejects and tags — and now
+  **deletes**: Ctrl+Z after a delete offers to restore that batch from the
+  in-app Trash, asking first. (Ctrl+Y deliberately never re-deletes.)
+- **Prepare** caches a whole folder up front so a culling pass has no waiting.
+  The ▾ beside it narrows the job to your selection, just videos, or just
+  photos & RAW.
 
-## Filmstrip on the left
+## Photos
 
-The filmstrip can now sit between the folder tree and the picture, not only at
-the bottom or on the right. **Settings → Filmstrip → Left.** Drag its edge to
-resize as usual.
+- **HEIC works.** Phone HEICs — stored as a grid of tiles — now decode, scale
+  and rotate correctly everywhere. No Windows codec pack needed.
+- **RAW→JPEG export** in bulk, pulling the camera's own embedded preview.
+- **The Look panel** was rebuilt: 12 grouped presets and sliders that actually
+  move the image, with the on-screen preview and the exported file matched by
+  construction rather than by eye.
+- Flipping between photos no longer flashes a blur — the next shot swaps in only
+  once it's fully decoded.
 
-## Prepare, but only what you want
+## Cast to TV
 
-Prepare still covers the whole folder when you click it. The new ▾ beside it
-narrows the job: just the selection, just the videos, or just the photos & RAW —
-each showing how many items that is. Useful when a folder is twenty 4K clips and
-you only care about three of them.
+- **Casting follows you.** Start it once and the TV shows whatever you're on as
+  you arrow through the folder — photos and videos in one session.
+- **HEIC and RAW cast correctly** (they send their high-resolution preview).
+- Videos stream the untouched original, so the TV's own decoder plays your 4K60
+  HEVC at full quality.
+
+## Deleting
+
+- **Deletes explain themselves.** A file genuinely held open by another program
+  and a file Windows won't give permission for are different problems, and now
+  say so separately, by name, in a message you can read in full. Read-only files
+  are handled automatically.
+- **Deleting a huge clip can't freeze the app.** Background work is cancelled
+  first and the delete runs off the UI thread.
+- Everything deleted goes to a per-drive Trash you can browse, restore from, or
+  purge.
+
+## Smaller things
+
+- **Show in Explorer selects the file**, rather than dropping you in a folder of
+  six hundred.
+- A keyboard shortcut guide on `?`, light-dismiss on every menu, honest
+  time-remaining estimates, and no more filename tooltip popping up over the
+  tile you're skimming.
+- Instagram-ready export with quality shown as real time cost.

@@ -12,6 +12,45 @@ Claude-built `fox-cull` project.
 > **historical record** of names in effect at the time — left as-is for
 > accuracy; don't "fix" them.
 
+## 2026-07-21 (3): v1.1.0 STABLE — sprite unification + fullscreen docks; libmpv unparked
+
+Owner tested nightly.7, confirmed the arm-then-hover fix ("scrub seems to be
+working fine"), and called the release: **promote to stable as `v1.1.0`**, not
+nightly.8. This is the deliberate checkpoint for the WebView2-player era — the
+libmpv transplant starts immediately after and becomes the 1.2 line.
+
+Second batch of fixes folded in before the tag (detail:
+`docs/changes/2026-07-21-sprite-unification-fullscreen-docks.md`):
+
+- **One sprite, not two.** Grid tiles and the Focus timeline were building
+  *different* sheets from the same clip. That doubled extraction per video and
+  produced the "build restarts at 10% when I open the clip" report. Both now use
+  the dense `f` sprite, through the **shared loader queue** so a second request
+  joins the in-flight promise. Two separate causes had stacked: (1) the Thumb
+  teardown cancelled the armed tile's build on unmount, (2) Loupe's direct
+  `invoke` took a fresh backend cancel-token, and `new_sprite_token` **cancels
+  any in-flight build for the same key** — worth remembering, it is a trap.
+- **Fullscreen honours the dock.** `.app.fs` was hiding `.lstrip`/`.rstrip` and
+  both splitters outright, so a side-docked strip vanished on `F` and the bottom
+  one lost its resize grip. Only the tree splitter (`.treeSplit`) hides now.
+- Portrait timeline preview capped by height; grid filename tooltip removed;
+  `reveal` uses `explorer.exe /select` so the file is actually selected.
+
+**Measured, do not re-litigate from intuition** (`precache-policy.md` §5.1):
+sprite building is **CPU/process bound, not disk bound** — the same 6 frames
+cost 5.04 s cache-warm vs 5.92 s cold, and 0.80 s of each frame's 0.99 s is
+ffmpeg startup + container-index parse. hwaccel is worth ~5% on a single
+keyframe. It parallelises (12 frames: 6.16 s @2, 4.40 s @4, 3.61 s @6), so
+`SPRITE_PARALLEL` became `(cores/3).clamp(2,4)`. The old comment claiming the 2
+protected a USB SSD's read queue was wrong and has been replaced with the data.
+
+**Owner's design call for libmpv, recorded because it scopes the work:** with a
+native player, Focus view should need **no sprite pre-caching at all** — he
+drags the bar and expects real frames. Sprites stay ONLY for grid-view skimming,
+where a decoder per tile is impossible. So the transplant must *remove* the
+Focus filmstrip path, not sit beside it. He also accepted the honest caveat that
+the risk is Windows compositing, not mpv's seek performance.
+
 ## 2026-07-21 (2): Scrub module audit, delete diagnosis, undo-restore (nightly.7)
 
 Base-machine session, Opus. Owner installed nightly.6 and came back with one

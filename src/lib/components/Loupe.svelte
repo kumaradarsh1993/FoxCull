@@ -1,7 +1,12 @@
 <script lang="ts">
   import { api } from "$lib/api";
   import { activity } from "$lib/activity.svelte";
-  import { loadThumb, loadVideoPosterHires } from "$lib/thumbnail-loader";
+  import {
+    loadThumb,
+    loadVideoPosterHires,
+    loadVideoFilmstrip,
+    cancelVideoFilmstrip,
+  } from "$lib/thumbnail-loader";
   import { settings } from "$lib/settings.svelte";
   import type { MediaItem, FilmstripInfo, MediaProbe, VideoSegment } from "$lib/types";
 
@@ -80,7 +85,11 @@
   /// Whether the DENSE filmstrip build has been requested for the current item
   /// (cached loads don't count — this guards the expensive path only).
   let denseRequested = false;
-  let stripSrc = $derived(strip ? api.fileSrc(strip.src) : null);
+  // `strip.src` is always already an asset URL — every path that assigns `strip`
+  // hydrates it once (the shared loader does it; the cached-only reads below do
+  // it explicitly). Converting again here would mangle it.
+  let stripSrc = $derived(strip ? strip.src : null);
+  const hydrate = (s: FilmstripInfo) => ({ ...s, src: api.fileSrc(s.src) });
   let posterSrc = $state<string | null>(null); // cached poster: instant first paint
   let preview = $state<number | null>(null); // fraction 0..1 to preview, or null
   let scrubbing = $state(false);
@@ -92,10 +101,23 @@
   let lastSeekAt = 0;
   let seekIdleTimer: ReturnType<typeof setTimeout> | undefined;
   const SEEK_THROTTLE_MS = 55;
+  // The hover thumbnail floating above the timeline. Sized by BOTH edges: a
+  // fixed width alone made portrait clips tower over the bar (a 9:16 clip at
+  // 200px wide is 356px tall — it covered a third of the picture), so the height
+  // is capped and the width derived from it when the clip is taller than wide.
   const PREVIEW_W = 200;
-  let previewH = $derived(
-    strip ? Math.round((PREVIEW_W * strip.tile_h) / strip.tile_w) : 0,
-  );
+  const PREVIEW_MAX_H = 132;
+  let previewBox = $derived.by(() => {
+    if (!strip) return { w: 0, h: 0 };
+    const aspect = strip.tile_w / Math.max(1, strip.tile_h);
+    let w = PREVIEW_W;
+    let h = w / aspect;
+    if (h > PREVIEW_MAX_H) {
+      h = PREVIEW_MAX_H;
+      w = h * aspect;
+    }
+    return { w: Math.round(w), h: Math.round(h) };
+  });
 
   // ── auto-hiding transport ─────────────────────────────────────────────────
   // In minimal mode (default) the transport collapses to a thin, unobtrusive
@@ -207,10 +229,10 @@
       // unwanted ffmpeg work per clip with Live Scrub OFF (2026-07-20 RCA).
       denseRequested = false;
       api.videoScrubstripCached(it.path).then((s) => {
-        if (my === epoch && s && !strip) strip = s;
+        if (my === epoch && s && !strip) strip = hydrate(s);
       });
       api.videoFilmstripCached(it.path).then((f) => {
-        if (my === epoch && f) strip = f;
+        if (my === epoch && f) strip = hydrate(f);
       });
       api
         .loupeSrc(it.path)
@@ -223,7 +245,7 @@
       // Moving to another item cancels this clip's filmstrip build mid-flight —
       // flipping quickly through a folder of videos must not stack up builds.
       return () => {
-        api.cancelSprite(it.path, "film");
+        cancelVideoFilmstrip(it.path);
       };
     }
     if (it.kind === "other") {
@@ -391,10 +413,14 @@
     if (!settings.s.liveScrub || denseRequested) return;
     denseRequested = true;
     const my = epoch;
-    api
-      .videoFilmstrip(it.path)
+    // Through the SHARED loader, not a direct invoke: if the grid tile already
+    // started this clip's sprite (you armed it, then double-clicked in), this
+    // joins that in-flight build instead of racing it. A direct invoke took a
+    // fresh cancel-token on the backend, which killed the grid's half-finished
+    // extraction and started over — the "it restarts from 10%" report.
+    loadVideoFilmstrip(it.path)
       .then((f) => {
-        if (my === epoch) strip = f;
+        if (my === epoch && f) strip = f;
       })
       .catch(() => {});
   }
@@ -709,7 +735,7 @@
                 {@const c = cellPos(preview)}
                 <div
                   class="scrubprev"
-                  style="left:{preview * 100}%; width:{PREVIEW_W}px; height:{previewH}px;
+                  style="left:{preview * 100}%; width:{previewBox.w}px; height:{previewBox.h}px;
                          background-image:url('{stripSrc}');
                          background-size:{strip.cols * 100}% {strip.rows * 100}%;
                          background-position:{c.x}% {c.y}%;"

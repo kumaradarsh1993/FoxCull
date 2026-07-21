@@ -268,7 +268,28 @@ export function cancelVideoPoster(path: string): void {
   cancel(`vid:${path}`);
 }
 
-/** Lightweight video sprite for thumbnail hover skimming. */
+/** The scrub sprite — ONE artifact shared by grid skimming and the Focus
+ *  timeline. It used to be two (a light `s` strip for tiles, a dense `f` strip
+ *  for Focus), which meant double the extraction for every clip and, worse, a
+ *  visible "restart": arming a tile built the light strip, then double-clicking
+ *  into Focus began the dense one from zero. Same sprite for both now, and
+ *  because both go through THIS queue, a second request for a clip already
+ *  building joins the in-flight promise instead of starting a rival build. */
+export function loadVideoFilmstrip(path: string): Promise<FilmstripInfo | null> {
+  return enqueueStrip(`film:${path}`, () => api.videoFilmstrip(path));
+}
+/** Cancel a Focus/grid filmstrip request (see `cancelVideoScrubstrip`). */
+export function cancelVideoFilmstrip(path: string): void {
+  const key = `film:${path}`;
+  const wasQueued = queue.some((q) => q.key === key);
+  cancel(key);
+  if (!wasQueued && stripPending.has(key)) {
+    stripPending.delete(key);
+    api.cancelSprite(path, "film");
+  }
+}
+/** Legacy light hover sprite. Kept only so folders Prepared before the sprites
+ *  were unified still skim instantly from their cached `s` strip. */
 export function loadVideoScrubstrip(path: string): Promise<FilmstripInfo | null> {
   return enqueueStrip(`scrub:${path}`, () => api.videoScrubstrip(path));
 }

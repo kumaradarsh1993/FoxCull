@@ -88,6 +88,18 @@ Priorities: **P0** do next · **P1** high value soon · **P2** scheduled ·
 
 ## P3 — nice-to-have
 
+- [ ] **Grid info overlay** — extend the Focus `Info` (eye) toggle to grid view:
+      a compact, low-contrast caption strip under each tile. Owner's ask
+      (2026-07-21), explicitly *not* to be built yet — he wants it available but
+      not visually noisy. Proposed fields: **videos** resolution · frame rate ·
+      duration · size; **photos** resolution · size · capture date. Filename is
+      the least useful thing there and should not lead.
+- [ ] **Sprite extraction without a process per frame** — see
+      `docs/design/precache-policy.md` §5.1: ~0.8 s of each frame's ~1.0 s is
+      ffmpeg startup + re-parsing a multi-GB container index, paid 40× per
+      build. A segmented approach (one ffmpeg per slice of the timeline,
+      emitting several frames each) is the untried middle ground between
+      today's per-frame seeks and a full-decode `select=` pass.
 - [ ] Undo no-op check without full `JSON.stringify` on 10k-item selections.
 - [ ] `list_drives`: probe drive letters with a timeout / skip A:–B: to avoid
       card-reader stalls.

@@ -1488,7 +1488,7 @@ pub async fn warm_thumbnails(
                         let ok = video::ensure_poster(&cache_dir, ffmpeg.as_deref(), p).is_ok();
                         if ok {
                             let cancel = || gen.load(Ordering::SeqCst) != my_gen;
-                            let _ = video::ensure_scrubstrip(
+                            let _ = video::ensure_filmstrip(
                                 &cache_dir,
                                 ffmpeg.as_deref(),
                                 p,
@@ -3728,6 +3728,29 @@ pub fn library_info(state: State<'_, AppState>) -> LibraryInfo {
 /// Reveal a file in the OS file manager (Explorer / Finder), selected.
 #[tauri::command]
 pub fn reveal(app: AppHandle, path: String) -> Result<(), String> {
+    // Windows: drive Explorer directly with `/select,` so the file lands
+    // SELECTED in its folder. The opener plugin's reveal reuses an already-open
+    // Explorer window on that folder and then leaves nothing highlighted, so
+    // "Show in Explorer" on one shot out of six hundred dropped you in the
+    // folder with no idea which one it meant. Directories still just open.
+    #[cfg(windows)]
+    {
+        let p = Path::new(&path);
+        if p.is_file() {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            // One argument, comma-joined — explorer.exe parses its own command
+            // line and wants `/select,<path>` as a single token.
+            return std::process::Command::new("explorer.exe")
+                .arg(format!("/select,{}", p.display()))
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                // explorer.exe exits non-zero even when it worked, so only the
+                // spawn itself is worth checking.
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+        }
+    }
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .reveal_item_in_dir(&path)

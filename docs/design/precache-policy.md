@@ -44,9 +44,18 @@ by hand.
 | Image/RAW Focus preview | `<hash>.jpg` at tier 1920 | `thumbs::ensure` | `LOUPE_MAX` = 1920 px | Focus/full-screen picture |
 | Video poster (grid) | `v<hash>.jpg` | `video::ensure_poster` | 480 px box | grid + filmstrip video tiles |
 | Video poster (Focus) | `w<hash>.jpg` | `video::ensure_poster_hires` | 1280 px box | Focus first frame before playback |
-| Hover scrub strip | `s<hash>.jpg` + `s<hash>.json` | `video::ensure_scrubstrip` | 8 cols × 160 px tiles, 12–40 frames | grid-tile skimming |
-| Focus filmstrip | `f<hash>.jpg` + `f<hash>.json` | `video::ensure_filmstrip` | 10 cols × 240 px tiles, 16–48 frames | timeline hover + drag-scrub |
+| **Scrub sprite** | `f<hash>.jpg` + `f<hash>.json` | `video::ensure_filmstrip` | 10 cols × 240 px tiles, 16–48 frames | **both** grid-tile skimming and the Focus timeline |
+| ~~Hover scrub strip~~ (legacy) | `s<hash>.jpg` + `s<hash>.json` | `video::ensure_scrubstrip` | 8 cols × 160 px tiles, 12–40 frames | read-only: still painted if cached, never built |
 | H.264 proxy | `p<hash>.mp4` | `video::ensure_proxy` | ≤1920 long edge, CRF 22 | clips the webview cannot decode |
+
+**One sprite, not two (changed 2026-07-21).** The grid tile and the Focus
+timeline used to build *different* sprite sheets from the same clip. That was
+double the extraction for every video, and it surfaced as a bug: arming a tile
+started the light `s` strip, then double-clicking into Focus started the dense
+`f` strip from zero — which looks exactly like the build "restarting at 10%".
+They now share the dense sprite. The `s` builder is retained only so folders
+Prepared before this change still skim from their existing cache; nothing
+creates a new `s` strip.
 
 The two sprite sheets carry a `.json` sidecar (`Filmstrip`: cols, rows, count,
 tile_w, tile_h, duration) so the frontend can map cursor → frame without
@@ -75,10 +84,10 @@ the "trigger" column as the *complete* list — nothing else builds these.
 | Focus preview, RAW thumbnail, video poster, hover scrub strip | **Prepare** (`heavy=true`) | the only unprompted bulk pass |
 | Video poster (grid) | a video cell becomes visible | on-demand |
 | Video poster (Focus) | opening a video in Focus | on-demand |
-| Hover scrub strip | grid tile is **armed** (clicked/selected) **and** hovered, Live Scrub ON, 140 ms settle | see §4 |
-| Hover scrub strip | neighbouring clips ±3 while a video is open in Focus — **only if** Live Scrub ON **and** "Pre-build nearby clips" ON, after a 900 ms settle | opt-in, default off |
-| Focus filmstrip | opening a video in Focus with Live Scrub ON | since nightly.7; previously waited for the pointer to reach the seek bar |
-| Focus filmstrip | cached-only paint on open with Live Scrub OFF | never builds |
+| Scrub sprite | grid tile is **armed** (clicked/selected) **and** hovered, Live Scrub ON, 140 ms settle | see §4 |
+| Scrub sprite | opening a video in Focus with Live Scrub ON | previously waited for the pointer to reach the seek bar |
+| Scrub sprite | neighbouring clips ±3 while a video is open in Focus — **only if** Live Scrub ON **and** "Pre-build nearby clips" ON, after a 900 ms settle | opt-in, default off |
+| Scrub sprite | cached-only paint on open with Live Scrub OFF | never builds |
 | H.264 proxy | the `<video>` element fails to decode the original | one at a time, process-wide lock |
 
 ### The Live Scrub contract
@@ -143,6 +152,40 @@ Fallbacks, in order: keyframe seek → exact seek at that timestamp → whole-cl
 `fps=` scan (only for containers whose index can't be seeked at all — broken
 AVIs, raw streams).
 
+### 5.1 Where the remaining time actually goes (measured 2026-07-21)
+
+Benchmarked on the Alienware (12 cores), 4K60 HEVC Main10 `.mov` from the Osmo,
+on the **internal HDD**, using the bundled ffmpeg — the same command line the
+sprite builder issues.
+
+| Test | Result | What it tells us |
+|---|---|---|
+| 6 cold frames, `-hwaccel auto` | 5.92 s | ~0.99 s per frame |
+| 6 cold frames, software decode | 6.22 s | **hwaccel is worth ~5%** here, not the 5–10× it gives on a full decode — a single keyframe doesn't amortise device setup |
+| the SAME 6 frames, OS cache warm | 5.04 s | **only ~15% of the time is disk I/O** |
+| 1 frame, `-f null` (no scale, no JPEG) | 0.80 s of 0.99 s | the cost is ffmpeg startup + container index parse + one keyframe decode; scaling and encoding are noise |
+| 12 cold frames at parallel 2 / 4 / 6 | 6.16 / 4.40 / 3.61 s | it parallelises: 4 is 1.40×, 6 is 1.71× |
+
+**The headline: sprite building is CPU/process bound, not disk bound.** Moving a
+library from HDD to SSD barely helps, which matches what the owner observed.
+The fixed cost is paid once per frame because each frame is its own ffmpeg
+process re-opening a multi-gigabyte container.
+
+Consequences for anyone optimising this next:
+
+- Raising the per-build parallelism is the cheap win, and it was taken (2 → up
+  to 4, core-scaled).
+- Dropping `-hwaccel auto` would be a wash; don't bother.
+- The real remaining lever is **not spawning a process per frame** — one ffmpeg
+  invocation emitting N frames via a `select=` filtergraph would pay the
+  container-open cost once. It was not attempted because `select` on
+  arbitrary timestamps forces a full decode walk, which is the very thing the
+  keyframe-seek design exists to avoid; a segmented approach (one process per
+  chunk of the timeline, each emitting several frames) is the untried middle
+  ground.
+- Lowering the frame count is the other lever (48 max today). Untouched so far
+  because it trades directly against scrub smoothness.
+
 ---
 
 ## 6. Concurrency & priority doctrine
@@ -154,7 +197,7 @@ AVIs, raw streams).
 | Frontend decode slots | `MAX_INFLIGHT` = 6 | `thumbnail-loader.ts` | enough to fill a viewport, gentle on a USB SSD |
 | Frontend queue order | **LIFO** | `thumbnail-loader.ts::pump` | the most recently requested cell is the one on screen now |
 | Sprite builds | 1 at a time process-wide | `video.rs::SPRITE_BUILD_LOCK` | a second hover queues instead of racing for the disk |
-| Frames per sprite build | `SPRITE_PARALLEL` = 2 | `video.rs` | halves wall time without deepening the read queue |
+| Frames per sprite build | `sprite_parallel()` = `(cores/3).clamp(2,4)` | `video.rs` | measured, see §5.1 — this work is CPU-bound, not I/O-bound |
 | Proxy transcodes | 1 at a time | `video.rs::PROXY_LOCK` | two would thrash the disk and halve both |
 | Warm Focus previews held in JS | `LOUPE_RETAIN` = 6 | `thumbnail-loader.ts` | ~66 MB ceiling; grid bitmaps are deliberately **not** pinned |
 | Resolved-URL memo | `MEMO_CAP` = 4000 | `thumbnail-loader.ts` | bounds a long session |
@@ -217,22 +260,22 @@ artifacts:
     box_px: 1280
     builder: "video::ensure_poster_hires"
     triggers: [focus_open]
-  - id: scrubstrip
-    file: "s<hash>.jpg + s<hash>.json"
-    cols: 8
-    tile_w: 160
-    frames: {min: 12, max: 40, rate: "~1/sec clamped"}
-    builder: "video::ensure_scrubstrip"
-    triggers: [grid_tile_armed_and_hovered, neighbour_prefetch, prepare]
-    gated_by: [settings.liveScrub]
-  - id: filmstrip
+  - id: filmstrip                      # ONE sprite, shared by grid + Focus
     file: "f<hash>.jpg + f<hash>.json"
     cols: 10
     tile_w: 240
     frames: {min: 16, max: 48, rate: "~1/sec clamped"}
     builder: "video::ensure_filmstrip"
-    triggers: [focus_open_video]
+    triggers: [grid_tile_armed_and_hovered, focus_open_video, neighbour_prefetch, prepare]
     gated_by: [settings.liveScrub]
+  - id: scrubstrip                     # legacy; read-only, never built
+    file: "s<hash>.jpg + s<hash>.json"
+    cols: 8
+    tile_w: 160
+    frames: {min: 12, max: 40, rate: "~1/sec clamped"}
+    builder: "video::ensure_scrubstrip"
+    triggers: []
+    note: "painted if already cached so pre-2026-07-21 Prepared folders still skim"
   - id: proxy
     file: "p<hash>.mp4"
     max_long_edge: 1920
@@ -248,7 +291,7 @@ limits:
   frontend_inflight: 6
   frontend_queue: LIFO
   sprite_builds_concurrent: 1
-  sprite_frames_concurrent: 2
+  sprite_frames_concurrent: "(cores/3).clamp(2,4)"
   proxy_concurrent: 1
   loupe_bitmaps_pinned: 6
   grid_bitmaps_pinned: 0
