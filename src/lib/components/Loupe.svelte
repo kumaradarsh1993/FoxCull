@@ -8,6 +8,7 @@
     cancelVideoFilmstrip,
   } from "$lib/thumbnail-loader";
   import { settings } from "$lib/settings.svelte";
+  import { ScrubEngine, paintFrame } from "$lib/scrub-engine";
   import type { MediaItem, FilmstripInfo, MediaProbe, VideoSegment } from "$lib/types";
 
   let {
@@ -80,7 +81,62 @@
   let probe = $state<MediaProbe | null>(null);
   let clipToolsOpen = $state(false);
 
-  // ── filmstrip scrub state ──
+  // ── live-decode scrub (WebCodecs) ─────────────────────────────────────────
+  // The primary scrub path. Decodes the real frame under the cursor on demand
+  // instead of painting a pre-built sprite, so scrubbing is full-resolution and
+  // available the instant a clip opens — no Prepare, no cache, no progress bar.
+  // Everything below degrades to the sprite path automatically if a clip can't
+  // be indexed or its codec can't be decoded this way; the two are deliberately
+  // independent so a failure is invisible rather than fatal.
+  // Full rationale + measurements: docs/design/video-player-migration.md §10-11.
+  // `$state.raw`, not `$state`: the template and `previewBox` read through this
+  // so reassignment must be reactive, but the engine is an opaque class holding
+  // a decoder and a 30k-entry sample table — deep-proxying it would be pure
+  // overhead (and mutation of its internals is never what we react to).
+  let engine = $state.raw<ScrubEngine | null>(null);
+  let engineReady = $state(false);
+  /// True from the moment we start indexing a clip until it succeeds or fails.
+  /// Holds the sprite build back so the two paths never both run.
+  let enginePending = false;
+  let stageCanvas = $state<HTMLCanvasElement | null>(null);
+  let prevCanvas = $state<HTMLCanvasElement | null>(null);
+  /// Keeps the decoded still on screen after release until <video> has actually
+  /// landed on that frame, so the hand-off shows no flicker or jump.
+  let canvasHold = $state(false);
+
+  /** Paint the frame at `t` onto the full-stage canvas (drag/step scrub).
+   *  `canvasHold` is raised INSIDE the callback — i.e. only once real pixels
+   *  are on the canvas — so the still never flashes empty over the video. */
+  function paintStage(t: number, exact = false) {
+    const e = engine;
+    if (!e) return;
+    e.request(t, exact, (f) => {
+      if (!stageCanvas) return;
+      paintFrame(stageCanvas, f, stageW, stageH, e.index.rotation);
+      canvasHold = true;
+    });
+  }
+  /** Safety net: if the element never fires `seeked` (already at that exact
+   *  time), don't leave the still frozen over a live video. */
+  let holdTimer: ReturnType<typeof setTimeout> | undefined;
+  function releaseHoldSoon() {
+    clearTimeout(holdTimer);
+    holdTimer = setTimeout(() => (canvasHold = false), 1500);
+  }
+  function onSeeked() {
+    clearTimeout(holdTimer);
+    canvasHold = false;
+  }
+  /** Paint the frame at `t` into the small hover thumbnail above the timeline. */
+  function paintPreview(t: number) {
+    const e = engine;
+    if (!e) return;
+    e.request(t, false, (f) => {
+      if (prevCanvas) paintFrame(prevCanvas, f, previewBox.w, previewBox.h, e.index.rotation);
+    });
+  }
+
+  // ── filmstrip scrub state (fallback path) ──
   let strip = $state<FilmstripInfo | null>(null);
   /// Whether the DENSE filmstrip build has been requested for the current item
   /// (cached loads don't count — this guards the expensive path only).
@@ -93,6 +149,11 @@
   let posterSrc = $state<string | null>(null); // cached poster: instant first paint
   let preview = $state<number | null>(null); // fraction 0..1 to preview, or null
   let scrubbing = $state(false);
+  /// The decoded still covers the stage while dragging, and stays up after
+  /// release until <video> has landed on the same frame (declared here so it
+  /// sits after `scrubbing`; Svelte's checker rejects a $derived that reads a
+  /// `let` declared below it).
+  let liveScrubActive = $derived(engineReady && canvasHold);
   let trackEl = $state<HTMLDivElement | null>(null);
   let infoVisible = $state(false);
   let pendingSeek: number | null = null;
@@ -108,8 +169,18 @@
   const PREVIEW_W = 200;
   const PREVIEW_MAX_H = 132;
   let previewBox = $derived.by(() => {
-    if (!strip) return { w: 0, h: 0 };
-    const aspect = strip.tile_w / Math.max(1, strip.tile_h);
+    // Aspect comes from the decoder's index when live-decode scrub is running
+    // (rotation-aware — a portrait phone clip is stored landscape), else from
+    // the sprite tile.
+    const idx = engineReady ? engine?.index : null;
+    const aspect = idx
+      ? (idx.rotation === 90 || idx.rotation === 270
+          ? idx.codedHeight / Math.max(1, idx.codedWidth)
+          : idx.codedWidth / Math.max(1, idx.codedHeight))
+      : strip
+        ? strip.tile_w / Math.max(1, strip.tile_h)
+        : 0;
+    if (!aspect) return { w: 0, h: 0 };
     let w = PREVIEW_W;
     let h = w / aspect;
     if (h > PREVIEW_MAX_H) {
@@ -228,6 +299,32 @@
       // unconditionally here, which on an HDD library meant ~a minute of
       // unwanted ffmpeg work per clip with Live Scrub OFF (2026-07-20 RCA).
       denseRequested = false;
+      // Live-decode scrub: index the clip and warm a decoder. Costs a few MB of
+      // reads and ~300 ms even on a multi-GB file (the moov hunt skips the
+      // mdat), so it runs unconditionally on open rather than waiting for
+      // "scrub intent" the way sprite builds must. If it succeeds, the sprite
+      // build below never fires for this clip.
+      if (settings.s.liveDecodeScrub) {
+        enginePending = true;
+        ScrubEngine.open(it.path, () => my !== epoch)
+          .then((e) => {
+            if (my !== epoch) {
+              e.close();
+              return;
+            }
+            engine = e;
+            engineReady = true;
+            enginePending = false;
+          })
+          .catch(() => {
+            // Unsupported codec/container, or a stale open. Release the sprite
+            // path we were holding back, so the clip still scrubs the old way.
+            if (my !== epoch) return;
+            engineReady = false;
+            enginePending = false;
+            if (settings.s.liveScrub) ensureFilmstrip();
+          });
+      }
       api.videoScrubstripCached(it.path).then((s) => {
         if (my === epoch && s && !strip) strip = hydrate(s);
       });
@@ -246,6 +343,12 @@
       // flipping quickly through a folder of videos must not stack up builds.
       return () => {
         cancelVideoFilmstrip(it.path);
+        // Free the decoder + any frame it still holds the moment we leave this
+        // clip — a 4K VideoFrame is ~12 MB of GPU memory.
+        engine?.close();
+        engine = null;
+        engineReady = false;
+        canvasHold = false;
       };
     }
     if (it.kind === "other") {
@@ -366,7 +469,26 @@
     return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
   }
   function applySeek(frac: number, final = false) {
-    const d = dur || strip?.duration || 0;
+    const d = dur || engine?.index.durationS || strip?.duration || 0;
+    // ── live-decode path ────────────────────────────────────────────────────
+    // While MOVING we never touch `currentTime`: each of those is a precise
+    // seek (pipeline flush + decode from the previous keyframe + audio
+    // re-sync), and thirty in a row is exactly why dragging used to lag the
+    // cursor. Instead we paint the real keyframe under the cursor, ~20 ms each,
+    // with the engine coalescing so the newest position always wins.
+    // On RELEASE we decode the exact frame, keep it on screen, and let the
+    // element perform ONE precise seek underneath; `seeked` swaps back to live
+    // video showing the same frame, so the hand-off is invisible.
+    if (engineReady && d > 0) {
+      const t = frac * d;
+      cur = t;
+      paintStage(t, final);
+      if (final && vid) {
+        vid.currentTime = t;
+        releaseHoldSoon();
+      }
+      return;
+    }
     if (vid && d > 0) {
       const t = frac * d;
       cur = t;
@@ -410,6 +532,13 @@
   function ensureFilmstrip() {
     const it = item;
     if (!it || it.kind !== "video") return;
+    // Live-decode scrub makes the sprite sheet redundant in Focus — that was
+    // the whole point of the migration. Hold off while the engine is still
+    // opening too, or a clip would pay for a sprite build that finishes just as
+    // the decoder makes it pointless. The catch handler above re-enters here if
+    // the engine can't take the clip. (The GRID still uses sprites: one decoder
+    // per tile is not viable.)
+    if (engineReady || enginePending) return;
     if (!settings.s.liveScrub || denseRequested) return;
     denseRequested = true;
     const my = epoch;
@@ -442,6 +571,12 @@
     const f = fracFromEvent(e);
     preview = f;
     if (scrubbing) seekTo(f);
+    // Hover (not dragging): decode the frame into the floating thumbnail. Same
+    // engine, same coalescing — no sprite sheet needed for hover either.
+    else if (engineReady) {
+      const d = dur || engine?.index.durationS || 0;
+      if (d > 0) paintPreview(f * d);
+    }
   }
   function onTrackUp(e: PointerEvent) {
     if (!scrubbing) return;
@@ -639,6 +774,7 @@
           onclick={togglePlay}
           onloadedmetadata={onMeta}
           ontimeupdate={onTime}
+          onseeked={onSeeked}
           onplay={() => (paused = false)}
           onpause={() => (paused = true)}
           onerror={() => {
@@ -667,7 +803,19 @@
             }
           }}
         ></video>
-        {#if scrubbing && preview != null && strip && stripSrc}
+        <!-- Live-decode scrub surface. Always in the DOM (so there is always a
+             canvas to paint into — a conditional one would be null exactly when
+             the first frame arrives) and revealed only once it holds real
+             pixels. It shows the frame under the cursor while dragging, and
+             stays up after release until <video> has landed on the same frame,
+             so the swap back is invisible. -->
+        <div class="liveScrub" class:shown={liveScrubActive}>
+          <canvas bind:this={stageCanvas}></canvas>
+          {#if preview != null && scrubbing}
+            <span class="stageTs">{fmt(preview * (dur || engine?.index.durationS || 0))}</span>
+          {/if}
+        </div>
+        {#if !engineReady && scrubbing && preview != null && strip && stripSrc}
           <!-- Final Cut-style drag scrub: the sprite frame under the cursor
                paints the WHOLE stage instantly (decode-free) while the real
                decoder chases underneath; releasing lands the accurate frame. -->
@@ -731,7 +879,16 @@
                 ></button>
               {/each}
               <div class="cursor" style="left:{pct(cur)}%"></div>
-              {#if preview != null && !scrubbing && strip && stripSrc}
+              {#if preview != null && !scrubbing && engineReady}
+                <!-- Hover thumbnail, decoded on demand (no sprite sheet). -->
+                <div
+                  class="scrubprev live"
+                  style="left:{preview * 100}%; width:{previewBox.w}px; height:{previewBox.h}px;"
+                >
+                  <canvas bind:this={prevCanvas}></canvas>
+                  <span class="ts">{fmt(preview * (dur || engine?.index.durationS || 0))}</span>
+                </div>
+              {:else if preview != null && !scrubbing && strip && stripSrc}
                 {@const c = cellPos(preview)}
                 <div
                   class="scrubprev"
@@ -901,6 +1058,30 @@
     background-repeat: no-repeat;
     background-color: #000;
   }
+  /* Live-decode scrub surface. Present at all times so there is always a canvas
+     to paint into; `opacity` (not display/{#if}) does the reveal, because the
+     canvas must already hold pixels at the moment it becomes visible. No
+     transition — a fade would smear one frame into the next while dragging. */
+  .liveScrub {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+  }
+  .liveScrub.shown {
+    opacity: 1;
+    visibility: visible;
+  }
+  .liveScrub canvas {
+    display: block;
+  }
+  .liveScrub .stageTs,
   .scrubStage .stageTs {
     position: absolute;
     left: 50%;
@@ -1068,6 +1249,14 @@
     pointer-events: none;
     overflow: hidden;
     z-index: 60;
+  }
+  .scrubprev.live {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .scrubprev.live canvas {
+    display: block;
   }
   .scrubprev .ts {
     position: absolute;

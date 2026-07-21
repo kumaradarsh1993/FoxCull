@@ -16,11 +16,13 @@
 //   appendBuffer's next-position return) → sample table → hvcC/avcC
 //   description → VideoDecoder → decode N sync samples, timing each.
 
-import * as MP4Box from "mp4box";
+// The demux/description helpers are imported from the ENGINE rather than
+// copied, so re-running this probe always measures the parser the app actually
+// ships. A forked copy here would quietly stop testing the real thing.
 import { invoke } from "@tauri-apps/api/core";
 import { api } from "./api";
+import { parseMoov, codecDescription, ScrubEngine, paintFrame } from "./scrub-engine";
 
-const PARSE_CHUNK = 2 * 1024 * 1024;
 /** Keyframes decoded for timing. First one includes decoder warm-up. */
 const PROBE_KEYFRAMES = 6;
 
@@ -36,49 +38,80 @@ async function readRange(path: string, offset: number, len: number): Promise<Uin
   return new Uint8Array(await api.readFileRange(path, offset, len));
 }
 
-/** Progressively feed mp4box until the moov is parsed. For camera files the
- *  moov usually sits AFTER the multi-GB mdat; mp4box's appendBuffer returns
- *  the next byte offset it wants, which jumps clean over mdat — so this reads
- *  a few MB total regardless of file size. */
-async function parseMoov(path: string): Promise<{ info: any; file: any; bytesRead: number }> {
-  const file = MP4Box.createFile();
-  let info: any = null;
-  let err: unknown = null;
-  file.onReady = (i: any) => (info = i);
-  file.onError = (e: unknown) => (err = e);
+/**
+ * Drive `ScrubEngine` the way a real drag does: a burst of requests far faster
+ * than decoding, then a final exact request — and check what actually came out.
+ *
+ * What this catches that phase 3 cannot: a backlog (requests queueing instead
+ * of the newest winning, which is what makes a picture lag the cursor), a
+ * coalescer that drops the LAST request too, painting failures, and an exact
+ * decode that lands on the keyframe instead of the requested frame.
+ */
+async function exerciseEngine(path: string): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {};
+  const t0 = performance.now();
+  const engine = await ScrubEngine.open(path);
+  out.openMs = Math.round(performance.now() - t0);
+  out.rotation = engine.index.rotation;
+  out.keyframes = engine.index.syncIdx.length;
+  try {
+    const canvas = document.createElement("canvas");
+    const dur = engine.index.durationS;
 
-  let pos = 0;
-  let bytesRead = 0;
-  for (let i = 0; i < 4096 && !info && !err; i++) {
-    const bytes = await readRange(path, pos, PARSE_CHUNK);
-    if (bytes.length === 0) break; // EOF
-    bytesRead += bytes.length;
-    // mp4box wants an ArrayBuffer with a fileStart property. The invoke result
-    // is a fresh ArrayBuffer already, so no copy is needed.
-    const ab = bytes.buffer as ArrayBuffer & { fileStart: number };
-    ab.fileStart = pos;
-    const next = file.appendBuffer(ab);
-    if (bytes.length < PARSE_CHUNK) break; // short read = EOF
-    pos = typeof next === "number" ? next : pos + bytes.length;
-  }
-  if (err) throw new Error(`mp4box error: ${String(err)}`);
-  if (!info) throw new Error("moov not found (unsupported container?)");
-  return { info, file, bytesRead };
-}
-
-/** Serialize the codec-config box (hvcC/avcC/…) minus its 8-byte box header —
- *  the `description` bytes VideoDecoder expects for length-prefixed samples. */
-function codecDescription(file: any, trackId: number): Uint8Array {
-  const entries = file.getTrackById(trackId)?.mdia?.minf?.stbl?.stsd?.entries ?? [];
-  for (const e of entries) {
-    const box = e.hvcC ?? e.avcC ?? e.vpcC ?? e.av1C;
-    if (box) {
-      const stream = new MP4Box.DataStream(undefined, 0, MP4Box.DataStream.BIG_ENDIAN);
-      box.write(stream);
-      return new Uint8Array(stream.buffer, 8, stream.getPosition() - 8);
+    // A drag: 24 positions across the clip, issued every 8 ms — roughly 3x
+    // faster than a frame can decode, so coalescing MUST drop most of them.
+    const painted: { t: number; ms: number; w: number; h: number }[] = [];
+    const started = performance.now();
+    for (let i = 0; i < 24; i++) {
+      const t = (i / 23) * dur * 0.98;
+      const at = performance.now();
+      engine.request(t, false, (f) => {
+        paintFrame(canvas, f, 900, 600, engine.index.rotation);
+        painted.push({
+          t: +(f.timestamp / 1e6).toFixed(2),
+          ms: Math.round(performance.now() - at),
+          w: canvas.width,
+          h: canvas.height,
+        });
+      });
+      await new Promise((r) => setTimeout(r, 8));
     }
+    out.dragLastStats = engine.stats;
+    // Let the tail finish.
+    await new Promise((r) => setTimeout(r, 600));
+    out.dragRequests = 24;
+    out.dragPainted = painted.length;
+    out.dragSpanMs = Math.round(performance.now() - started);
+    out.dragFrames = painted;
+    // Coalescing is working iff far fewer frames painted than were requested,
+    // AND the ones that did paint are spread across the clip (not a prefix).
+    out.dragLastT = painted.length ? painted[painted.length - 1].t : null;
+
+    // Release: the exact frame. Ask for a time deliberately BETWEEN keyframes
+    // so "exact" is distinguishable from "nearest keyframe".
+    const target = Math.min(dur * 0.5 + 0.37, dur - 0.05);
+    out.exactTarget = +target.toFixed(3);
+    out.exactKeyframeWouldBe = +engine.keyTimeFor(target).toFixed(3);
+    const exactAt = performance.now();
+    const got = await new Promise<number | null>((resolve) => {
+      let done = false;
+      engine.request(target, true, (f) => {
+        done = true;
+        paintFrame(canvas, f, 900, 600, engine.index.rotation);
+        resolve(f.timestamp / 1e6);
+      });
+      setTimeout(() => !done && resolve(null), 5000);
+    });
+    out.exactMs = Math.round(performance.now() - exactAt);
+    out.exactLandedAt = got == null ? null : +got.toFixed(3);
+    out.exactErrorMs =
+      got == null ? null : Math.round(Math.abs(got - target) * 1000);
+    // Where the time actually went (read vs decode, and whether flush stalled).
+    out.exactStats = engine.stats;
+  } finally {
+    engine.close();
   }
-  throw new Error("no hvcC/avcC/vpcC/av1C in stsd");
+  return out;
 }
 
 export async function runScrubProbe(path: string): Promise<void> {
@@ -93,9 +126,8 @@ export async function runScrubProbe(path: string): Promise<void> {
 
     // ── 1. Demux: moov-only parse + sample table ──────────────────────────
     let t = performance.now();
-    const { info, file, bytesRead } = await parseMoov(path);
+    const { info, file } = await parseMoov(path);
     report.moovParseMs = Math.round(performance.now() - t);
-    report.moovBytesRead = bytesRead;
 
     const track = info.videoTracks?.[0];
     if (!track) throw new Error("no video track");
@@ -116,6 +148,7 @@ export async function runScrubProbe(path: string): Promise<void> {
 
     // ── 2. isConfigSupported, hardware and any ────────────────────────────
     const description = codecDescription(file, track.id);
+    if (!description) throw new Error("no hvcC/avcC/vpcC/av1C in stsd");
     report.descriptionBytes = description.length;
     const base: VideoDecoderConfig = {
       codec: track.codec,
@@ -198,6 +231,12 @@ export async function runScrubProbe(path: string): Promise<void> {
     // The verdict number: hot-decoder latency = decodes after the first.
     const hot = frames.slice(1).map((f) => f.ms);
     report.hotDecodeAvgMs = hot.length ? Math.round(hot.reduce((a, b) => a + b, 0) / hot.length) : null;
+
+    // ── 4. The real engine, driven through a simulated drag ───────────────
+    // Phases 1-3 prove the PLATFORM can do this. This phase proves OUR class
+    // does — index, latest-wins coalescing, painting, and the exact-frame
+    // decode on release — without needing a hand on the mouse.
+    report.engine = await exerciseEngine(path);
     report.verdict = "OK";
   } catch (e) {
     report.verdict = "FAIL";

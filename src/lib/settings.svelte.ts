@@ -36,6 +36,12 @@ export interface AppSettings {
    *  and on an HDD library that background work is worth opting into, not
    *  inheriting. */
   scrubPrefetch: boolean;
+  /** Focus-view scrubbing decodes real frames on demand (WebCodecs) instead of
+   *  painting a pre-built sprite sheet. Full resolution, no pre-caching, and it
+   *  works on a clip the moment it opens. Falls back automatically per clip if
+   *  the codec/container can't be decoded this way, so turning it off is only
+   *  for diagnosis. See docs/design/video-player-migration.md. */
+  liveDecodeScrub: boolean;
   videoAutoplay: boolean;
   /** Collapse the video transport to a thin hover-to-expand line (vs a pinned
    *  always-visible bar). Keeps the picture edge-to-edge in Focus/full-screen. */
@@ -71,6 +77,7 @@ const DEFAULTS: AppSettings = {
   includeSub: true,
   liveScrub: false,
   scrubPrefetch: false,
+  liveDecodeScrub: true,
   videoAutoplay: false,
   minimalVideoBar: true,
   padEnabled: true,

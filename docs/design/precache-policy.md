@@ -90,7 +90,36 @@ the "trigger" column as the *complete* list — nothing else builds these.
 | Scrub sprite | cached-only paint on open with Live Scrub OFF | never builds |
 | H.264 proxy | the `<video>` element fails to decode the original | one at a time, process-wide lock |
 
-### The Live Scrub contract
+### Focus view no longer pre-caches anything (2026-07-21)
+
+**The single biggest change to this policy since it was written.** Focus-view
+scrubbing now decodes the real frame under the cursor on demand (WebCodecs —
+`src/lib/scrub-engine.ts`, setting `liveDecodeScrub`, default ON). It needs no
+sprite, no build, no cache entry and no progress UI: indexing a clip reads a
+few MB of MP4 metadata (~300 ms even on a 546-second 4K60 file, because the
+moov hunt skips the mdat) and every frame after that is decoded live.
+
+Consequences for everything below:
+
+- **The Focus timeline builds no sprite.** `ensureFilmstrip()` returns early
+  while the engine is opening (`enginePending`) or open (`engineReady`), so the
+  two paths never both run.
+- **The sprite survives for the GRID only** — a decoder per grid tile is not
+  viable, so tile skimming still uses `f<hash>.jpg`. "Live Scrub" in Settings
+  now means *grid tiles*, and is labelled so.
+- **Fallback is per clip, automatic and silent.** If a clip can't be indexed or
+  its codec can't be decoded this way, `ScrubEngine.open()` rejects and the
+  sprite path resumes exactly as documented below — including the build that
+  was being held back.
+- **The "Focus preview" row of the Prepare table is now grid-only value** for
+  video: preparing a folder still builds posters + sprites, which help the grid,
+  but Focus no longer depends on them.
+
+Measured against the sprite path it replaces in Focus: ~1 s per frame to build
+40 low-resolution frames, versus ~40 ms to decode one full-resolution frame on
+demand. Detail and method: `docs/design/video-player-migration.md` §10-11.
+
+### The Live Scrub contract (grid tiles; also the Focus fallback)
 
 **Live Scrub OFF means no video preview work ever happens.** Opening a clip
 paints whatever sprite sheets already exist and nothing more; the timeline is a
@@ -260,14 +289,17 @@ artifacts:
     box_px: 1280
     builder: "video::ensure_poster_hires"
     triggers: [focus_open]
-  - id: filmstrip                      # ONE sprite, shared by grid + Focus
+  - id: filmstrip                      # GRID skimming (+ Focus fallback only)
     file: "f<hash>.jpg + f<hash>.json"
     cols: 10
     tile_w: 240
     frames: {min: 16, max: 48, rate: "~1/sec clamped"}
     builder: "video::ensure_filmstrip"
     triggers: [grid_tile_armed_and_hovered, focus_open_video, neighbour_prefetch, prepare]
-    gated_by: [settings.liveScrub]
+    gated_by: [settings.liveScrub, "not (engineReady or enginePending)"]
+    note: "since 2026-07-21 Focus decodes frames live; the focus_open_video
+           trigger fires only when live-decode scrub is off or the clip's
+           codec/container was rejected by ScrubEngine.open()"
   - id: scrubstrip                     # legacy; read-only, never built
     file: "s<hash>.jpg + s<hash>.json"
     cols: 8
@@ -283,8 +315,16 @@ artifacts:
     builder: "video::ensure_proxy"
     triggers: [webview_decode_failed]
 settings:
-  liveScrub: {default: false, gates: [scrubstrip, filmstrip]}
+  liveScrub: {default: false, gates: [scrubstrip, filmstrip], scope: "grid tiles"}
   scrubPrefetch: {default: false, span: 3, settle_ms: 900, requires: liveScrub}
+  liveDecodeScrub:
+    default: true
+    scope: "Focus view"
+    builds: []                         # decodes on demand; caches NOTHING
+    impl: "src/lib/scrub-engine.ts (WebCodecs VideoDecoder + mp4box moov index)"
+    index_cost: "~300 ms, ~5 MB read, regardless of file size"
+    frame_cost_ms: {coarse: "~40 (read+decode+paint, 4K60 HEVC off HDD)", exact: "~150 (one GOP)"}
+    fallback: "per clip, silent → filmstrip sprite path"
 limits:
   warm_threads: "(cores/4).clamp(1,2)"
   warm_cap: 600

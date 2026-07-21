@@ -2762,8 +2762,14 @@
             <button class="chip" class:on={settings.s.relatedMode === "collapsed"} onclick={collapseAllRelated}>Fold{relatedHiddenCount ? ` ${relatedHiddenCount}` : ""}</button>
           </div>
         </div>
-        <div class="row"><span>Live Scrub</span>
-          <div class="seg">
+        <div class="row"><span>Focus scrub</span>
+          <div class="seg" title="Focus view decodes the real frame under your cursor as you drag — full resolution, nothing to prepare, works the moment a clip opens. Clips whose codec can't be decoded this way fall back automatically. Turn off only to diagnose.">
+            <button class="chip" class:on={settings.s.liveDecodeScrub} onclick={() => settings.set({ liveDecodeScrub: true })}>Live decode</button>
+            <button class="chip" class:on={!settings.s.liveDecodeScrub} onclick={() => settings.set({ liveDecodeScrub: false })}>Sprites</button>
+          </div>
+        </div>
+        <div class="row"><span>Live Scrub (grid tiles)</span>
+          <div class="seg" title="Skim a video by hovering its GRID tile, using pre-built sprite frames. Focus view no longer needs this — it decodes real frames on demand.">
             <button class="chip" class:on={settings.s.liveScrub} onclick={() => settings.set({ liveScrub: true })}>On</button>
             <button class="chip" class:on={!settings.s.liveScrub} onclick={() => settings.set({ liveScrub: false })}>Off</button>
           </div>
