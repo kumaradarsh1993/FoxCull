@@ -1164,6 +1164,15 @@ pub async fn read_file_range(
     Ok(tauri::ipc::Response::new(buf))
 }
 
+/// Let the frontend write one line into the app log. Used for decisions that
+/// are invisible from the Rust side but matter when diagnosing a machine we
+/// can't sit in front of — above all whether the live scrub decoder accepted a
+/// clip, and if not, why. Cheap enough to call once per clip opened.
+#[tauri::command]
+pub fn log_note(msg: String) {
+    crate::log::line(&format!("UI {msg}"));
+}
+
 /// Dev-only: persist the WebCodecs feasibility-probe verdict somewhere the
 /// agent driving the dev loop can read it (the webview console isn't visible
 /// from the terminal that runs `tauri dev`). Also mirrored into the app log.

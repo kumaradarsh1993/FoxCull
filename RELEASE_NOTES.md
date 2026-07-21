@@ -1,60 +1,53 @@
-# FoxCull v1.2.0-nightly.3
+# FoxCull v1.2.0-nightly.4
 
-A bug fix that deserved the deep look you asked for, plus the smaller things
-around it.
+Casting. You described three different misbehaviours — they turned out to be
+three real bugs, and they explain each other.
 
-## The picture freezing while the audio played on
+## Why the TV stopped following you
 
-You found a real one. Clicking or dragging the timeline during playback could
-leave the frame stuck while the sound carried on — intermittently, and once it
-started on a clip it kept happening on that clip.
+**The receiver app on the TV is not permanent.** It closes itself whenever it
+goes idle — a clip ends, a photo has been up a while, someone touches Home.
+FoxCull asked the TV to launch it exactly once, when you first connected, and
+never again. So the moment it closed, every later "show this one" had nowhere to
+go and simply queued up forever. The connection was still alive, so the button
+happily kept saying *Casting to Sony TV* while nothing could reach the screen
+again. **That's the disappearing act — and once it happened, that session was
+finished.**
 
-**What was happening.** Releasing the playhead starts two things at once: FoxCull
-decodes the exact frame you landed on, and the video itself seeks to it.
-Whichever finishes second was supposed to hand the picture back to live video.
-If the video won that race, the still was cleared correctly — and then the
-late-arriving decoded frame put itself back on screen, with nothing left to ever
-take it down again. Hence a frozen picture over a perfectly healthy, playing
-video.
+**FoxCull also believed its own optimism.** It marked a file as "now on the TV"
+the moment it *decided* to send it, not when it actually went out. So when a
+send silently went nowhere, the follow logic thought it had done its job and
+stopped trying — leaving the previous video playing on the TV while the app had
+moved on. **That's the second thing you saw.**
 
-That also explains why it felt random but then stuck: which side wins depends on
-how fast that particular file seeks, so a clip that loses the race once loses it
-every time.
+**And two quick presses of → could land out of order**, because for RAW and HEIC
+shots FoxCull has to build a preview first, which takes far longer than for a
+photo already cached. The slower one could finish last and win. **That's why it
+felt random.**
 
-**The fix** tags each decode with the hand-off it belongs to, so a frame that
-arrives after the video has already taken over is discarded — it would only have
-shown the frame the video is already displaying. On top of that, FoxCull now
-checks four times a second that a playing video is never sitting behind a still,
-so anything similar recovers on its own instead of freezing.
+Now: the receiver is relaunched whenever it's needed and the media you asked for
+is delivered as soon as it's back; a file counts as "on the TV" only once it has
+genuinely been sent; and a superseded request is dropped instead of racing.
+FoxCull also checks every couple of seconds that the session is really alive, so
+the Cast button stops claiming a connection that has ended.
 
-## Scrubbing readouts
+## Your XPS 13 question
 
-- The timestamp that floated in the middle of the picture while dragging is
-  **gone** — it read as a glitch, not a readout.
-- The transport's own clock takes over the job: the current position is bigger,
-  white and bold, and legible over a bright frame.
+Honest answer: **I don't know yet, and I'm not going to guess.** What I can tell
+you is what it depends on. Chrome has no software HEVC decoder at all, so this
+works only where the graphics chip does it — and Intel's built-in graphics gained
+10-bit HEVC decode in the 7th generation (2017). Your Osmo footage is 10-bit. So
+it comes down to that laptop's vintage, which isn't written down anywhere.
 
-## Hide the filmstrip — press B
+So I made the app answer it. Every clip you open now writes one line to
+`foxcull.log` saying whether the decoder took it and why not if it didn't. Open a
+few clips on the XPS, send me the log, and you'll have a real answer instead of
+my opinion.
 
-The filmstrip now hides and comes back, like the folder panel: press **B**, or
-click the small chevron on the divider above it. What's left behind is a 14-pixel
-rail, so there is always something to click to bring it back. Hiding remembers
-where the strip was docked, so it returns to the bottom, left or right as you had
-it.
-
-## "Is it doing anything?"
-
-Opening a folder whose thumbnails aren't built yet used to render in silence —
-sometimes for ten or fifteen seconds — because only bulk jobs like Prepare ever
-reported progress, and video posters weren't part of those at all. Loading now
-reports itself like any other job, so you can see it working and roughly how far
-along it is.
-
-The activity indicator has also moved to the **bottom-left**, where a status
-readout belongs, and it no longer disappears when you collapse the folder panel.
+If it turns out not to be supported there, nothing breaks: Glimpse greys out with
+an explanation and scrubbing falls back to the older behaviour.
 
 ## Still worth testing
 
-Glimpse's pacing — tell me if 40× is right as a default. And phone (H.264)
-video, which takes a slightly different path inside and still hasn't met a real
-file.
+Glimpse's pacing at the default 40×, and phone (H.264) video, which takes a
+slightly different path inside and still hasn't met a real file.

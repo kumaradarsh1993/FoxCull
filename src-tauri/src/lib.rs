@@ -180,6 +180,7 @@ pub fn run() {
             commands::log_event,
             commands::read_file_range,
             commands::scrub_probe_report,
+            commands::log_note,
             cast::cast_discover,
             cast::cast_start,
             cast::cast_stop,

@@ -727,6 +727,41 @@ fn send_frame(
 ///   * once the receiver reports its transport id, opens a virtual connection
 ///     to it and LOADs whatever media is pending,
 ///   * services Load/Shutdown commands from the UI.
+/// What the actor should do about queued media on this tick.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum LoadAction {
+    /// Nothing queued, or we're waiting out the relaunch backoff.
+    Idle,
+    /// Media is waiting but the receiver app isn't running — (re)launch it.
+    Relaunch,
+    /// Media is waiting and we have a transport to send it to.
+    Send,
+}
+
+/// Pulled out of `run_actor` purely so it can be tested: this three-way choice
+/// is the whole of the "cast stopped following me" bug. The original code had
+/// no `Relaunch` case at all — LAUNCH was sent once at connect — so as soon as
+/// the receiver app closed itself (which it does whenever it goes idle), every
+/// later LOAD waited forever for a transport id that was never coming back.
+fn load_action(has_pending: bool, has_transport: bool, since_launch: Duration) -> LoadAction {
+    if !has_pending {
+        return LoadAction::Idle;
+    }
+    if has_transport {
+        return LoadAction::Send;
+    }
+    // Backoff so a TV that is off/unreachable gets one attempt every few
+    // seconds rather than one per loop iteration.
+    if since_launch >= RELAUNCH_EVERY {
+        LoadAction::Relaunch
+    } else {
+        LoadAction::Idle
+    }
+}
+
+/// How often we're willing to re-ask the TV to launch the receiver app.
+const RELAUNCH_EVERY: Duration = Duration::from_secs(3);
+
 fn run_actor(
     mut stream: TlsStream<TcpStream>,
     cmd_rx: Receiver<Cmd>,
@@ -763,13 +798,23 @@ fn run_actor(
     let mut app_connected = false;
     // Media queued to LOAD as soon as the transport id is known.
     let mut pending_load: Option<(String, String, bool, String, String)> = None;
+    // When we last asked the TV to launch the receiver app. The app is NOT
+    // permanent: it closes itself when it goes idle (a clip ends, a still has
+    // been up a while, someone presses Home). Before this was tracked, LAUNCH
+    // was sent exactly once at connect, so once the app went away every later
+    // LOAD had no transport to go to and sat in `pending_load` forever — the
+    // connection was still alive and the UI still said "casting", but nothing
+    // could ever reach the screen again.
+    let mut last_launch = Instant::now();
 
     loop {
         // 1. Drain UI commands.
         loop {
             match cmd_rx.try_recv() {
                 Ok(Cmd::Load { url, content_type, is_video, title, path }) => {
-                    status.lock().playing_path = Some(path.clone());
+                    // NB: `playing_path` is deliberately NOT set here. It means
+                    // "what the TV is showing", and at this point we have only
+                    // queued the intent — see where the LOAD is actually sent.
                     pending_load = Some((url, content_type, is_video, title, path));
                 }
                 Ok(Cmd::Shutdown) => {
@@ -793,9 +838,32 @@ fn run_actor(
             }
         }
 
-        // 2. If we have a transport id and something to load, do it now.
-        if let Some(tid) = transport_id.clone() {
-            if let Some((url, content_type, is_video, title, _path)) = pending_load.take() {
+        // 2. Get the queued media onto the screen.
+        match load_action(pending_load.is_some(), transport_id.is_some(), last_launch.elapsed()) {
+            LoadAction::Idle => {}
+            // The receiver app isn't running (it never was, or it idled out and
+            // closed). Relaunch it and ask for a status so we learn the new
+            // transport id; `pending_load` is KEPT, so the media the user asked
+            // for goes out the moment the app is back.
+            LoadAction::Relaunch => {
+                let _ = send_frame(
+                    &mut stream,
+                    NS_RECEIVER,
+                    PLATFORM_RECEIVER_ID,
+                    json!({"type":"LAUNCH","appId":DEFAULT_MEDIA_RECEIVER,"requestId":next_id()}),
+                );
+                let _ = send_frame(
+                    &mut stream,
+                    NS_RECEIVER,
+                    PLATFORM_RECEIVER_ID,
+                    json!({"type":"GET_STATUS","requestId":next_id()}),
+                );
+                last_launch = Instant::now();
+            }
+            LoadAction::Send => {
+                let tid = transport_id.clone().expect("Send implies a transport id");
+                let (url, content_type, is_video, title, path) =
+                    pending_load.take().expect("Send implies queued media");
                 if !app_connected {
                     let _ = send_frame(&mut stream, NS_CONNECTION, &tid, json!({"type":"CONNECT"}));
                     app_connected = true;
@@ -818,6 +886,12 @@ fn run_actor(
                 if send_frame(&mut stream, NS_MEDIA, &tid, load).is_err() {
                     break;
                 }
+                // NOW it is true. Claiming it when the command was queued meant
+                // the UI reported a file the TV had never been told about, and
+                // the "cast follows the active item" guard then saw its job as
+                // done — so the TV kept showing the previous clip while the app
+                // had moved on.
+                status.lock().playing_path = Some(path);
             }
         }
 
@@ -979,5 +1053,57 @@ pub fn cast_status(state: State<'_, CastState>) -> CastStatus {
     match guard.as_ref() {
         Some(conn) if conn.is_alive() => conn.status.lock().clone(),
         _ => CastStatus::disconnected(),
+    }
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The regression this whole module was rewritten for. Reported symptom:
+    // "I move to the next video and it just disappears from the TV", and its
+    // twin "the previous video kept playing on the TV while the next one played
+    // on the laptop". Both are one cause — the Default Media Receiver closes
+    // itself when it goes idle, and nothing ever launched it again.
+    #[test]
+    fn queued_media_relaunches_the_receiver_when_the_app_has_gone() {
+        // App gone (no transport id) with media waiting: we must relaunch, not
+        // sit on it. Pre-fix this state produced no action for the rest of the
+        // session, which is exactly how the TV got stranded.
+        assert_eq!(
+            load_action(true, false, RELAUNCH_EVERY),
+            LoadAction::Relaunch
+        );
+    }
+
+    #[test]
+    fn relaunch_is_rate_limited_so_a_dead_tv_is_not_hammered() {
+        assert_eq!(
+            load_action(true, false, Duration::from_millis(0)),
+            LoadAction::Idle
+        );
+        assert_eq!(
+            load_action(true, false, RELAUNCH_EVERY - Duration::from_millis(1)),
+            LoadAction::Idle
+        );
+    }
+
+    #[test]
+    fn media_goes_out_as_soon_as_there_is_a_transport() {
+        assert_eq!(load_action(true, true, Duration::from_secs(0)), LoadAction::Send);
+        // Even mid-backoff: having a transport beats waiting.
+        assert_eq!(load_action(true, true, Duration::from_millis(1)), LoadAction::Send);
+    }
+
+    #[test]
+    fn an_idle_session_never_launches_anything() {
+        // Nothing queued: the user closing the receiver on the TV must not be
+        // fought by us relaunching it under them.
+        assert_eq!(load_action(false, false, Duration::from_secs(3600)), LoadAction::Idle);
+        assert_eq!(load_action(false, true, Duration::from_secs(3600)), LoadAction::Idle);
     }
 }

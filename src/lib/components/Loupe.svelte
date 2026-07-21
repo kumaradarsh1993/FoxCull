@@ -402,6 +402,7 @@
       // build below never fires for this clip.
       if (settings.s.liveDecodeScrub) {
         enginePending = true;
+        const openedAt = performance.now();
         ScrubEngine.open(it.path, () => my !== epoch)
           .then((e) => {
             if (my !== epoch) {
@@ -411,13 +412,23 @@
             engine = e;
             engineReady = true;
             enginePending = false;
+            // One line per clip, so any machine's log says plainly whether the
+            // hardware decoder took it. This is the only way to answer "does
+            // live scrub work on that other laptop" without being sat at it —
+            // GPU support for HEVC Main 10 varies by iGPU generation, and a
+            // rejection is otherwise completely silent by design.
+            api.logNote(
+              `scrub-engine OK codec=${e.index.codec} ${e.index.codedWidth}x${e.index.codedHeight}` +
+                ` keyframes=${e.index.syncIdx.length} open=${Math.round(performance.now() - openedAt)}ms`,
+            );
           })
-          .catch(() => {
+          .catch((err) => {
             // Unsupported codec/container, or a stale open. Release the sprite
             // path we were holding back, so the clip still scrubs the old way.
             if (my !== epoch) return;
             engineReady = false;
             enginePending = false;
+            api.logNote(`scrub-engine FALLBACK ${it.ext} — ${err?.message ?? err}`);
             if (settings.s.liveScrub) ensureFilmstrip();
           });
       }

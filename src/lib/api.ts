@@ -51,6 +51,10 @@ export const api = {
     invoke<void>("warm_thumbnails", { paths, max, heavy }).catch(() => {}),
   /** Abandon in-flight background warming (free the SSD for previews/playback). */
   cancelWarm: () => invoke<void>("cancel_warm").catch(() => {}),
+  /** Write one line into the app log. For decisions the Rust side can't see —
+   *  chiefly whether the live scrub decoder took a clip — so a machine we can't
+   *  sit in front of can still be diagnosed from its log. Never throws. */
+  logNote: (msg: string) => invoke<void>("log_note", { msg }).catch(() => {}),
   loupeSrc: (path: string) => invoke<string>("loupe_src", { path }),
   /** Cached poster frame (filesystem path) for a video, via bundled ffmpeg. */
   videoPoster: (path: string) => invoke<string>("video_poster", { path }),

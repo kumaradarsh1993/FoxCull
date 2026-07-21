@@ -157,25 +157,41 @@
     // RAW / HEIC / TIFF / anything else: the loupe cache is a ready-made JPEG.
     return await api.loupeSrc(item.path);
   }
+  /// The item we last ASKED the TV to show. Deliberately a plain `let`, not
+  /// `$state`: it guards the follow effect below, and if it were reactive the
+  /// status poll would re-enter that effect and re-cast on its own.
+  let castWantedPath: string | null = null;
+  /// Bumped per cast request so a slow one can't land after a newer one.
+  let castSeq = 0;
   async function castTo(item: MediaItem, d: CastDevice) {
+    const my = ++castSeq;
+    // This can be SLOW — for RAW/HEIC it generates a JPEG preview first. Two
+    // quick presses of → could therefore finish out of order and leave the TV
+    // on the earlier shot; the sequence check drops anything superseded.
     const path = await castablePath(item);
+    if (my !== castSeq) return;
     const st = await cast.start(path, d);
+    if (my !== castSeq) return;
     // Track by the LIBRARY path, not the (possibly cache-file) casted path, so
-    // the follow effect compares against what the user is looking at.
+    // the UI names what the user is looking at.
     castStatus = { ...st, playingPath: item.path };
   }
   async function startCast(d: CastDevice) {
     if (!active) return;
     try {
+      castWantedPath = active.path;
       await castTo(active, d);
       castDevice = d;
       castOpen = false;
     } catch (e) {
+      castWantedPath = null;
       activity.error("cast", `Cast failed (${e})`);
     }
   }
   async function stopCast() {
     castDevice = null;
+    castWantedPath = null;
+    castSeq++; // abandon anything in flight
     try {
       castStatus = await cast.stop();
     } catch {
@@ -191,15 +207,45 @@
   $effect(() => {
     const it = active;
     if (!castStatus.connected || !castDevice || !it) return;
-    if (it.path === castStatus.playingPath) return;
+    // Compare against what we last ASKED for, not against what the backend
+    // reports as playing: the backend answer arrives one round-trip later, and
+    // gating on it meant a re-render mid-flight could fire a second LOAD for
+    // the same item.
+    if (it.path === castWantedPath) return;
     clearTimeout(castFollowTimer);
     const d = castDevice;
     castFollowTimer = setTimeout(() => {
       // Re-check at fire time — the session may have ended mid-debounce.
       if (!castStatus.connected || !castDevice) return;
-      castTo(it, d).catch((e) => activity.error("cast", `Cast failed (${e})`));
+      castWantedPath = it.path;
+      castTo(it, d).catch((e) => {
+        castWantedPath = null; // let a later navigation retry
+        activity.error("cast", `Cast failed (${e})`);
+      });
     }, 350);
     return () => clearTimeout(castFollowTimer);
+  });
+  // ── notice when the session actually dies ─────────────────────────────────
+  // Nothing polled the backend, so a connection that dropped (TV off, network
+  // blip, someone else casting to it) left the button saying "casting" forever
+  // and every subsequent navigation quietly went nowhere. Poll while a session
+  // is live and fold the session up honestly when it's gone.
+  $effect(() => {
+    if (!castStatus.connected) return;
+    const poll = setInterval(async () => {
+      try {
+        const st = await cast.status();
+        if (st.connected) return;
+        castDevice = null;
+        castWantedPath = null;
+        castSeq++;
+        castStatus = { connected: false, deviceName: null, playingPath: null };
+        activity.error("cast", "Cast session ended");
+      } catch {
+        // A failed status call is not evidence the session is dead — leave it.
+      }
+    }, 2500);
+    return () => clearInterval(poll);
   });
   let libInfo = $state<LibraryInfo | null>(null);
   let trashOpen = $state(false);
