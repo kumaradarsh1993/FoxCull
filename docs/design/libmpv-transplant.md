@@ -93,6 +93,23 @@ Corollary for FFI here: keep native Win32 usage **hand-declared** (as `mpv.rs`
 does for `user32`) rather than pulling `windows-sys`/`windows` features — those
 add ~100k exported symbols and, if the cdylib ever comes back, re-trip the limit.
 
+## M2 probe result (2026-07-21)
+
+First on-device test: toggling **Native video ON/OFF made no visible difference**
+— the `<video>` element kept playing either way, no mpv picture appeared. So the
+child HWND is **not compositing over the WebView2**. Two candidates, not yet
+distinguished (the command swallows errors and nothing is logged):
+1. `native_video_start` errored (dll resolve / `hwnd()` / mpv init) → silent
+   fallback. Unlikely for the dll (verified present) but unconfirmed.
+2. The child HWND renders **behind** WebView2's DirectComposition surface, so
+   it's occluded — the expected Windows hurdle.
+
+**Next M2 step (before M3):** add `eprintln` logging to `native_video_start`
+(window handle, rect, mpv load result) so the dev log tells us which; and force
+the child to the top of the z-order (`SetWindowPos(HWND_TOP, SWP_SHOWWINDOW)`
+and/or `BringWindowToTop`) to test candidate 2 directly. Re-probe with the user
+watching. This is the single blocking observation for the whole overlay design.
+
 ## Open questions / risks
 
 - HEVC hwdec path on the two real machines (GTX 1070 → d3d11va/nvdec). Verify
