@@ -1,4 +1,17 @@
-# FoxCull v1.1.0-nightly.5 — cleaner video view, HEIC fixed, safe deletes, cast that follows you
+# FoxCull v1.1.0-nightly.6 — video-view polish: fullscreen, seeking, calmer scrub
+
+## Fixes in this build (over nightly.5)
+
+- **Fullscreen `F` is now a clean 3-step cycle.** Press once for play mode with
+  the filmstrip (dimmed ~20% so your eye stays on the photo), again for just the
+  photo/video, again to exit. No more hunting the very bottom edge to coax the
+  strip back — it's simply there or not. `Esc` exits from anywhere.
+- **Shift+←/→ scrubs a video** ±5 s in Focus view (it used to only extend the
+  selection). `,` / `.` still step too.
+- **Grid skimming stopped misfiring.** Hover-scrub now only runs on the clip you
+  actually **click to select** — sweeping the pointer across a wall of videos no
+  longer kicks off (and cancels) a build on every tile. Click a clip to arm it,
+  then hover it to skim frames.
 
 ## The video view gets out of the way
 
