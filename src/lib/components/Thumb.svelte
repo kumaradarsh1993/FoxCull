@@ -41,7 +41,16 @@
   // consumer except clips the decoder can't take.
   let tileEngine = $state.raw<ScrubEngine | null>(null);
   let tileReady = $state(false);
-  let tilePending = $state(false);
+  /// NOT `$state` — and that is load-bearing, not an oversight.
+  ///
+  /// The opening effect below both READS this in its guard and WRITES it in its
+  /// body. As reactive state that is self-invalidation: the write re-ran the
+  /// effect, and the re-run fired the previous run's cleanup, which cleared the
+  /// `setTimeout` that was about to open the decoder. The timer therefore never
+  /// fired and the grid tile decoder NEVER opened — the whole "live scrub does
+  /// nothing in the grid" report. Loupe's equivalent flag is a plain `let` for
+  /// exactly this reason; this one drifted.
+  let tilePending = false;
   let tileCanvas = $state<HTMLCanvasElement | null>(null);
   let tilePainted = $state(false);
 
@@ -186,7 +195,13 @@
   // unsupported.
   $effect(() => {
     if (!isVideo || !armed || !hovering) return;
-    if (!settings.s.liveScrub || !settings.s.liveDecodeScrub) return;
+    // Gated on the DECODER setting only — deliberately not on `liveScrub`.
+    // `liveScrub` is the opt-in for building sprite sheets, which cost minutes
+    // of ffmpeg and disk. Decoding needs none of that, so making it wait for a
+    // pre-caching toggle (default OFF, and described in the UI as a pre-build)
+    // meant the feature was invisible unless you found and enabled a setting
+    // for the thing it replaced.
+    if (!settings.s.liveDecodeScrub) return;
     if (tileEngine || tilePending) return;
     const path = item.path;
     tilePending = true;
@@ -262,8 +277,13 @@
   // oversensitive: a 9:16 clip only paints ~30% of a landscape cell's width, so
   // the full timeline was crammed into that sliver while the pillarboxed
   // remainder was dead travel. The cell is what the hand actually aims at.
+  /// Skimming is available when EITHER path can serve it: the decoder (no
+  /// pre-build, the default) or a sprite sheet (only if the user opted into
+  /// building them).
+  let canSkim = $derived(settings.s.liveDecodeScrub || settings.s.liveScrub);
+
   function updateScrub(e: PointerEvent) {
-    if (!isVideo || !armed || !settings.s.liveScrub) return;
+    if (!isVideo || !armed || !canSkim) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const w = Math.max(1, rect.width);
     scrub = Math.max(0, Math.min(0.999, (e.clientX - rect.left) / w));
@@ -338,7 +358,7 @@
         style="width:{scrubBox.w}px; height:{scrubBox.h}px; background-image:url('{strip.src}'); background-size:{strip.cols * 100}% {strip.rows * 100}%; background-position:{strip.cols <= 1 ? 0 : (cell.x / (strip.cols - 1)) * 100}% {strip.rows <= 1 ? 0 : (cell.y / (strip.rows - 1)) * 100}%"
       ></div>
     {/if}
-    {#if isVideo && settings.s.liveScrub && scrub != null}
+    {#if isVideo && canSkim && scrub != null}
       <span class="scrubRail"><span style="width:{scrub * 100}%"></span></span>
       {#if !strip && !tileReady}<span class="scrubHint" style="left:{scrub * 100}%"></span>{/if}
     {/if}

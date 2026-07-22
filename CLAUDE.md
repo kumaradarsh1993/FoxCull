@@ -22,14 +22,15 @@ frozen history — never edit it.
 
 | Doc | What it is |
 |---|---|
-| `CLAUDE_CODE_HANDOVER.md` | **Authoritative running narrative.** Newest dated section first. |
+| `docs/PROJECT-LOG.md` | **Start here if you are new.** Append-only, plain-language story of how the app evolved: what the owner asked for, what broke, what was decided and why. Not a diff — that's `docs/changes/`. |
+| `CLAUDE_CODE_HANDOVER.md` | **Authoritative current state of the world.** Newest dated section first. |
 | `BACKLOG.md` | Prioritized P0–P3 worklist (from the 2026-07 audit). Do P0s next. |
 | `docs/AUDIT-2026-07.md` | Full independent audit writeup (perf/memory/security/Mac). |
 | `docs/HANDOFF-FROM-FABLE-AUDIT.md` | Short brief that accompanied audit PR #1. |
 | `docs/ROADMAP.md` | Product direction. |
 | `docs/INSTAGRAM_EXPORT_PLAYBOOK.md` | The IG export pipeline's reasoning. |
 | `STORAGE.md` | On-disk layout of `_FoxCull/` per-drive data. |
-| `RELEASE_NOTES.md` | User-facing notes for the NEXT tag — release.yml prepends it to the release body. Refresh per tag. |
+| `RELEASE_NOTES.md` | User-facing notes for the NEXT tag — release.yml pastes it **verbatim** into the release body. Refresh per tag, and **never put a version heading in it**: it went stale twice and announced nightly.5 and .6 both as "nightly.4". The tag is the only version source. |
 | `docs/changes/` | **Per-push change ledger (L2).** One file per push — see "Per-push change ledger" below. |
 | `docs/DECISIONS.md` | ADR-lite log of standing technical decisions + reasoning. Read before re-litigating one. |
 | `docs/design/video-player-migration.md` | **Self-contained brief on replacing the video player.** DECIDED 2026-07-21: Architecture C — a WebCodecs scrub engine inside the webview (§10), probe-proven on real hardware (§11). Also the full record of the two libmpv architectures tried (one worked with costs, one is OS-level impossible — branches `archive/libmpv-A/B`). Read this before touching video playback. |

@@ -1,53 +1,90 @@
-# FoxCull v1.2.0-nightly.4
+<!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
+     release body, and the GitHub release title already carries the tag. A
+     heading here goes stale the moment you forget to bump it — which is exactly
+     what happened on nightly.5 and .6, both of which announced themselves as
+     "nightly.4". Write what changed; let the tag say which build it is. -->
 
-Casting. You described three different misbehaviours — they turned out to be
-three real bugs, and they explain each other.
+**The first stable release since 1.0.1.** Video culling is the theme: scrubbing
+a 4K60 clip is now instant, and nothing has to be pre-built before you can do
+it.
 
-## Why the TV stopped following you
+## Scrubbing works the way it should have from the start
 
-**The receiver app on the TV is not permanent.** It closes itself whenever it
-goes idle — a clip ends, a photo has been up a while, someone touches Home.
-FoxCull asked the TV to launch it exactly once, when you first connected, and
-never again. So the moment it closed, every later "show this one" had nowhere to
-go and simply queued up forever. The connection was still alive, so the button
-happily kept saying *Casting to Sony TV* while nothing could reach the screen
-again. **That's the disappearing act — and once it happened, that session was
-finished.**
+Drag the playhead on a 4K60 clip and the picture follows your cursor. No lag, no
+waiting, full resolution.
 
-**FoxCull also believed its own optimism.** It marked a file as "now on the TV"
-the moment it *decided* to send it, not when it actually went out. So when a
-send silently went nowhere, the follow logic thought it had done its job and
-stopped trying — leaving the previous video playing on the TV while the app had
-moved on. **That's the second thing you saw.**
+**And nothing is pre-built any more.** No "preparing scrub frames", no progress
+bar to sit through, no cache written to your drives. Open a clip and skim it
+immediately — including the first time you ever touch it.
 
-**And two quick presses of → could land out of order**, because for RAW and HEIC
-shots FoxCull has to build a preview first, which takes far longer than for a
-photo already cached. The slower one could finish last and win. **That's why it
-felt random.**
+What changed underneath: FoxCull now decodes the exact frame you're pointing at,
+on demand, using your GPU. The old approach extracted hundreds of small frames
+to disk first and painted those. That was minutes of work per folder for a
+blurry result.
 
-Now: the receiver is relaunched whenever it's needed and the media you asked for
-is delivered as soon as it's back; a file counts as "on the TV" only once it has
-genuinely been sent; and a superseded request is dropped instead of racing.
-FoxCull also checks every couple of seconds that the session is really alive, so
-the Cast button stops claiming a connection that has ended.
+This works in the **grid** too — click a clip to select it, then hover across
+its tile to skim through it.
 
-## Your XPS 13 question
+## Glimpse — press Ctrl+Space
 
-Honest answer: **I don't know yet, and I'm not going to guess.** What I can tell
-you is what it depends on. Chrome has no software HEVC decoder at all, so this
-works only where the graphics chip does it — and Intel's built-in graphics gained
-10-bit HEVC decode in the 7th generation (2017). Your Osmo footage is 10-bit. So
-it comes down to that laptop's vintage, which isn't written down anywhere.
+A long clip's cover frame tells you almost nothing. Glimpse plays through it
+fast so you can see what's in it, then stop and cull.
 
-So I made the app answer it. Every clip you open now writes one line to
-`foxcull.log` saying whether the decoder took it and why not if it didn't. Open a
-few clips on the XPS, send me the log, and you'll have a real answer instead of
-my opinion.
+It runs at a **plain multiple of real time**, like a player's 2x or 5x — so the
+pace is the same on every clip. At the default 5x, a 20-second clip takes 4
+seconds and a 10-minute clip takes 2 minutes. **Settings → Glimpse speed**
+adjusts it from 2x to 10x.
 
-If it turns out not to be supported there, nothing breaks: Glimpse greys out with
-an explanation and scrubbing falls back to the older behaviour.
+Press Ctrl+Space again, hit Space, or grab the playhead to stop; it lands
+cleanly wherever you stopped.
 
-## Still worth testing
+## Casting to your TV is reliable now
 
-Glimpse's pacing at the default 40×, and phone (H.264) video, which takes a
-slightly different path inside and still hasn't met a real file.
+Quality was always good — FoxCull sends the original file untouched and lets the
+TV decode it. But the session used to fall apart as you browsed. Three separate
+faults, now fixed:
+
+- **The receiver app on your TV closes itself when idle**, and FoxCull only ever
+  launched it once. After it closed, everything you selected silently went
+  nowhere while the button still said "Casting". It's relaunched as needed now.
+- FoxCull marked a file as "on the TV" when it *decided* to send it rather than
+  when it actually went — so a failed send looked like a success and nothing
+  retried.
+- Two fast presses of → could arrive out of order, leaving the TV on the earlier
+  shot.
+
+It now also notices when a session has genuinely ended instead of claiming a
+connection that's gone.
+
+## Fixes
+
+- **A frozen picture with the audio still playing.** Clicking the timeline
+  during playback could leave the frame stuck. Two things race there — the
+  decoded frame and the video's own seek — and when the seek won, a late frame
+  put itself back on screen with nothing left to take it down. Fixed, with a
+  second check four times a second so anything similar recovers on its own.
+- **Edit mode on a big folder.** Opening Edit on 229 clips used ~8 GB and left
+  every item reading "Reading details..." — items past the 80th were in fact
+  never loaded at all. Now ~0.5 GB, and everything loads as you scroll.
+- **Opening a clip no longer blips**, showing one frame and then swapping to
+  another a moment later.
+- Thumbnail loading reports progress instead of leaving you looking at a blank
+  grid wondering if anything is happening.
+
+## Smaller things
+
+- **Press B** to hide or show the filmstrip; a slim rail stays behind to bring
+  it back. It remembers which side it was docked to.
+- The activity indicator moved to the **bottom-left**, and no longer disappears
+  when you collapse the folder panel.
+- The timestamp that floated over the middle of the picture while dragging is
+  gone; the transport clock is bigger and readable over a bright frame.
+- **Arrange** has icons beside Sort/Group/Subgroup, and the sort-direction arrow
+  is a proper button.
+
+## Known limits
+
+- Skimming needs a codec your GPU can decode. Everything else falls back to the
+  older behaviour automatically — you'll see it disable itself, not break.
+- Edit mode's source list loads as you scroll, but a very large folder scrolled
+  end to end still adds up. Fine at a few hundred clips.

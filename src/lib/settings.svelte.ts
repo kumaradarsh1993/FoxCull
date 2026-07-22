@@ -40,10 +40,11 @@ export interface AppSettings {
    *  the codec/container can't be decoded this way, so turning it off is only
    *  for diagnosis. See docs/design/video-player-migration.md. */
   liveDecodeScrub: boolean;
-  /** Glimpse sweep speed, x realtime. A clip is swept by its keyframes at this
-   *  rate, floored so even a short clip takes a few seconds. 40x puts a
-   *  9-minute clip at ~14 s — long enough to read, short enough to be worth
-   *  doing while culling. */
+  /** Glimpse speed as a plain multiple of realtime, like a player's 2x/5x.
+   *  Constant regardless of clip length: 5x turns 20 s into 4 s and 10 min into
+   *  2 min. (Until 2026-07-22 this was a 10-100x "sweep" that compressed every
+   *  clip to a fixed duration — unlearnable, since the apparent rate changed
+   *  with the clip. Old stored values are clamped on load.) */
   glimpseSpeed: number;
   videoAutoplay: boolean;
   /** Collapse the video transport to a thin hover-to-expand line (vs a pinned
@@ -80,7 +81,7 @@ const DEFAULTS: AppSettings = {
   includeSub: true,
   liveScrub: false,
   liveDecodeScrub: true,
-  glimpseSpeed: 40,
+  glimpseSpeed: 5,
   videoAutoplay: false,
   minimalVideoBar: true,
   padEnabled: true,
@@ -94,6 +95,10 @@ const DEFAULTS: AppSettings = {
   lastDir: null,
   lastActivePath: null,
 };
+
+/** Glimpse multiplier bounds. 5x sits mid-slider and is the recommended pace. */
+export const GLIMPSE_MIN = 2;
+export const GLIMPSE_MAX = 10;
 
 const FILE = "foxcull-settings.json";
 const KEY = "settings";
@@ -115,6 +120,13 @@ class Settings {
         };
         // Migrate the old boolean month toggle to the new granularity field.
         if (loaded.groupBy === undefined && loaded.groupByMonth) migrated.groupBy = "month";
+        // glimpseSpeed changed meaning on 2026-07-22 (fixed-length sweep ratio
+        // -> plain realtime multiple). A stored 10-100 would now mean 10-100x
+        // realtime, which is a blur; snap anything out of range back to default.
+        const gs = migrated.glimpseSpeed;
+        if (typeof gs !== "number" || gs < GLIMPSE_MIN || gs > GLIMPSE_MAX) {
+          migrated.glimpseSpeed = DEFAULTS.glimpseSpeed;
+        }
         this.s = { ...DEFAULTS, ...migrated };
       }
     } catch {

@@ -12,6 +12,59 @@ Claude-built `fox-cull` project.
 > **historical record** of names in effect at the time — left as-is for
 > accuracy; don't "fix" them.
 
+## 2026-07-22: v1.2.0 STABLE — live-decode scrubbing; sprites retired
+
+**If you are new, read `docs/PROJECT-LOG.md` first** — it is the plain-language
+narrative of how this app got here and why. This section is the current state of
+the world only.
+
+The 1.2 line is the **WebCodecs scrub engine** ("Architecture C"), *not* libmpv.
+libmpv was abandoned after two architectures failed on compositing — one is
+OS-level impossible on Windows. Both are preserved on `archive/libmpv-A` and
+`archive/libmpv-B` at the owner's explicit instruction; **do not delete them.**
+Full reasoning: `docs/design/video-player-migration.md`.
+
+### What is true now
+
+- **Scrubbing decodes real frames on demand** through a persistent hardware
+  `VideoDecoder` (`src/lib/scrub-engine.ts`), in Focus **and** on armed grid
+  tiles. Confirmed from the owner's own log on Osmo footage: HEVC Main 10, 4K
+  landscape and 1728x3072 portrait, 88–290 ms to index, zero fallbacks.
+- **Video pre-caching is gone.** Prepare builds posters only. Sprite sheets
+  survive as an on-demand fallback for codecs the decoder rejects, behind the
+  **"Sprite fallback (pre-built)"** setting — formerly "Live Scrub", renamed
+  because the old name described the feature it replaced.
+- **Glimpse** (Ctrl+Space) runs at a constant multiple of realtime, 2×–10×,
+  default 5×. It shipped first as a fixed-length sweep; the owner rejected that
+  as unlearnable and was right.
+- **Cast follows the active item reliably**, including relaunching the TV's
+  receiver app after it idles out. `load_action()` in `cast.rs` is extracted
+  purely so CI can test that decision.
+- **Edit mode is bounded** by what's visible: ~519 MB on a 229-clip 4K folder,
+  down from ~7,940 MB. The source pane is still **not virtualized** — the
+  visibility gate bounds the fetch *rate*, not the ceiling.
+
+### Traps this codebase has already fallen into
+
+- **A `$state` flag that an effect both reads in its guard and writes in its
+  body self-invalidates**, and the re-run fires the previous run's cleanup. This
+  silently killed the grid decoder for two releases (`tilePending`). Loupe's
+  equivalent flags are plain `let` deliberately — don't "tidy" them.
+- **Never put a version heading in `RELEASE_NOTES.md`.** release.yml pastes it
+  verbatim; it went stale twice, announcing nightly.5 and .6 as "nightly.4".
+- **Per-item async work in a non-virtualized list** is how Edit mode reached
+  8 GB. Check virtualization before adding any per-item fetch.
+- **Do not assert inference as fact.** The recurring failure mode in this
+  project is a plausible proxy signal believed without measurement. Measure
+  first, then claim — and say plainly when something is unverified.
+
+### Open items
+
+`docs/ROADMAP.md` has the full list. Live ones: verify grid skimming on device
+(fixed, unverified), verify cast against the Sony TV, run the XPS 13 and read
+its `scrub-engine` log lines, the disk-usage/cleanup module, and real
+virtualization of the Edit source pane.
+
 ## 2026-07-21 (3): v1.1.0 STABLE — sprite unification + fullscreen docks; libmpv unparked
 
 Owner tested nightly.7, confirmed the arm-then-hover fix ("scrub seems to be

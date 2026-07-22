@@ -3,7 +3,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { api } from "$lib/api";
   import { cast, type CastDevice, type CastStatus } from "$lib/cast";
-  import { settings } from "$lib/settings.svelte";
+  import { settings, GLIMPSE_MIN, GLIMPSE_MAX } from "$lib/settings.svelte";
   import { activity, fmtEta } from "$lib/activity.svelte";
   import { resetThumbs, prefetchLoupe, loaderStats, loadVideoFilmstrip } from "$lib/thumbnail-loader";
   import {
@@ -2834,20 +2834,20 @@
           </div>
         </div>
         <div class="row"><span>Glimpse speed</span>
-          <div class="slider" title="How fast Glimpse (Ctrl+Space) sweeps a clip, as a multiple of real time. 40x takes a 9-minute clip in about 14 seconds. Short clips are always given at least a few seconds, whatever this says.">
+          <div class="slider" title="How fast Glimpse (Ctrl+Space) plays, as a plain multiple of real time — the same idea as a player's 2x or 5x. The rate never changes with clip length: at 5x, 20 seconds takes 4 and 10 minutes takes 2.">
             <input
               type="range"
-              min="10"
-              max="100"
-              step="10"
+              min={GLIMPSE_MIN}
+              max={GLIMPSE_MAX}
+              step="1"
               value={settings.s.glimpseSpeed}
               oninput={(e) => settings.set({ glimpseSpeed: +e.currentTarget.value })}
             />
             <span class="sliderVal">{settings.s.glimpseSpeed}×</span>
           </div>
         </div>
-        <div class="row"><span>Live Scrub (grid tiles)</span>
-          <div class="seg" title="Skim a video by hovering its GRID tile, using pre-built sprite frames. Focus view no longer needs this — it decodes real frames on demand.">
+        <div class="row"><span>Sprite fallback (pre-built)</span>
+          <div class="seg" title="Skimming works WITHOUT this: select a clip in the grid, hover it, and FoxCull decodes real frames live — nothing is pre-built. Turn this on only to also build sprite sheets for clips whose codec the decoder can't take. It costs minutes of ffmpeg and disk per folder.">
             <button class="chip" class:on={settings.s.liveScrub} onclick={() => settings.set({ liveScrub: true })}>On</button>
             <button class="chip" class:on={!settings.s.liveScrub} onclick={() => settings.set({ liveScrub: false })}>Off</button>
           </div>

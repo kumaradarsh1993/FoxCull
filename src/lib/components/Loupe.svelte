@@ -155,9 +155,6 @@
   let glimpseTimer: ReturnType<typeof setTimeout> | undefined;
   /// ~9 steps/sec. Faster reads as a smear; slower stops feeling like a sweep.
   const GLIMPSE_TICK_MS = 110;
-  /// No clip sweeps in less than this, however short it is or however high the
-  /// speed — a 20-second clip at 40x would otherwise be over in half a second.
-  const GLIMPSE_MIN_SWEEP_S = 4;
 
   function stopGlimpse(land = true) {
     if (!glimpsing) return;
@@ -182,25 +179,30 @@
     if (!e || !engineReady || total <= 0) return;
     vid?.pause();
     glimpsing = true;
-    // Nominal speed is x-realtime, but never faster than a full sweep in
-    // GLIMPSE_MIN_SWEEP_S, and never slower than one keyframe per tick (a
-    // sub-keyframe step would just redraw the same frame).
-    const nominal = settings.s.glimpseSpeed;
-    const capped = Math.min(nominal, total / GLIMPSE_MIN_SWEEP_S);
-    const perTick = Math.max(capped * (GLIMPSE_TICK_MS / 1000), 0.0001);
+    // CONSTANT speed — a plain multiple of realtime, exactly like a player's
+    // 2x/5x. 5x means a 20-second clip takes 4 seconds and a 10-minute clip
+    // takes 2 minutes; the rate you see never depends on how long the clip is.
+    //
+    // It used to compress every clip into a fixed-length sweep instead (a
+    // 4-second floor, so short and long clips ran at wildly different apparent
+    // speeds). That is unlearnable — you could never build an instinct for what
+    // you were watching. The owner asked for the player-style multiplier and he
+    // is right.
+    //
+    // The picture still comes from keyframes, so at low multiples a tick can
+    // land inside the keyframe already on screen and simply repeat it. That is
+    // the honest trade: the CLOCK advances at exactly Nx, and the picture
+    // refreshes as often as the clip's own keyframes allow.
+    const perTick = settings.s.glimpseSpeed * (GLIMPSE_TICK_MS / 1000);
     const step = () => {
       if (!glimpsing) return;
-      let next = cur + perTick;
+      const next = cur + perTick;
       if (next >= total) {
         cur = total;
         stopGlimpse();
         return;
       }
-      // Snap forward: if the step lands inside the keyframe we're already on,
-      // jump to the next one so every tick actually changes the picture.
-      const key = e.keyTimeFor(next);
-      if (key <= cur) next = e.nextKeyTimeAfter(cur) ?? total;
-      cur = Math.min(next, total);
+      cur = next;
       paintStage(cur, false);
       glimpseTimer = setTimeout(step, GLIMPSE_TICK_MS);
     };
