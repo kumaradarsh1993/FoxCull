@@ -55,9 +55,18 @@ export interface AppSettings {
   /** Controller action-id → button-index overrides; unset actions use the
    *  defaults in gamepad.svelte.ts. */
   padBindings: Record<string, number>;
+  /** Schema stamp for `padBindings`. Binding ONE action writes the whole merged
+   *  map, so a stored map pins whatever the defaults were that day; bumping
+   *  PAD_BINDINGS_VERSION clears it so a new default layout actually lands. */
+  padBindingsVersion: number;
   /** What the mouse's extra Back/Forward buttons do (action ids). */
   mouseBack: string;
   mouseForward: string;
+  /** Whether the filmstrip is wanted in each view, remembered per view. The
+   *  strip duplicates the grid but is the whole point of Focus, so it follows
+   *  the view by default (hidden in Grid, out in Focus) — and toggling it by
+   *  hand teaches it a new answer for THAT view only. */
+  stripShow: Record<string, boolean>;
   relatedMode: RelatedMode;
   relatedStrip: boolean;
   deleteMode: DeleteMode;
@@ -86,8 +95,10 @@ const DEFAULTS: AppSettings = {
   minimalVideoBar: true,
   padEnabled: true,
   padBindings: {},
+  padBindingsVersion: 2,
   mouseBack: "viewBack",
   mouseForward: "viewForward",
+  stripShow: { grid: false, details: false, loupe: true },
   relatedMode: "expanded",
   relatedStrip: true,
   deleteMode: "folder",
@@ -99,6 +110,11 @@ const DEFAULTS: AppSettings = {
 /** Glimpse multiplier bounds. 5x sits mid-slider and is the recommended pace. */
 export const GLIMPSE_MIN = 2;
 export const GLIMPSE_MAX = 10;
+
+/** Bump when DEFAULT_BINDINGS changes shape (see gamepad.svelte.ts). v2 =
+ *  the 2026-07-22 TV-culling layout: touchpad enters Focus, shoulders mark
+ *  in/out, the sticks carry ratings + labels. */
+export const PAD_BINDINGS_VERSION = 2;
 
 const FILE = "foxcull-settings.json";
 const KEY = "settings";
@@ -126,6 +142,12 @@ class Settings {
         const gs = migrated.glimpseSpeed;
         if (typeof gs !== "number" || gs < GLIMPSE_MIN || gs > GLIMPSE_MAX) {
           migrated.glimpseSpeed = DEFAULTS.glimpseSpeed;
+        }
+        // Controller layout changed shape: drop stored overrides so the new
+        // defaults apply. Rebinding one button used to freeze all twenty.
+        if ((loaded.padBindingsVersion ?? 0) < PAD_BINDINGS_VERSION) {
+          migrated.padBindings = {};
+          migrated.padBindingsVersion = PAD_BINDINGS_VERSION;
         }
         this.s = { ...DEFAULTS, ...migrated };
       }

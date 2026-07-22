@@ -1950,15 +1950,44 @@
   // unhiding puts it back rather than defaulting to the bottom.
   let lastDock = $state<"bottom" | "left" | "right">("bottom");
   let stripHidden = $derived(settings.s.filmstripPos === "hidden");
-  function toggleFilmstrip() {
+
+  /** Show/hide the strip without touching the per-view memory. */
+  function applyStrip(show: boolean) {
     const pos = settings.s.filmstripPos;
-    if (pos === "hidden") {
+    if (show && pos === "hidden") {
       settings.set({ filmstripPos: lastDock });
-      return;
+    } else if (!show && pos !== "hidden") {
+      lastDock = pos;
+      settings.set({ filmstripPos: "hidden" });
     }
-    lastDock = pos;
-    settings.set({ filmstripPos: "hidden" });
   }
+
+  function stripWantedIn(v: ViewMode): boolean {
+    return settings.s.stripShow?.[v] ?? v === "loupe";
+  }
+
+  function toggleFilmstrip() {
+    const show = stripHidden; // we're about to show it
+    applyStrip(show);
+    // Teach this view the new answer, so it sticks until you change it again
+    // here — but doesn't leak into the other view.
+    settings.set({ stripShow: { ...settings.s.stripShow, [viewMode]: show } });
+  }
+
+  // ── the strip follows the view ────────────────────────────────────────────
+  // In Grid the filmstrip is a second copy of what's already on screen, so it
+  // just eats height; in Focus it's the only way to see where you are in the
+  // folder. So it hides itself on the way into Grid and comes back on the way
+  // into Focus. `stripViewApplied` makes this fire on VIEW CHANGES only — the
+  // effect writes `filmstripPos`, which it also reads, and without the guard a
+  // manual toggle would be undone on the very next run.
+  let stripViewApplied: ViewMode | null = null;
+  $effect(() => {
+    const v = viewMode;
+    if (stripViewApplied === v) return;
+    stripViewApplied = v;
+    applyStrip(stripWantedIn(v));
+  });
 
   function startStripResize(e: PointerEvent) {
     e.preventDefault();
@@ -2252,9 +2281,29 @@
       case "rate1": case "rate2": case "rate3": case "rate4": case "rate5":
         rate(Number(a.slice(4)));
         break;
+      // label1..label5 follow the LABELS order (blue/purple/red/green/yellow),
+      // which is the same order as the keyboard's 6/7/8/9/0.
+      case "label1": case "label2": case "label3": case "label4": case "label5": {
+        const def = LABELS[Number(a.slice(5)) - 1];
+        if (def) label(def.key);
+        break;
+      }
       case "playPause":
         if (viewMode === "loupe" && active?.kind === "video") loupeComp?.togglePlay();
         break;
+      // In/out marking is a Focus-on-a-video act. Say so rather than no-op:
+      // from across the room a dead button is indistinguishable from a bug.
+      case "markIn":
+      case "markOut": {
+        if (viewMode !== "loupe" || active?.kind !== "video") {
+          showUndoToast("In/out points need a video open in Focus");
+          break;
+        }
+        if (a === "markIn") loupeComp?.setInPoint?.();
+        else loupeComp?.setOutPoint?.();
+        showUndoToast(a === "markIn" ? "In point set" : "Out point set");
+        break;
+      }
       case "seekBack":
       case "seekFwd": {
         const dir = a === "seekFwd" ? 1 : -1;
@@ -2269,9 +2318,16 @@
       }
       case "gridView": setView("grid"); break;
       case "focusView": if (active) setView("loupe"); break;
+      // The touchpad click is the pad's "Enter" — same in/out toggle the Enter
+      // key performs, because double-click isn't available at TV distance.
+      case "toggleView":
+        if (viewMode === "loupe") setView("grid");
+        else if (active) setView("loupe");
+        break;
       case "viewBack": if (viewMode === "loupe") setView("grid"); break;
       case "viewForward": if (viewMode !== "loupe" && active) setView("loupe"); break;
       case "fullscreen": void toggleFullscreen(); break;
+      case "toggleFilmstrip": toggleFilmstrip(); break;
       case "info": showInfoOverlay = !showInfoOverlay; break;
       case "help": padHelpOpen = !padHelpOpen; break;
     }
@@ -2816,7 +2872,19 @@
         <div class="row"><span>Filmstrip</span>
           <div class="seg">
             {#each [["bottom", "Bottom"], ["left", "Left"], ["right", "Right"], ["hidden", "Off"]] as [v, l]}
-              <button class="chip" class:on={settings.s.filmstripPos === v} onclick={() => settings.set({ filmstripPos: v as typeof settings.s.filmstripPos })}>{l}</button>
+              <button
+                class="chip"
+                class:on={settings.s.filmstripPos === v}
+                onclick={() => {
+                  if (v !== "hidden") lastDock = v as "bottom" | "left" | "right";
+                  // Record the intent for THIS view too, or the next view
+                  // change would undo the choice made here.
+                  settings.set({
+                    filmstripPos: v as typeof settings.s.filmstripPos,
+                    stripShow: { ...settings.s.stripShow, [viewMode]: v !== "hidden" },
+                  });
+                }}
+              >{l}</button>
             {/each}
           </div>
         </div>

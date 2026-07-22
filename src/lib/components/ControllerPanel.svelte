@@ -10,17 +10,19 @@
   let binding = $state<PadActionId | null>(null);
   let cancelCapture: (() => void) | null = null;
 
-  const GROUPS = ["Navigate", "Mark", "View", "Video"] as const;
+  const GROUPS = ["Navigate", "Mark", "Label", "View", "Video"] as const;
 
   // What the mouse's extra buttons can do (a small, curated subset).
   const MOUSE_CHOICES: [string, string][] = [
     ["viewBack", "Back to grid"],
     ["viewForward", "Open Focus"],
+    ["toggleView", "Open / close Focus"],
     ["pick", "Pick ⚑"],
     ["reject", "Reject ✕"],
     ["prev", "Previous item"],
     ["next", "Next item"],
     ["fullscreen", "Play mode (fullscreen)"],
+    ["toggleFilmstrip", "Show / hide filmstrip"],
   ];
 
   function startBind(action: PadActionId) {
@@ -89,10 +91,30 @@
     </section>
 
     <section>
+      <h3>Button tester</h3>
+      <p class="note">
+        Press anything — buttons, the PS button, the touchpad click, or a stick flick — and it shows up
+        here. Whether a pad reports the PS button and the touchpad depends on the OS and the browser
+        engine, so this answers it directly instead of leaving you to guess from a binding that seems
+        dead.
+      </p>
+      <div class="tester" class:live={pad.pressedNow.length > 0}>
+        {#if !pad.connected}
+          <span class="dim">No controller connected.</span>
+        {:else if pad.pressedNow.length === 0}
+          <span class="dim">Nothing pressed.</span>
+        {:else}
+          {#each pad.pressedNow as b (b)}<span class="chip">{buttonName(b)} <i>#{b}</i></span>{/each}
+        {/if}
+      </div>
+    </section>
+
+    <section>
       <h3>Buttons</h3>
       <p class="note">
-        Click <i>Rebind</i>, then press the controller button you want. Binding a button that's in use
-        moves it to the new action.
+        Click <i>Rebind</i>, then press the controller button you want — a stick flick counts, so
+        ratings and labels can live on the sticks. Binding a button that's in use moves it to the new
+        action.
       </p>
       {#each GROUPS as g (g)}
         <div class="grp">
@@ -291,6 +313,36 @@
   }
   .resetrow {
     margin-top: 10px;
+  }
+  .tester {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    min-height: 34px;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-elev);
+    font-size: 12.5px;
+  }
+  .tester.live {
+    border-color: var(--pick);
+  }
+  .tester .dim {
+    color: var(--text-faint);
+  }
+  .tester .chip {
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--bg-hover);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .tester .chip i {
+    color: var(--text-faint);
+    font-style: normal;
+    font-weight: 400;
   }
   .sel {
     background: var(--bg-elev);

@@ -15,10 +15,18 @@
     item,
     showInfo = false,
     onchanged = () => {},
+    ontransport = () => {},
   }: {
     item: MediaItem | null;
     showInfo?: boolean;
     onchanged?: (selectPath?: string | null) => void;
+    /** Fired whenever this clip's playback state settles — play, pause, or a
+     *  landed seek. The page forwards it to a live Chromecast session so the TV
+     *  follows what the laptop is doing. Deliberately hooked to the <video>
+     *  element's own events rather than to each call site: the transport bar,
+     *  the keyboard, the controller and a scrub drag all end up here, so one
+     *  hook covers every path instead of four. */
+    ontransport?: (state: { paused: boolean; time: number }) => void;
   } = $props();
 
   // Image transitions: the PREVIOUS photo stays painted until the next sharp
@@ -215,6 +223,9 @@
   }
   function onSeeked() {
     releaseHold();
+    // A landed seek — the page throttles these before they reach the TV, so a
+    // held shuttle trigger doesn't become a SEEK storm on the Chromecast.
+    if (vid) ontransport({ paused: vid.paused, time: vid.currentTime || 0 });
   }
   /** Paint the frame at `t` into the small hover thumbnail above the timeline. */
   function paintPreview(t: number) {
@@ -753,7 +764,16 @@
     exportNote = null;
   }
   function persist() {
-    if (item) api.setTrim(item.path, inS, outS ?? dur);
+    if (!item) return;
+    // `dur` is 0 until metadata lands. You can't seek before then, so this only
+    // guards the pathological case — but a zero-length trim written to the
+    // catalog would come back as a marker pair the user never set.
+    const end = outS ?? dur;
+    if (!(end > inS)) return;
+    api.setTrim(item.path, inS, end).catch((e) => {
+      // Loud on purpose. This write failed silently for months (see api.ts).
+      exportNote = `Couldn't save in/out (${e})`;
+    });
   }
 
   function sortedSegments(next = segments) {
@@ -901,8 +921,14 @@
           onloadedmetadata={onMeta}
           ontimeupdate={onTime}
           onseeked={onSeeked}
-          onplay={() => (paused = false)}
-          onpause={() => (paused = true)}
+          onplay={() => {
+            paused = false;
+            ontransport({ paused: false, time: vid?.currentTime ?? cur });
+          }}
+          onpause={() => {
+            paused = true;
+            ontransport({ paused: true, time: vid?.currentTime ?? cur });
+          }}
           onerror={() => {
             // Only a REAL decode/format failure shows the fallback card. An
             // aborted load (we switched clips mid-load) also fires `error` —

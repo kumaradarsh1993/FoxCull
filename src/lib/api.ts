@@ -114,11 +114,20 @@ export const api = {
   moveMediaFiles: (paths: string[], dest: string) =>
     invoke<MoveOutcome>("move_media_files", { paths, dest }),
   getTrim: (path: string) => invoke<[number, number] | null>("get_trim", { path }),
+  // NB the argument names. Tauri 2 deserializes command args as camelCase by
+  // default (tauri-macros: ArgumentCase::Camel, and no `rename_all` override
+  // exists in src-tauri), so the Rust `in_s`/`out_s` params are looked up as
+  // `inS`/`outS`. These two calls passed snake_case and therefore FAILED
+  // deserialization on every invocation — silently, because of the `.catch`
+  // that used to sit on setTrim. Net effect: in/out points were never once
+  // written to the catalog and looked like they "reset" on every navigation,
+  // and Focus's Cut button could never have worked. Fixed 2026-07-22; the
+  // failure is now surfaced instead of swallowed.
   setTrim: (path: string, inS: number, outS: number) =>
-    invoke<void>("set_trim", { path, in_s: inS, out_s: outS }).catch(() => {}),
+    invoke<void>("set_trim", { path, inS, outS }),
   clearTrim: (path: string) => invoke<void>("clear_trim", { path }).catch(() => {}),
   trimVideo: (path: string, inS: number, outS: number) =>
-    invoke<string>("trim_video", { path, in_s: inS, out_s: outS }),
+    invoke<string>("trim_video", { path, inS, outS }),
   getVideoSegments: (path: string) =>
     invoke<VideoSegment[]>("get_video_segments", { path }),
   setVideoSegments: (path: string, segments: VideoSegment[]) =>
