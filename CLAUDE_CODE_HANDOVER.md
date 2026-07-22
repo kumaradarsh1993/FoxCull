@@ -12,6 +12,38 @@ Claude-built `fox-cull` project.
 > **historical record** of names in effect at the time — left as-is for
 > accuracy; don't "fix" them.
 
+## 2026-07-22 (later): controller remap shipped ✅ · **cast is broken** ❌
+
+> **If you are touching cast, read
+> [`docs/HANDOVER-2026-07-22-cast-broken.md`](docs/HANDOVER-2026-07-22-cast-broken.md) first.**
+> It is the full diagnosis-in-progress from the session that broke it.
+
+Two prereleases published from this work, both green in CI:
+`v1.2.1-nightly.2` (`main`, everything) and `v1.2.1-nightly.1` (branch
+`build/no-cast`, the same build **without** the cast changes — an A/B twin kept
+deliberately for bisecting; don't delete the branch).
+
+- **Controller: done, owner-confirmed working.** Layout rebuilt for TV culling —
+  ✕ reject / △ pick / ○ clear / □ play-pause, touchpad = Enter into Focus,
+  L1/R1 = video in/out, PS = fullscreen, Create/Share = filmstrip. The two
+  analog sticks became eight bindable synthetic buttons (indices 100–107) so the
+  five ratings and five colour labels each got a home. `padBindingsVersion`
+  resets stored overrides once, because binding one action used to freeze the
+  whole map. Controller panel gained a live button tester.
+- **In/out points now persist — they never once did.** `api.ts` sent
+  snake_case argument names to `set_trim`/`trim_video`; Tauri 2 looks args up as
+  camelCase, so both calls failed deserialization on every invocation, silently
+  behind a `.catch(() => {})`. Same fault disabled Focus's **Cut** button.
+  **Neither is owner-verified yet — ask.**
+- **Cast transport mirroring: shipped and completely non-functional.** Local
+  play/pause/seek does not reach the TV, and cast-follow (changing the selected
+  item) does not either — the latter being a *pre-existing* feature the v1.2.0
+  notes claimed worked. Leading hypothesis is a race making `castStatus.connected`
+  permanently `false`, which would disable follow, transport and the liveness
+  poll while leaving the initial LOAD working. **Unconfirmed.** Full reasoning,
+  the ruled-out alternatives, and the evidence-gathering steps are in the
+  handover doc above.
+
 ## 2026-07-22: v1.2.0 STABLE — live-decode scrubbing; sprites retired
 
 **If you are new, read `docs/PROJECT-LOG.md` first** — it is the plain-language
