@@ -70,23 +70,68 @@
 
   <div class="scroll">
     <section class="guide">
-      <h3>Connect a PS5 / PS4 controller</h3>
-      <ol>
-        <li>
-          Turn the controller off (hold the <b>PS</b> button, choose Turn Off — or just have it idle),
-          then hold <b>Create</b> (PS5) / <b>Share</b> (PS4) + <b>PS</b> together until the light bar
-          flashes rapidly — that's pairing mode.
-        </li>
-        <li>
-          On the laptop: <b>Settings → Bluetooth → Add device</b>, pick
-          <i>DualSense Wireless Controller</i> (PS5) or <i>Wireless Controller</i> (PS4).
-        </li>
-        <li>Press any button — the status above turns green. A USB-C cable also works, no pairing needed.</li>
-      </ol>
+      <h3>Pairing</h3>
+      <p class="note lede">
+        A controller can only be paired to <b>one</b> device at a time, so you swap it between this PC
+        and your console. Neither direction is destructive — it's the same two-minute dance each way.
+      </p>
+
+      <div class="cards">
+        <article class="card">
+          <div class="cardHead"><span class="badge pc">PC</span> Pair with this computer</div>
+          <ol>
+            <li>
+              <b>Turn the controller off.</b>
+              Hold <kbd>PS</kbd> ~10 s until the lights go out.
+            </li>
+            <li>
+              <b>Enter pairing mode.</b>
+              Hold <kbd>Create</kbd> <span class="dim">(PS5)</span> or <kbd>Share</kbd>
+              <span class="dim">(PS4)</span> <b>+</b> <kbd>PS</kbd> together until the light bar
+              <b>flashes rapidly</b> — a slow pulse is not pairing mode, keep holding.
+            </li>
+            <li>
+              <b>Add it in Windows.</b>
+              <span class="path">Settings → Bluetooth &amp; devices → Add device → Bluetooth</span>
+              Pick <i>DualSense Wireless Controller</i> or <i>Wireless Controller</i>.
+            </li>
+            <li>
+              <b>Press any button.</b>
+              The status at the top of this panel turns green.
+            </li>
+          </ol>
+          <p class="tip">
+            <b>Skip all of it:</b> a USB-C cable works instantly, with no pairing and no unpairing from
+            your PS5.
+          </p>
+        </article>
+
+        <article class="card">
+          <div class="cardHead"><span class="badge ps">PS5</span> Pair back with your console</div>
+          <ol>
+            <li>
+              <b>Plug it into the PS5</b> with a USB-C cable, console powered on.
+            </li>
+            <li>
+              <b>Press <kbd>PS</kbd>.</b>
+              It re-pairs over the cable and reclaims the controller from this PC.
+            </li>
+            <li>
+              <b>Unplug it.</b> It stays paired to the console wirelessly from then on.
+            </li>
+          </ol>
+          <p class="tip">
+            No cable to hand? Put the controller in pairing mode as in step 2 on the left, then on the
+            console go
+            <span class="path">Settings → Accessories → General → Bluetooth Accessories</span>
+            and select it there.
+          </p>
+        </article>
+      </div>
+
       <p class="note">
-        A controller paired to a PlayStation re-pairs to the console with one press of its PS button
-        later — pairing here doesn't unpair it there permanently, you just repeat the hold-to-pair when
-        switching back.
+        Coming back to the PC later means repeating the left column — Windows remembers the controller,
+        but the controller only remembers whichever device claimed it last.
       </p>
     </section>
 
@@ -243,11 +288,102 @@
     margin: 0 0 6px;
     font-size: 13.5px;
   }
+  /* ── pairing guide ──────────────────────────────────────────────────────
+     Two cards side by side, because the two directions (to the PC, back to
+     the console) are a pair of parallel procedures — running them together as
+     one prose blob was the thing that made this section hard to read. Numbered
+     steps lead with a bolded IMPERATIVE so the panel can be skimmed while
+     you're holding the controller, not read. */
+  .guide .lede {
+    margin-bottom: 10px;
+  }
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 12px;
+  }
+  .card {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg-elev);
+    padding: 12px 14px 10px;
+  }
+  .cardHead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 650;
+    margin-bottom: 8px;
+  }
+  .badge {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: var(--bg-hover);
+    color: var(--text-dim);
+  }
+  .badge.pc {
+    background: color-mix(in srgb, var(--accent) 20%, transparent);
+    color: var(--accent);
+  }
+  .badge.ps {
+    background: color-mix(in srgb, var(--pick) 20%, transparent);
+    color: var(--pick);
+  }
   .guide ol {
-    margin: 6px 0;
-    padding-left: 20px;
+    margin: 0;
+    padding-left: 18px;
     font-size: 12.5px;
-    line-height: 1.55;
+    line-height: 1.5;
+    color: var(--text-dim);
+  }
+  .guide li {
+    margin-bottom: 7px;
+  }
+  .guide li:last-child {
+    margin-bottom: 0;
+  }
+  .guide li b {
+    color: var(--text);
+  }
+  .guide .dim {
+    color: var(--text-faint);
+  }
+  /* Menu paths get their own line — inline they read as part of the sentence
+     and you lose them mid-scan. */
+  .path {
+    display: block;
+    margin: 3px 0;
+    font-size: 12px;
+    color: var(--text-faint);
+  }
+  kbd {
+    display: inline-block;
+    padding: 0 5px;
+    min-width: 18px;
+    text-align: center;
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    background: var(--bg-panel);
+    color: var(--text);
+    font: inherit;
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1.5;
+  }
+  .tip {
+    margin: 9px 0 0;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-faint);
+  }
+  .tip b {
     color: var(--text-dim);
   }
   .note {
