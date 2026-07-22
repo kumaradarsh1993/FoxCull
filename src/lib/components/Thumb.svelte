@@ -67,12 +67,38 @@
     return () => ro.disconnect();
   });
 
+  // ── don't fetch anything for a tile nobody can see ────────────────────────
+  // The library grid is virtualized (VirtualGrid/VirtualStrip), so only visible
+  // tiles are ever mounted and this observer costs nothing there. EditStudio's
+  // source pane is NOT virtualized — it renders one Thumb per file in a plain
+  // {#each} — so on the owner's 229-clip folder of 4K60 Osmo footage, opening
+  // Edit mounted 229 tiles at once, each firing an ffmpeg poster extraction and
+  // two IPC calls on mount, against files 2-15 minutes long. Gating on real
+  // visibility makes an unvirtualized list behave like a virtualized one for
+  // the expensive part, without touching either component's layout.
+  let onScreen = $state(false);
+  $effect(() => {
+    const el = thumbEl;
+    if (!el) return;
+    // Generous margin so scrolling still feels instant — a tile starts loading
+    // roughly a screenful before it arrives.
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) if (e.isIntersecting) onScreen = true;
+      },
+      { rootMargin: "400px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  });
+
   // Images/RAW -> cached orientation-baked thumbnail. Videos -> a real poster
   // frame extracted by the bundled ffmpeg. Optional Live Scrub is separate: the
   // sprite sheet is shared with Focus view and only requested once the tile is
   // armed and hovered.
   $effect(() => {
     const it = item;
+    const visible = onScreen;
     src = null;
     failed = false;
     loaded = false;
@@ -81,6 +107,9 @@
     scrub = null;
     building = false;
     if (it.kind === "other") return;
+    // Off-screen: no poster extraction, no cached-strip probes, nothing. See
+    // the IntersectionObserver above for why this matters so much in Edit mode.
+    if (!visible) return;
     let alive = true;
     const p = it.kind === "video" ? loadVideoPoster(it.path) : loadThumb(it.path, size);
     p.then((s) => {

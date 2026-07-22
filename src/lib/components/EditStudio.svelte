@@ -703,9 +703,65 @@
     }
   });
 
+  // ── memory instrumentation ────────────────────────────────────────────────
+  // Opening Edit on a 229-clip 4K60 folder took the WebView2 group to ~8 GB
+  // (renderer 4.5 GB, two Utility processes at 2.1 and 1.2 GB). The fixes in
+  // this file and in Thumb.svelte address work that provably should not have
+  // been happening, but they were NOT proven to be the whole of that 8 GB —
+  // renderer bytes are JS heap and DOM, while Utility bytes are hardware video
+  // decode, and those have different causes. This samples the JS heap so the
+  // next run says which half moved instead of leaving it to argument.
+  function heapMb(): number | null {
+    const m = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
+    return m ? Math.round(m.usedJSHeapSize / 1048576) : null;
+  }
   $effect(() => {
-    for (const src of filteredSources.slice(0, 80)) ensureProbe(src);
+    const n = filteredSources.length;
+    if (!n) return;
+    const at = (tag: string) => api.logNote(`edit-mem ${tag} sources=${n} heap=${heapMb() ?? "n/a"}MB`);
+    at("open");
+    // Again once the pane has settled, so a slow climb is visible as a delta
+    // rather than a single number with nothing to compare it to.
+    const t = setTimeout(() => at("open+15s"), 15_000);
+    return () => {
+      clearTimeout(t);
+      at("close");
+    };
   });
+
+  // Probe a source when it actually scrolls into view — see `probeOnView`.
+  //
+  // This replaces a blind `filteredSources.slice(0, 80)` sweep on open, which
+  // was wrong in both directions at once on a large folder. Owner's report:
+  // 229 Osmo 4K60 clips, 2-15 minutes each.
+  //   - Everything past #80 was NEVER probed, so those items showed
+  //     "Reading details..." permanently. Not slow — never requested at all.
+  //   - The first 80 fired ffmpeg immediately on open, competing for the same
+  //     disk with the 229 poster extractions the (unvirtualized) source pane
+  //     kicked off, which is why even those crawled.
+  function probeOnView(node: HTMLElement, src: EditSourceItem) {
+    let current = src;
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          ensureProbe(current);
+          io.disconnect(); // a probe is cached forever; once is enough
+          return;
+        }
+      },
+      { rootMargin: "200px" },
+    );
+    io.observe(node);
+    return {
+      update(next: EditSourceItem) {
+        current = next;
+      },
+      destroy() {
+        io.disconnect();
+      },
+    };
+  }
 
   $effect(() => {
     const key = initialVideos.map((i) => i.path).join("|");
@@ -2320,6 +2376,7 @@
         {#each filteredSources as item (item.path)}
           <button
             class="sourceItem"
+            use:probeOnView={item}
             class:audio={item.kind === "audio"}
             class:focused={sourceFocusPath === item.path}
             draggable={true}
