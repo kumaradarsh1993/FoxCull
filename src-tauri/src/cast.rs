@@ -170,6 +170,11 @@ pub fn cast_discover(timeout_ms: u64) -> Result<Vec<CastDevice>, String> {
     let _ = mdns.shutdown();
     let mut list: Vec<CastDevice> = found.into_values().collect();
     list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    crate::log::line(&format!(
+        "cast: discovery found {} device(s): {}",
+        list.len(),
+        list.iter().map(|d| format!("{} @{}", d.name, d.addr)).collect::<Vec<_>>().join(", "),
+    ));
     Ok(list)
 }
 
@@ -570,6 +575,12 @@ fn decode_cast_message(buf: &[u8]) -> Option<CastMessage> {
 enum Cmd {
     /// Load new media (already registered on the media server -> `url`).
     Load { url: String, content_type: String, is_video: bool, title: String, path: String },
+    /// Mirror the laptop's transport onto the TV. Only meaningful once the
+    /// receiver has reported a media session; before that they're dropped,
+    /// because a LOAD is already on its way and arrives autoplaying.
+    Play,
+    Pause,
+    Seek(f64),
     /// Stop the receiver app and tear the connection down; the actor exits.
     Shutdown,
 }
@@ -794,6 +805,10 @@ fn run_actor(
     // The receiver app's transport id + session id, learned from RECEIVER_STATUS.
     let mut transport_id: Option<String> = None;
     let mut session_id: Option<String> = None;
+    // The MEDIA session id (distinct from the receiver session id above): the
+    // handle every PLAY/PAUSE/SEEK must carry. Learned from MEDIA_STATUS, and
+    // reset on each LOAD because the receiver mints a new one per item.
+    let mut media_session_id: Option<i64> = None;
     // Whether we've opened the virtual connection to the app transport yet.
     let mut app_connected = false;
     // Media queued to LOAD as soon as the transport id is known.
@@ -817,7 +832,35 @@ fn run_actor(
                     // queued the intent — see where the LOAD is actually sent.
                     pending_load = Some((url, content_type, is_video, title, path));
                 }
+                // Transport mirroring. These need BOTH the app transport and a
+                // media session id (the receiver hands the latter out in its
+                // first MEDIA_STATUS after a LOAD). Dropping them when either
+                // is missing is correct rather than lossy: the only window
+                // where that happens is between LOAD and first status, and the
+                // media arrives playing from 0 anyway.
+                Ok(cmd @ (Cmd::Play | Cmd::Pause | Cmd::Seek(_))) => {
+                    let (Some(tid), Some(msid)) = (transport_id.clone(), media_session_id) else {
+                        crate::log::line("cast: transport command dropped (no media session yet)");
+                        continue;
+                    };
+                    let payload = match cmd {
+                        Cmd::Play => json!({"type":"PLAY","mediaSessionId":msid,"requestId":next_id()}),
+                        Cmd::Pause => json!({"type":"PAUSE","mediaSessionId":msid,"requestId":next_id()}),
+                        Cmd::Seek(t) => json!({
+                            "type":"SEEK","mediaSessionId":msid,"currentTime":t,"requestId":next_id()
+                        }),
+                        _ => unreachable!("outer match limits this to the three transport commands"),
+                    };
+                    crate::log::line(&format!("cast: -> {}", payload["type"]));
+                    if send_frame(&mut stream, NS_MEDIA, &tid, payload).is_err() {
+                        // Not a `break` — that would only leave this drain loop.
+                        // The outer read is on a 300 ms timeout and folds the
+                        // connection up properly within one tick.
+                        crate::log::line("cast: transport send failed; connection is gone");
+                    }
+                }
                 Ok(Cmd::Shutdown) => {
+                    crate::log::line("cast: shutdown requested");
                     // Best-effort: stop the launched app, then let the stream
                     // drop (which closes the TLS + TCP connection).
                     if let Some(sid) = &session_id {
@@ -846,6 +889,7 @@ fn run_actor(
             // transport id; `pending_load` is KEPT, so the media the user asked
             // for goes out the moment the app is back.
             LoadAction::Relaunch => {
+                crate::log::line("cast: receiver app not running — relaunching");
                 let _ = send_frame(
                     &mut stream,
                     NS_RECEIVER,
@@ -883,9 +927,19 @@ fn run_actor(
                         "metadata": { "type": 0, "title": title }
                     }
                 });
+                crate::log::line(&format!(
+                    "cast: LOAD {} ({content_type}, {})",
+                    Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.clone()),
+                    if is_video { "video" } else { "still" },
+                ));
                 if send_frame(&mut stream, NS_MEDIA, &tid, load).is_err() {
+                    crate::log::line("cast: LOAD send failed; connection lost");
                     break;
                 }
+                // The receiver mints a fresh media session per LOAD; the old id
+                // would be rejected, so transport commands wait for the new one.
+                media_session_id = None;
                 // NOW it is true. Claiming it when the command was queued meant
                 // the UI reported a file the TV had never been told about, and
                 // the "cast follows the active item" guard then saw its job as
@@ -942,17 +996,34 @@ fn run_actor(
                             }
                         } else {
                             // App went away (user closed it on the TV).
+                            if transport_id.is_some() {
+                                crate::log::line("cast: receiver app closed on the TV");
+                            }
                             transport_id = None;
                             session_id = None;
+                            media_session_id = None;
                             app_connected = false;
                             status.lock().playing_path = None;
                         }
                     }
                 }
                 Some("MEDIA_STATUS") => {
-                    // Media accepted / playing — keep connected flag true. (We
-                    // could surface player state here later if the UI wants it.)
+                    // Media accepted / playing — keep connected flag true.
                     status.lock().connected = true;
+                    // Capture the media session id: PLAY/PAUSE/SEEK are
+                    // addressed to it, not to the transport alone.
+                    if let Some(msid) = payload
+                        .get("status")
+                        .and_then(|s| s.as_array())
+                        .and_then(|a| a.first())
+                        .and_then(|s| s.get("mediaSessionId"))
+                        .and_then(|v| v.as_i64())
+                    {
+                        if media_session_id != Some(msid) {
+                            crate::log::line(&format!("cast: media session {msid}"));
+                            media_session_id = Some(msid);
+                        }
+                    }
                 }
                 Some("CLOSE") => {
                     // The platform closed our virtual connection.
@@ -1018,9 +1089,12 @@ pub fn cast_start(
         if !reuse {
             // Tear down any connection to a different (or dead) device.
             if let Some(old) = guard.take() {
+                crate::log::line("cast: dropping the previous connection");
                 let _ = old.cmd_tx.send(Cmd::Shutdown);
             }
-            let conn = CastConn::connect(&device_addr, device_port, &device_name)?;
+            crate::log::line(&format!("cast: connecting to {device_name} at {target}"));
+            let conn = CastConn::connect(&device_addr, device_port, &device_name)
+                .inspect_err(|e| crate::log::line(&format!("cast: connect failed — {e}")))?;
             *guard = Some(conn);
         }
 
@@ -1034,6 +1108,36 @@ pub fn cast_start(
         drop(st);
         Ok(snapshot)
     }
+}
+
+/// Mirror the laptop's transport onto the TV. All three are best-effort and
+/// never error: with no live session there is simply nothing to mirror, and the
+/// caller (a keypress, a controller trigger) must not have to care.
+fn send_transport(state: &State<'_, CastState>, cmd: Cmd) {
+    let guard = state.conn.lock();
+    if let Some(conn) = guard.as_ref() {
+        if conn.is_alive() {
+            let _ = conn.cmd_tx.send(cmd);
+        }
+    }
+}
+
+#[tauri::command]
+pub fn cast_play(state: State<'_, CastState>) {
+    send_transport(&state, Cmd::Play);
+}
+
+#[tauri::command]
+pub fn cast_pause(state: State<'_, CastState>) {
+    send_transport(&state, Cmd::Pause);
+}
+
+/// Seek the TV to `position` seconds. The frontend throttles these — a held
+/// shuttle trigger fires ~8x/second locally, which the receiver would not
+/// keep up with.
+#[tauri::command]
+pub fn cast_seek(state: State<'_, CastState>, position: f64) {
+    send_transport(&state, Cmd::Seek(position.max(0.0)));
 }
 
 /// Stop casting: tell the receiver to stop and close the connection.

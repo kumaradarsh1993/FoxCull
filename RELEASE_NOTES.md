@@ -56,6 +56,52 @@ faults, now fixed:
 It now also notices when a session has genuinely ended instead of claiming a
 connection that's gone.
 
+## Culling from the couch, on a PlayStation controller
+
+The controller layout has been rebuilt around a full review session done from
+across the room — you shouldn't need to walk back to the laptop for anything.
+
+- **Press the touchpad** to open the selected shot in Focus, press it again to
+  go back. It's the pad's Enter key.
+- **✕ rejects, △ picks, ○ clears every mark** on the shot, **□ plays and
+  pauses**.
+- **Ratings live on the left stick** — flick up, right, down, left for one to
+  four stars, click the stick in for five.
+- **Colour labels live on the right stick**, the same way: blue, purple, red,
+  green, and yellow on the click. (Same order as the 6/7/8/9/0 keys.)
+- **L1 and R1 mark a video's in and out points**; the triggers still shuttle.
+- **Create/Share hides and shows the filmstrip**, the **PS button** goes
+  fullscreen, and **Options** brings up the button guide.
+
+All of it is still remappable, and the Controller panel now has a **button
+tester** — press anything and it tells you what the pad reported, so you can
+check the PS button and touchpad work on your setup before relying on them.
+
+Because the layout changed shape, **any bindings you'd customised are reset
+once** to pick up the new defaults.
+
+## Your video in/out points are saved now
+
+Mark an in and out point on a clip, move to the next one, come back — the
+markers are still there, committed or not. They're stored per drive alongside
+your ratings and labels.
+
+They were never being saved before. Not "lost on navigation" — never written at
+all, and the failure was being discarded silently, which is why it looked like a
+missing feature rather than a bug.
+
+## The TV follows what you're doing
+
+With a cast session running, pausing or scrubbing on the laptop now pauses and
+scrubs on the TV. Casting already followed whatever you selected — including in
+the grid — and that's unchanged.
+
+## The filmstrip gets out of the way
+
+It hides itself in Grid, where it just repeats what's already on screen, and
+comes back in Focus, where it's the only way to see where you are in the folder.
+Toggle it by hand and that view remembers your answer.
+
 ## Fixes
 
 - **A frozen picture with the audio still playing.** Clicking the timeline

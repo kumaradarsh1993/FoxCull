@@ -40,6 +40,14 @@ export const cast = {
   /** Stop casting and close the connection to the TV. */
   stop: () => invoke<CastStatus>("cast_stop"),
 
+  // Transport mirroring: what the laptop's player does, the TV does. All three
+  // are best-effort — with no live session they are no-ops on the Rust side, so
+  // callers (a keypress, a controller trigger) never have to check first.
+  play: () => invoke<void>("cast_play").catch(() => {}),
+  pause: () => invoke<void>("cast_pause").catch(() => {}),
+  /** Seek the TV to `position` seconds. Throttle this — see the page. */
+  seek: (position: number) => invoke<void>("cast_seek", { position }).catch(() => {}),
+
   /** Poll the current cast status (connected? which device? what's playing?). */
   status: () => invoke<CastStatus>("cast_status"),
 };

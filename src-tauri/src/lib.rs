@@ -185,6 +185,9 @@ pub fn run() {
             cast::cast_start,
             cast::cast_stop,
             cast::cast_status,
+            cast::cast_play,
+            cast::cast_pause,
+            cast::cast_seek,
             raw::raw_embedded_probe,
             raw::export_raw_jpegs,
         ])

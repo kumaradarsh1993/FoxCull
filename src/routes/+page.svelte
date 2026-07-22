@@ -225,6 +225,50 @@
     }, 350);
     return () => clearTimeout(castFollowTimer);
   });
+  // ── the TV follows the laptop's transport ─────────────────────────────────
+  // Loupe reports every settled playback change (play / pause / landed seek)
+  // from the <video> element's own events, so this one hook covers the
+  // transport bar, the keyboard, the controller and a scrub drag alike.
+  //
+  // Seeks are throttled hard on purpose. A held shuttle trigger lands a seek
+  // every ~120 ms locally; the receiver would queue them and lag seconds
+  // behind, so we send at most one every CAST_SEEK_EVERY_MS and always send a
+  // trailing one so the TV settles on the frame you stopped at. Play/pause is
+  // rare and goes through immediately.
+  const CAST_SEEK_EVERY_MS = 450;
+  let castSeekAt = 0;
+  let castSeekTimer: ReturnType<typeof setTimeout> | undefined;
+  let castPaused: boolean | null = null;
+  function onLoupeTransport(st: { paused: boolean; time: number }) {
+    // Only mirror when the TV is actually showing the clip we're scrubbing —
+    // during the 350 ms follow debounce it is still on the previous item, and
+    // seeking that one would be visible nonsense.
+    if (!castStatus.connected || !castDevice) return;
+    if (!active || active.kind !== "video" || castWantedPath !== active.path) return;
+    if (st.paused !== castPaused) {
+      castPaused = st.paused;
+      void (st.paused ? cast.pause() : cast.play());
+    }
+    const now = performance.now();
+    clearTimeout(castSeekTimer);
+    if (now - castSeekAt >= CAST_SEEK_EVERY_MS) {
+      castSeekAt = now;
+      void cast.seek(st.time);
+    } else {
+      castSeekTimer = setTimeout(() => {
+        castSeekAt = performance.now();
+        void cast.seek(st.time);
+      }, CAST_SEEK_EVERY_MS - (now - castSeekAt));
+    }
+  }
+  // A new LOAD arrives autoplaying from 0 with a fresh media session, so the
+  // remembered pause state is meaningless the moment the item changes.
+  $effect(() => {
+    castStatus.playingPath;
+    castPaused = null;
+    clearTimeout(castSeekTimer);
+  });
+
   // ── notice when the session actually dies ─────────────────────────────────
   // Nothing polled the backend, so a connection that dropped (TV off, network
   // blip, someone else casting to it) left the button saying "casting" forever
@@ -3105,7 +3149,13 @@
             {/if}
           </div>
         {:else if viewMode === "loupe"}
-          <Loupe item={active} showInfo={showInfoOverlay} onchanged={refreshAfterMediaOutput} bind:this={loupeComp} />
+          <Loupe
+            item={active}
+            showInfo={showInfoOverlay}
+            onchanged={refreshAfterMediaOutput}
+            ontransport={onLoupeTransport}
+            bind:this={loupeComp}
+          />
         {:else if viewMode === "details"}
           <DetailsView
             items={view}
