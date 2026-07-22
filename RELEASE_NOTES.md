@@ -4,9 +4,14 @@
      what happened on nightly.5 and .6, both of which announced themselves as
      "nightly.4". Write what changed; let the tag say which build it is. -->
 
-**The first stable release since 1.0.1.** Video culling is the theme: scrubbing
-a 4K60 clip is now instant, and nothing has to be pre-built before you can do
-it.
+> **Install this one.** It is the previous nightly plus the Chromecast work.
+> The `-nightly.1` build is a deliberate A/B twin with the cast changes left
+> out — only reach for it if casting misbehaves and you want to know whether
+> these changes caused it.
+
+Everything below carries forward from the v1.2.0 stable release; the new
+sections are the controller, in/out points, the pairing guide, the filmstrip
+and the TV following your player.
 
 ## Scrubbing works the way it should have from the start
 
@@ -80,6 +85,12 @@ check the PS button and touchpad work on your setup before relying on them.
 Because the layout changed shape, **any bindings you'd customised are reset
 once** to pick up the new defaults.
 
+## The pairing guide is actually readable now
+
+Two side-by-side cards — pairing to this PC, and pairing back to your PS5 —
+each a short numbered list instead of one block of prose. The console direction
+is documented for the first time: plug in USB-C, press PS, done.
+
 ## Your video in/out points are saved now
 
 Mark an in and out point on a clip, move to the next one, come back — the
@@ -88,7 +99,8 @@ your ratings and labels.
 
 They were never being saved before. Not "lost on navigation" — never written at
 all, and the failure was being discarded silently, which is why it looked like a
-missing feature rather than a bug.
+missing feature rather than a bug. The same fault also disabled the **Cut**
+button in Focus, which should now work.
 
 ## The TV follows what you're doing
 
