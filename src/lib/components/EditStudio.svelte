@@ -629,8 +629,27 @@
     };
   }
 
+  /// Stable `MediaItem` identity per source path.
+  ///
+  /// The template calls `sourceToMedia(item)` to feed `<Thumb>`. Returning a
+  /// fresh object each call handed every tile a brand-new `item` prop on every
+  /// re-render, which re-runs Thumb's load effect and re-issues its poster
+  /// request plus two IPC calls — times 229.
+  ///
+  /// The nightly.5 instrumentation is what caught this: the log shows
+  /// `edit-mem close` and `edit-mem open` **1 ms apart**, repeatedly. That pair
+  /// can only come from the effect's dependency changing identity, i.e. the
+  /// source list recomputing while its contents are unchanged. One entry per
+  /// source path, so the cache is bounded by the folder.
+  const mediaCache = new Map<string, MediaItem>();
   function sourceToMedia(item: EditSourceItem): MediaItem {
-    return {
+    const hit = mediaCache.get(item.path);
+    // Reuse only if the underlying file really is unchanged — a rescan that
+    // finds a different size/mtime must produce a new object so tiles refresh.
+    if (hit && hit.name === item.name && hit.size === item.size && hit.mtime === item.mtime) {
+      return hit;
+    }
+    const made: MediaItem = {
       name: item.name,
       path: item.path,
       rel: item.name,
@@ -643,6 +662,8 @@
       flag: null,
       tags: [],
     };
+    mediaCache.set(item.path, made);
+    return made;
   }
 
   let sources = $derived.by(() => {
