@@ -63,9 +63,9 @@ Priorities: **P0** do next · **P1** high value soon · **P2** scheduled ·
 - [ ] **Path-guardrail consistency** (SEC-1): validate `cast_start`,
       `export_raw_jpegs`, `raw_embedded_probe`, and the read-side media
       commands against the active library root like the destructive commands.
-- [ ] **Cast hardening + status polling** (SEC-2 + UX): clear the media-server
-      allowlist on stop, expire tokens, poll `cast_status` while the chip
-      shows "casting" so a dropped TV session doesn't leave a stale indicator.
+- [ ] **Cast server hardening** (SEC-2): clear the media-server allowlist on
+      stop and expire tokens. Status polling/stale-session UI is complete
+      (nightly.3 hardware verified; state polling refined for nightly.4).
 - [ ] **Pin ffmpeg sidecar downloads** in release.yml to exact release tags +
       checksums (SEC-3); document the bundled build's GPL license in the
       release notes/about.

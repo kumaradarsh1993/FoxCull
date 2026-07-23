@@ -12,6 +12,83 @@ Claude-built `fox-cull` project.
 > **historical record** of names in effect at the time — left as-is for
 > accuracy; don't "fix" them.
 
+## 2026-07-24: Sony TV QA passed · TV-authority controls queued for nightly.4
+
+The owner tested `v1.2.1-nightly.3` on the actual Chromecast/Sony TV and
+confirmed that live follow now works: next/previous, Grid photos, Focus changes,
+and video playback all reach the TV. That closes the 2026-07-23 hardware-QA
+blocker. The remaining feedback was specifically about transport ownership,
+not connection/follow reliability.
+
+- **TV is the playback authority while casting.** The local `<video>` is muted,
+  prevented from autoplaying, and paused if it ever starts. This avoids doubled
+  audio regardless of the Video Autoplay preference.
+- **Direct controls, every library view.** Space toggles the TV and
+  Shift+Left/Right seeks it ±5 seconds in Grid and Focus. DualSense play/pause
+  and L2/R2 use the same direct receiver commands.
+- **No two-press pause.** Toggle is resolved from Chromecast's reported
+  `playerState`, not the laptop element's paused state. Commands arriving before
+  a new `mediaSessionId` are queued in order and applied to the new clip.
+- **Relative seek is receiver-time based.** MEDIA_STATUS now captures state,
+  time, and duration. The actor projects elapsed playing time between status
+  replies and clamps relative seeks to the clip duration.
+- **Clear cast presence.** A glowing CASTING pill reports Live, Loading, Paused,
+  or Connecting. Status refreshes once per second.
+- **No filename title card.** LOAD omits the optional metadata/title object.
+
+Local verification on 2026-07-24: `npm run check` (0 errors, 0 warnings),
+`npm run build` (pass), and `cargo check` (pass). `cargo fmt --check` still
+reports broad pre-existing drift across untouched Rust modules and is not a
+project gate. Runtime/hardware behavior in this refinement remains to be tested
+from the GitHub-built nightly.4; never hand off a local Windows-GNU build.
+
+## 2026-07-23: cast deadlock fixed in code · L2/R2 made predictable · hardware QA pending
+
+The two issues handed over from 2026-07-22 were traced and fixed locally. All
+compile/build gates pass, but **Chromecast is not owner-verified yet**; do not
+describe it as working on hardware until the Sony TV test says so.
+
+- **Cast startup race confirmed.** `CastConn::connect()` completed TCP + TLS,
+  created a status with `connected: false`, spawned the actor, and returned.
+  `cast_start` normally won that race and handed false to the UI. Follow,
+  transport, and the liveness poll were all gated by that false snapshot, so the
+  initial queued LOAD worked while everything thereafter was permanently inert.
+- **Fix:** a completed TLS handshake now establishes `connected: true`.
+  Frontend polling runs from the intended session (`castDevice`) rather than
+  depending on its own stale status, and writes every poll result back, so this
+  failure mode self-heals if it ever recurs. Follow also keys off session intent.
+  The cast button/menu shows Connecting/Casting from that same honest state.
+- **Evidence:** `cast-ui:` lines now record discovery, LOAD/follow requests and
+  supersession, play/pause/seek attempts, skipped transport with its reason,
+  backend connection state, failures, and stop/session-end. These go through
+  the existing `log_note` command into the normal `foxcull.log`.
+- **Second cast race removed:** `cast_start` no longer assigns `playing_path`
+  when it merely queues LOAD. Only the actor assigns it after the CASTV2 LOAD
+  frame is actually written.
+- **L2/R2 root cause:** trigger input fired at its first 35% analog threshold,
+  producing a ~2.4-second initial seek, then ramped to 5 seconds and repeated
+  every 120 ms after only 220 ms. A normal squeeze could therefore feel both
+  inconsistent and wildly accelerated. Each pull is now one fixed 5-second
+  skip; a deliberate hold begins after 500 ms and repeats every 250 ms.
+
+Verification run 2026-07-23: `npm run check` (0 errors, 0 warnings),
+`npm run build` (pass), `cargo check` (pass), and an owner-authorized local
+`npm run tauri -- build` with `CARGO_BUILD_JOBS=2` (pass in 25m35s; NSIS
+installer produced). **Correction on 2026-07-24:** that installer was not
+usable. It failed at launch with `WebView2Loader.dll was not found`; the GNU
+linker’s `.rsrc merge failure: multiple non-default manifests` warning was not
+the direct error, but should never have been dismissed while runtime remained
+untested. `scripts/verify-windows-runtime.ps1` now refuses **every**
+Windows-GNU handoff (the DLL existed beside the raw exe but was omitted from
+NSIS, so an adjacency check is insufficient), checks the FFmpeg sidecar, and
+launch-smokes the executable; release.yml runs it on the supported
+Windows-MSVC build and verifies the
+portable ZIP contents. `cargo fmt -- --check` is not a project gate and reports
+broad pre-existing formatting drift across untouched Rust files; nothing was
+bulk-formatted. Hardware QA still required: initial cast, pause/play, L2/R2
+seek, next/previous item from Grid and Focus, and a clip ending. Inspect the new
+`cast-ui:` plus `cast:` log lines if any step fails.
+
 ## 2026-07-22 (later): controller remap shipped ✅ · **cast is broken** ❌
 
 > **If you are touching cast, read

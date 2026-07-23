@@ -42,7 +42,7 @@
 //! 720p–1080p (it downscales); serving a custom receiver app for true full-res
 //! stills is a later work item.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
@@ -100,11 +100,21 @@ pub struct CastStatus {
     pub connected: bool,
     pub device_name: Option<String>,
     pub playing_path: Option<String>,
+    pub player_state: Option<String>,
+    pub current_time: Option<f64>,
+    pub duration: Option<f64>,
 }
 
 impl CastStatus {
     fn disconnected() -> Self {
-        CastStatus { connected: false, device_name: None, playing_path: None }
+        CastStatus {
+            connected: false,
+            device_name: None,
+            playing_path: None,
+            player_state: None,
+            current_time: None,
+            duration: None,
+        }
     }
 }
 
@@ -571,16 +581,23 @@ fn decode_cast_message(buf: &[u8]) -> Option<CastMessage> {
     Some(CastMessage { namespace, source, dest, payload })
 }
 
-/// Commands the Tauri thread hands to the connection actor.
-enum Cmd {
-    /// Load new media (already registered on the media server -> `url`).
-    Load { url: String, content_type: String, is_video: bool, title: String, path: String },
-    /// Mirror the laptop's transport onto the TV. Only meaningful once the
-    /// receiver has reported a media session; before that they're dropped,
-    /// because a LOAD is already on its way and arrives autoplaying.
+#[derive(Clone, Copy)]
+enum TransportCmd {
     Play,
     Pause,
     Seek(f64),
+    Toggle,
+    SeekBy(f64),
+}
+
+/// Commands the Tauri thread hands to the connection actor.
+enum Cmd {
+    /// Load new media (already registered on the media server -> `url`).
+    Load { url: String, content_type: String, is_video: bool, path: String },
+    /// Direct TV controls. Toggle and relative seek are resolved from the
+    /// receiver's latest MEDIA_STATUS, so the laptop player need not run.
+    Transport(TransportCmd),
+    RefreshStatus,
     /// Stop the receiver app and tear the connection down; the actor exits.
     Shutdown,
 }
@@ -634,9 +651,18 @@ impl CastConn {
             .ok();
 
         let status = Arc::new(Mutex::new(CastStatus {
-            connected: false,
+            // Reaching this point means the synchronous TCP + TLS handshake
+            // succeeded. Reporting false until the actor happened to run made
+            // cast_start race thread scheduling: the frontend usually received
+            // false, then disabled follow, transport, and even its status poll
+            // forever. The actor still clears this if its first CASTV2 write
+            // fails, so this is connection truth rather than optimism.
+            connected: true,
             device_name: Some(name.to_string()),
             playing_path: None,
+            player_state: None,
+            current_time: None,
+            duration: None,
         }));
         let alive = Arc::new(AtomicBool::new(true));
 
@@ -731,6 +757,101 @@ fn send_frame(
     stream.flush()
 }
 
+fn projected_time(status: &CastStatus, since_status: Duration) -> f64 {
+    let base = status.current_time.unwrap_or(0.0);
+    let moving = matches!(
+        status.player_state.as_deref(),
+        Some("PLAYING") | Some("BUFFERING")
+    );
+    let projected = if moving {
+        base + since_status.as_secs_f64()
+    } else {
+        base
+    };
+    match status.duration {
+        Some(duration) if duration.is_finite() && duration >= 0.0 => {
+            projected.clamp(0.0, duration)
+        }
+        _ => projected.max(0.0),
+    }
+}
+
+fn send_transport_command(
+    stream: &mut TlsStream<TcpStream>,
+    transport_id: &str,
+    media_session_id: i64,
+    request_id: i64,
+    command: TransportCmd,
+    status: &Arc<Mutex<CastStatus>>,
+    media_status_at: &mut Instant,
+) -> std::io::Result<()> {
+    let (projected, current_state, duration) = {
+        let snapshot = status.lock();
+        (
+            projected_time(&snapshot, media_status_at.elapsed()),
+            snapshot.player_state.clone(),
+            snapshot.duration,
+        )
+    };
+    let (payload, next_state, next_time) = match command {
+        TransportCmd::Play => (
+            json!({"type":"PLAY","mediaSessionId":media_session_id,"requestId":request_id}),
+            Some("PLAYING"),
+            projected,
+        ),
+        TransportCmd::Pause => (
+            json!({"type":"PAUSE","mediaSessionId":media_session_id,"requestId":request_id}),
+            Some("PAUSED"),
+            projected,
+        ),
+        TransportCmd::Seek(position) => {
+            let target = duration
+                .map(|d| position.clamp(0.0, d))
+                .unwrap_or_else(|| position.max(0.0));
+            (
+                json!({"type":"SEEK","mediaSessionId":media_session_id,"currentTime":target,"requestId":request_id}),
+                current_state.as_deref(),
+                target,
+            )
+        }
+        TransportCmd::Toggle => {
+            let is_playing = matches!(
+                current_state.as_deref(),
+                Some("PLAYING") | Some("BUFFERING")
+            );
+            let (kind, state) = if is_playing {
+                ("PAUSE", "PAUSED")
+            } else {
+                ("PLAY", "PLAYING")
+            };
+            (
+                json!({"type":kind,"mediaSessionId":media_session_id,"requestId":request_id}),
+                Some(state),
+                projected,
+            )
+        }
+        TransportCmd::SeekBy(delta) => {
+            let target = duration
+                .map(|d| (projected + delta).clamp(0.0, d))
+                .unwrap_or_else(|| (projected + delta).max(0.0));
+            (
+                json!({"type":"SEEK","mediaSessionId":media_session_id,"currentTime":target,"requestId":request_id}),
+                current_state.as_deref(),
+                target,
+            )
+        }
+    };
+    crate::log::line(&format!("cast: -> {}", payload["type"]));
+    send_frame(stream, NS_MEDIA, transport_id, payload)?;
+    let mut snapshot = status.lock();
+    if let Some(state) = next_state {
+        snapshot.player_state = Some(state.to_string());
+    }
+    snapshot.current_time = Some(next_time);
+    *media_status_at = Instant::now();
+    Ok(())
+}
+
 /// The connection actor. Owns the TLS stream for its whole life, so all reads
 /// and writes are single-threaded and safe. It:
 ///   * opens the platform virtual connection and LAUNCHes the media receiver,
@@ -809,10 +930,14 @@ fn run_actor(
     // handle every PLAY/PAUSE/SEEK must carry. Learned from MEDIA_STATUS, and
     // reset on each LOAD because the receiver mints a new one per item.
     let mut media_session_id: Option<i64> = None;
+    let mut media_status_at = Instant::now();
+    // Controls pressed immediately after navigation can arrive before the new
+    // mediaSessionId. Keep them in order and apply them on first status.
+    let mut pending_transport = VecDeque::<TransportCmd>::new();
     // Whether we've opened the virtual connection to the app transport yet.
     let mut app_connected = false;
     // Media queued to LOAD as soon as the transport id is known.
-    let mut pending_load: Option<(String, String, bool, String, String)> = None;
+    let mut pending_load: Option<(String, String, bool, String)> = None;
     // When we last asked the TV to launch the receiver app. The app is NOT
     // permanent: it closes itself when it goes idle (a clip ends, a still has
     // been up a while, someone presses Home). Before this was tracked, LAUNCH
@@ -826,37 +951,51 @@ fn run_actor(
         // 1. Drain UI commands.
         loop {
             match cmd_rx.try_recv() {
-                Ok(Cmd::Load { url, content_type, is_video, title, path }) => {
+                Ok(Cmd::Load { url, content_type, is_video, path }) => {
                     // NB: `playing_path` is deliberately NOT set here. It means
                     // "what the TV is showing", and at this point we have only
                     // queued the intent — see where the LOAD is actually sent.
-                    pending_load = Some((url, content_type, is_video, title, path));
+                    // Invalidate the old session immediately. A transport
+                    // command queued directly after this LOAD must wait for the
+                    // new clip, never control the prior one.
+                    media_session_id = None;
+                    pending_transport.clear();
+                    pending_load = Some((url, content_type, is_video, path));
                 }
-                // Transport mirroring. These need BOTH the app transport and a
-                // media session id (the receiver hands the latter out in its
-                // first MEDIA_STATUS after a LOAD). Dropping them when either
-                // is missing is correct rather than lossy: the only window
-                // where that happens is between LOAD and first status, and the
-                // media arrives playing from 0 anyway.
-                Ok(cmd @ (Cmd::Play | Cmd::Pause | Cmd::Seek(_))) => {
+                // Direct TV transport. These need both the app transport and a
+                // media session id (minted in the first MEDIA_STATUS after a
+                // LOAD); commands in that short window are queued above.
+                Ok(Cmd::Transport(cmd)) => {
                     let (Some(tid), Some(msid)) = (transport_id.clone(), media_session_id) else {
-                        crate::log::line("cast: transport command dropped (no media session yet)");
+                        pending_transport.push_back(cmd);
+                        crate::log::line("cast: transport command queued until media session is ready");
                         continue;
                     };
-                    let payload = match cmd {
-                        Cmd::Play => json!({"type":"PLAY","mediaSessionId":msid,"requestId":next_id()}),
-                        Cmd::Pause => json!({"type":"PAUSE","mediaSessionId":msid,"requestId":next_id()}),
-                        Cmd::Seek(t) => json!({
-                            "type":"SEEK","mediaSessionId":msid,"currentTime":t,"requestId":next_id()
-                        }),
-                        _ => unreachable!("outer match limits this to the three transport commands"),
-                    };
-                    crate::log::line(&format!("cast: -> {}", payload["type"]));
-                    if send_frame(&mut stream, NS_MEDIA, &tid, payload).is_err() {
+                    if send_transport_command(
+                        &mut stream,
+                        &tid,
+                        msid,
+                        next_id(),
+                        cmd,
+                        &status,
+                        &mut media_status_at,
+                    )
+                    .is_err()
+                    {
                         // Not a `break` — that would only leave this drain loop.
                         // The outer read is on a 300 ms timeout and folds the
                         // connection up properly within one tick.
                         crate::log::line("cast: transport send failed; connection is gone");
+                    }
+                }
+                Ok(Cmd::RefreshStatus) => {
+                    if let (Some(tid), Some(msid)) = (transport_id.clone(), media_session_id) {
+                        let _ = send_frame(
+                            &mut stream,
+                            NS_MEDIA,
+                            &tid,
+                            json!({"type":"GET_STATUS","mediaSessionId":msid,"requestId":next_id()}),
+                        );
                     }
                 }
                 Ok(Cmd::Shutdown) => {
@@ -906,7 +1045,7 @@ fn run_actor(
             }
             LoadAction::Send => {
                 let tid = transport_id.clone().expect("Send implies a transport id");
-                let (url, content_type, is_video, title, path) =
+                let (url, content_type, is_video, path) =
                     pending_load.take().expect("Send implies queued media");
                 if !app_connected {
                     let _ = send_frame(&mut stream, NS_CONNECTION, &tid, json!({"type":"CONNECT"}));
@@ -923,8 +1062,7 @@ fn run_actor(
                         "contentId": url,
                         "contentUrl": url,
                         "streamType": stream_type,
-                        "contentType": content_type,
-                        "metadata": { "type": 0, "title": title }
+                        "contentType": content_type
                     }
                 });
                 crate::log::line(&format!(
@@ -940,12 +1078,21 @@ fn run_actor(
                 // The receiver mints a fresh media session per LOAD; the old id
                 // would be rejected, so transport commands wait for the new one.
                 media_session_id = None;
+                media_status_at = Instant::now();
                 // NOW it is true. Claiming it when the command was queued meant
                 // the UI reported a file the TV had never been told about, and
                 // the "cast follows the active item" guard then saw its job as
                 // done — so the TV kept showing the previous clip while the app
                 // had moved on.
-                status.lock().playing_path = Some(path);
+                let mut snapshot = status.lock();
+                snapshot.playing_path = Some(path);
+                snapshot.player_state = if is_video {
+                    Some("BUFFERING".to_string())
+                } else {
+                    None
+                };
+                snapshot.current_time = if is_video { Some(0.0) } else { None };
+                snapshot.duration = None;
             }
         }
 
@@ -1003,25 +1150,70 @@ fn run_actor(
                             session_id = None;
                             media_session_id = None;
                             app_connected = false;
-                            status.lock().playing_path = None;
+                            let mut snapshot = status.lock();
+                            snapshot.playing_path = None;
+                            snapshot.player_state = None;
+                            snapshot.current_time = None;
+                            snapshot.duration = None;
                         }
                     }
                 }
                 Some("MEDIA_STATUS") => {
                     // Media accepted / playing — keep connected flag true.
-                    status.lock().connected = true;
-                    // Capture the media session id: PLAY/PAUSE/SEEK are
-                    // addressed to it, not to the transport alone.
-                    if let Some(msid) = payload
+                    let first = payload
                         .get("status")
                         .and_then(|s| s.as_array())
-                        .and_then(|a| a.first())
+                        .and_then(|a| a.first());
+                    let reported_session = first
                         .and_then(|s| s.get("mediaSessionId"))
-                        .and_then(|v| v.as_i64())
-                    {
+                        .and_then(|v| v.as_i64());
+                    if let Some(msid) = reported_session {
                         if media_session_id != Some(msid) {
                             crate::log::line(&format!("cast: media session {msid}"));
                             media_session_id = Some(msid);
+                        }
+                    }
+                    {
+                        let mut snapshot = status.lock();
+                        snapshot.connected = true;
+                        if let Some(entry) = first {
+                            if let Some(player_state) =
+                                entry.get("playerState").and_then(|v| v.as_str())
+                            {
+                                snapshot.player_state = Some(player_state.to_string());
+                            }
+                            if let Some(current_time) =
+                                entry.get("currentTime").and_then(|v| v.as_f64())
+                            {
+                                snapshot.current_time = Some(current_time);
+                            }
+                            if let Some(duration) = entry
+                                .get("media")
+                                .and_then(|m| m.get("duration"))
+                                .and_then(|v| v.as_f64())
+                            {
+                                snapshot.duration = Some(duration);
+                            }
+                        }
+                    }
+                    media_status_at = Instant::now();
+                    while let (Some(cmd), Some(tid), Some(msid)) = (
+                        pending_transport.pop_front(),
+                        transport_id.clone(),
+                        media_session_id,
+                    ) {
+                        if send_transport_command(
+                            &mut stream,
+                            &tid,
+                            msid,
+                            next_id(),
+                            cmd,
+                            &status,
+                            &mut media_status_at,
+                        )
+                        .is_err()
+                        {
+                            crate::log::line("cast: queued transport send failed");
                         }
                     }
                 }
@@ -1039,6 +1231,9 @@ fn run_actor(
     let mut s = status.lock();
     s.connected = false;
     s.playing_path = None;
+    s.player_state = None;
+    s.current_time = None;
+    s.duration = None;
     let _ = device_name; // retained for potential future logging
 }
 
@@ -1062,12 +1257,6 @@ pub fn cast_start(
         return Err(format!("file not found: {path}"));
     }
     let (content_type, is_video) = mime_for(&file);
-    let title = file
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("FoxCull")
-        .to_string();
-
     // Ensure the media server is up, then register this file and get its URL.
     let url = {
         let mut guard = state.server.lock();
@@ -1100,12 +1289,12 @@ pub fn cast_start(
 
         let conn = guard.as_ref().unwrap();
         conn.cmd_tx
-            .send(Cmd::Load { url, content_type, is_video, title, path: path.clone() })
+            .send(Cmd::Load { url, content_type, is_video, path: path.clone() })
             .map_err(|_| "cast connection closed".to_string())?;
-        let mut st = conn.status.lock();
-        st.playing_path = Some(path);
-        let snapshot = st.clone();
-        drop(st);
+        // `playing_path` is set by the actor only after LOAD is actually sent.
+        // Setting it while merely queueing the command made status claim the TV
+        // was showing media it had not received yet.
+        let snapshot = conn.status.lock().clone();
         Ok(snapshot)
     }
 }
@@ -1113,23 +1302,23 @@ pub fn cast_start(
 /// Mirror the laptop's transport onto the TV. All three are best-effort and
 /// never error: with no live session there is simply nothing to mirror, and the
 /// caller (a keypress, a controller trigger) must not have to care.
-fn send_transport(state: &State<'_, CastState>, cmd: Cmd) {
+fn send_transport(state: &State<'_, CastState>, cmd: TransportCmd) {
     let guard = state.conn.lock();
     if let Some(conn) = guard.as_ref() {
         if conn.is_alive() {
-            let _ = conn.cmd_tx.send(cmd);
+            let _ = conn.cmd_tx.send(Cmd::Transport(cmd));
         }
     }
 }
 
 #[tauri::command]
 pub fn cast_play(state: State<'_, CastState>) {
-    send_transport(&state, Cmd::Play);
+    send_transport(&state, TransportCmd::Play);
 }
 
 #[tauri::command]
 pub fn cast_pause(state: State<'_, CastState>) {
-    send_transport(&state, Cmd::Pause);
+    send_transport(&state, TransportCmd::Pause);
 }
 
 /// Seek the TV to `position` seconds. The frontend throttles these — a held
@@ -1137,7 +1326,17 @@ pub fn cast_pause(state: State<'_, CastState>) {
 /// keep up with.
 #[tauri::command]
 pub fn cast_seek(state: State<'_, CastState>, position: f64) {
-    send_transport(&state, Cmd::Seek(position.max(0.0)));
+    send_transport(&state, TransportCmd::Seek(position.max(0.0)));
+}
+
+#[tauri::command]
+pub fn cast_toggle(state: State<'_, CastState>) {
+    send_transport(&state, TransportCmd::Toggle);
+}
+
+#[tauri::command]
+pub fn cast_seek_by(state: State<'_, CastState>, delta: f64) {
+    send_transport(&state, TransportCmd::SeekBy(delta));
 }
 
 /// Stop casting: tell the receiver to stop and close the connection.
@@ -1155,7 +1354,11 @@ pub fn cast_stop(state: State<'_, CastState>) -> CastStatus {
 pub fn cast_status(state: State<'_, CastState>) -> CastStatus {
     let guard = state.conn.lock();
     match guard.as_ref() {
-        Some(conn) if conn.is_alive() => conn.status.lock().clone(),
+        Some(conn) if conn.is_alive() => {
+            let snapshot = conn.status.lock().clone();
+            let _ = conn.cmd_tx.send(Cmd::RefreshStatus);
+            snapshot
+        }
         _ => CastStatus::disconnected(),
     }
 }
@@ -1209,5 +1412,32 @@ mod tests {
         // fought by us relaunching it under them.
         assert_eq!(load_action(false, false, Duration::from_secs(3600)), LoadAction::Idle);
         assert_eq!(load_action(false, true, Duration::from_secs(3600)), LoadAction::Idle);
+    }
+
+    #[test]
+    fn projected_playing_time_advances_and_clamps_to_duration() {
+        let status = CastStatus {
+            connected: true,
+            device_name: Some("TV".to_string()),
+            playing_path: Some("clip.mp4".to_string()),
+            player_state: Some("PLAYING".to_string()),
+            current_time: Some(8.0),
+            duration: Some(10.0),
+        };
+        assert_eq!(projected_time(&status, Duration::from_secs(1)), 9.0);
+        assert_eq!(projected_time(&status, Duration::from_secs(8)), 10.0);
+    }
+
+    #[test]
+    fn projected_paused_time_does_not_advance() {
+        let status = CastStatus {
+            connected: true,
+            device_name: Some("TV".to_string()),
+            playing_path: Some("clip.mp4".to_string()),
+            player_state: Some("PAUSED".to_string()),
+            current_time: Some(8.0),
+            duration: Some(10.0),
+        };
+        assert_eq!(projected_time(&status, Duration::from_secs(8)), 8.0);
     }
 }

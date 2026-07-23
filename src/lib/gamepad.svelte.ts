@@ -200,11 +200,13 @@ export const DEFAULT_BINDINGS: Record<PadActionId, number> = {
 };
 
 // Hold-to-repeat pacing: navigation steps at a readable clip after a short
-// grace period; the analog triggers shuttle faster and start sooner.
+// grace period. Triggers are deliberately slower to enter repeat: an ordinary
+// squeeze must remain one predictable 5-second skip, not become a surprise
+// second/third seek while the analog trigger is still travelling.
 const NAV_REPEAT_DELAY_MS = 380;
 const NAV_REPEAT_EVERY_MS = 135;
-const SHUTTLE_DELAY_MS = 220;
-const SHUTTLE_EVERY_MS = 120;
+const SHUTTLE_DELAY_MS = 500;
+const SHUTTLE_EVERY_MS = 250;
 
 type PadHandler = (action: PadActionId, strength: number) => void;
 

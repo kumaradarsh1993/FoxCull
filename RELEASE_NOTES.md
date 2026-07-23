@@ -4,10 +4,21 @@
      what happened on nightly.5 and .6, both of which announced themselves as
      "nightly.4". Write what changed; let the tag say which build it is. -->
 
-> **Install this one.** It is the previous nightly plus the Chromecast work.
-> The `-nightly.1` build is a deliberate A/B twin with the cast changes left
-> out — only reach for it if casting misbehaves and you want to know whether
-> these changes caused it.
+> **Chromecast controls refined from the Sony TV test.** Casting now has one
+> clear playback authority: the TV. The laptop keeps its copy paused and muted,
+> so there is no doubled audio and Space works on the first press even when
+> local Video Autoplay is off. Space and Shift+Left/Right control the TV from
+> both Grid and Focus; the DualSense play/pause button and L2/R2 do the same.
+> A glowing CASTING badge reports Live, Loading, or Paused.
+
+> **Cleaner TV picture.** FoxCull no longer sends the filename as Cast media
+> metadata, removing the unnecessary title card shown at the start of a clip.
+
+> **Use the GitHub-built installer.** A local Windows-GNU test installer was
+> mistakenly handed off after compilation succeeded, but it could not start
+> because `WebView2Loader.dll` was missing. The release pipeline now launches
+> the Windows executable before publishing it and checks every required
+> sidecar. The portable ZIP now includes FFmpeg as well.
 
 Everything below carries forward from the v1.2.0 stable release; the new
 sections are the controller, in/out points, the pairing guide, the filmstrip
@@ -43,11 +54,25 @@ adjusts it from 2x to 10x.
 Press Ctrl+Space again, hit Space, or grab the playhead to stop; it lands
 cleanly wherever you stopped.
 
-## Casting to your TV is reliable now
+## Chromecast follow and controls — root cause fixed for testing
 
 Quality was always good — FoxCull sends the original file untouched and lets the
-TV decode it. But the session used to fall apart as you browsed. Three separate
-faults, now fixed:
+TV decode it. Previous fixes addressed receiver relaunches and out-of-order
+loads, but one startup race still disabled the entire live-control path:
+
+- FoxCull completed the secure connection, then briefly reported itself as
+  disconnected while a background thread started.
+- The UI cached that false answer.
+- Item follow, play/pause/seek, and even the status poll were all conditional on
+  the cached false value, so none of them ever ran.
+
+The secure handshake now establishes the connection immediately. Recovery
+polling follows the session you asked for rather than depending on its stale
+answer, and successful polls refresh the UI. The log now records every
+frontend LOAD, follow, play, pause and seek attempt — including why an attempt
+was skipped — alongside the existing receiver protocol trace.
+
+Earlier fixes carried in this build:
 
 - **The receiver app on your TV closes itself when idle**, and FoxCull only ever
   launched it once. After it closed, everything you selected silently went
@@ -59,7 +84,8 @@ faults, now fixed:
   shot.
 
 It now also notices when a session has genuinely ended instead of claiming a
-connection that's gone.
+connection that's gone. This exact path cannot be proven without the TV, so
+this nightly deliberately says “test build,” not “reliable now.”
 
 ## Culling from the couch, on a PlayStation controller
 
@@ -102,11 +128,18 @@ all, and the failure was being discarded silently, which is why it looked like a
 missing feature rather than a bug. The same fault also disabled the **Cut**
 button in Focus, which should now work.
 
-## The TV follows what you're doing
+## The TV should now follow what you're doing
 
 With a cast session running, pausing or scrubbing on the laptop now pauses and
-scrubs on the TV. Casting already followed whatever you selected — including in
-the grid — and that's unchanged.
+scrubs on the TV, and moving between items in Grid or Focus sends the new item.
+Those are the specific hardware checks for this nightly.
+
+## Predictable L2/R2 seeking
+
+The DualSense triggers used to fire while only partly depressed, then abruptly
+jump from a roughly 2.4-second seek to repeated 5-second seeks eight times a
+second. One pull now skips exactly five seconds. Hold for half a second to start
+repeating at a controlled pace.
 
 ## The filmstrip gets out of the way
 

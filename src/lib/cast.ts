@@ -21,6 +21,9 @@ export interface CastStatus {
   connected: boolean;
   deviceName: string | null;
   playingPath: string | null;
+  playerState: string | null;
+  currentTime: number | null;
+  duration: number | null;
 }
 
 export const cast = {
@@ -40,12 +43,13 @@ export const cast = {
   /** Stop casting and close the connection to the TV. */
   stop: () => invoke<CastStatus>("cast_stop"),
 
-  // Transport mirroring: what the laptop's player does, the TV does. All three
-  // are best-effort — with no live session they are no-ops on the Rust side, so
-  // callers (a keypress, a controller trigger) never have to check first.
+  // Direct TV transport. These are best-effort no-ops without a live session.
+  // Cast mode keeps the laptop video muted and paused, avoiding double audio.
   play: () => invoke<void>("cast_play").catch(() => {}),
   pause: () => invoke<void>("cast_pause").catch(() => {}),
-  /** Seek the TV to `position` seconds. Throttle this — see the page. */
+  toggle: () => invoke<void>("cast_toggle").catch(() => {}),
+  seekBy: (delta: number) => invoke<void>("cast_seek_by", { delta }).catch(() => {}),
+  /** Seek the TV to an absolute position; timeline drags throttle this. */
   seek: (position: number) => invoke<void>("cast_seek", { position }).catch(() => {}),
 
   /** Poll the current cast status (connected? which device? what's playing?). */
