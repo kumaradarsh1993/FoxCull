@@ -125,12 +125,17 @@
   let castDevices = $state<CastDevice[]>([]);
   let castDiscovering = $state(false);
   let castStatus = $state<CastStatus>({ connected: false, deviceName: null, playingPath: null });
+  function castLog(message: string) {
+    void api.logNote(`cast-ui: ${message}`);
+  }
   async function discoverCast() {
     castDiscovering = true;
     try {
       castDevices = await cast.discover();
+      castLog(`discovery found ${castDevices.length} device(s)`);
     } catch (e) {
       castDevices = [];
+      castLog(`discovery failed: ${e}`);
       activity.error("cast", `Cast discovery failed (${e})`);
     } finally {
       castDiscovering = false;
@@ -165,30 +170,41 @@
   let castSeq = 0;
   async function castTo(item: MediaItem, d: CastDevice) {
     const my = ++castSeq;
+    castLog(`LOAD requested for ${item.name} -> ${d.name} (sequence ${my})`);
     // This can be SLOW — for RAW/HEIC it generates a JPEG preview first. Two
     // quick presses of → could therefore finish out of order and leave the TV
     // on the earlier shot; the sequence check drops anything superseded.
     const path = await castablePath(item);
-    if (my !== castSeq) return;
+    if (my !== castSeq) {
+      castLog(`LOAD abandoned before send (sequence ${my} was superseded)`);
+      return;
+    }
     const st = await cast.start(path, d);
-    if (my !== castSeq) return;
+    if (my !== castSeq) {
+      castLog(`LOAD response ignored (sequence ${my} was superseded)`);
+      return;
+    }
     // Track by the LIBRARY path, not the (possibly cache-file) casted path, so
     // the UI names what the user is looking at.
     castStatus = { ...st, playingPath: item.path };
+    castLog(`LOAD queued; backend connected=${st.connected}, playing=${st.playingPath ?? "pending"}`);
   }
   async function startCast(d: CastDevice) {
     if (!active) return;
+    castDevice = d;
     try {
       castWantedPath = active.path;
       await castTo(active, d);
-      castDevice = d;
       castOpen = false;
     } catch (e) {
+      castLog(`start failed for ${d.name}: ${e}`);
+      if (castDevice?.id === d.id) castDevice = null;
       castWantedPath = null;
       activity.error("cast", `Cast failed (${e})`);
     }
   }
   async function stopCast() {
+    castLog(`stop requested${castDevice ? ` for ${castDevice.name}` : ""}`);
     castDevice = null;
     castWantedPath = null;
     castSeq++; // abandon anything in flight
@@ -206,7 +222,10 @@
   let castFollowTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
     const it = active;
-    if (!castStatus.connected || !castDevice || !it) return;
+    // `castDevice` is the user's live-session intent. Do not gate this on a
+    // cached status snapshot: doing that once deadlocked the whole feature when
+    // cast_start returned before its actor thread updated `connected`.
+    if (!castDevice || !it) return;
     // Compare against what we last ASKED for, not against what the backend
     // reports as playing: the backend answer arrives one round-trip later, and
     // gating on it meant a re-render mid-flight could fire a second LOAD for
@@ -216,9 +235,14 @@
     const d = castDevice;
     castFollowTimer = setTimeout(() => {
       // Re-check at fire time — the session may have ended mid-debounce.
-      if (!castStatus.connected || !castDevice) return;
+      if (!castDevice) {
+        castLog(`follow skipped for ${it.name}: session ended during debounce`);
+        return;
+      }
       castWantedPath = it.path;
+      castLog(`follow sending ${it.name} -> ${d.name}`);
       castTo(it, d).catch((e) => {
+        castLog(`follow failed for ${it.name}: ${e}`);
         castWantedPath = null; // let a later navigation retry
         activity.error("cast", `Cast failed (${e})`);
       });
@@ -243,20 +267,30 @@
     // Only mirror when the TV is actually showing the clip we're scrubbing —
     // during the 350 ms follow debounce it is still on the previous item, and
     // seeking that one would be visible nonsense.
-    if (!castStatus.connected || !castDevice) return;
-    if (!active || active.kind !== "video" || castWantedPath !== active.path) return;
+    if (!castDevice) return;
+    if (!active || active.kind !== "video") {
+      castLog("transport skipped: active item is not a video");
+      return;
+    }
+    if (castWantedPath !== active.path) {
+      castLog(`transport skipped: TV target has not followed ${active.name} yet`);
+      return;
+    }
     if (st.paused !== castPaused) {
       castPaused = st.paused;
+      castLog(`${st.paused ? "PAUSE" : "PLAY"} -> ${castDevice.name} at ${st.time.toFixed(2)}s`);
       void (st.paused ? cast.pause() : cast.play());
     }
     const now = performance.now();
     clearTimeout(castSeekTimer);
     if (now - castSeekAt >= CAST_SEEK_EVERY_MS) {
       castSeekAt = now;
+      castLog(`SEEK -> ${castDevice.name} at ${st.time.toFixed(2)}s`);
       void cast.seek(st.time);
     } else {
       castSeekTimer = setTimeout(() => {
         castSeekAt = performance.now();
+        if (castDevice) castLog(`SEEK (trailing) -> ${castDevice.name} at ${st.time.toFixed(2)}s`);
         void cast.seek(st.time);
       }, CAST_SEEK_EVERY_MS - (now - castSeekAt));
     }
@@ -275,11 +309,16 @@
   // and every subsequent navigation quietly went nowhere. Poll while a session
   // is live and fold the session up honestly when it's gone.
   $effect(() => {
-    if (!castStatus.connected) return;
+    // Poll whenever the user has an intended session, including while the last
+    // status snapshot is false. That lets status self-heal instead of making
+    // the poll depend on the very value it exists to refresh.
+    if (!castDevice) return;
     const poll = setInterval(async () => {
       try {
         const st = await cast.status();
+        castStatus = st;
         if (st.connected) return;
+        castLog("backend reports the cast session ended");
         castDevice = null;
         castWantedPath = null;
         castSeq++;
@@ -2312,7 +2351,7 @@
   // One dispatcher turns remappable action ids into the SAME functions the
   // keyboard uses. The mouse's extra buttons route through it too, so both
   // input surfaces share the mapper in the Controller panel.
-  function handlePadAction(a: PadActionId | string, strength = 1) {
+  function handlePadAction(a: PadActionId | string, _strength = 1) {
     if (editOpen) return; // the pad drives the culling views only
     switch (a) {
       case "prev": move(-1); break;
@@ -2352,9 +2391,12 @@
       case "seekFwd": {
         const dir = a === "seekFwd" ? 1 : -1;
         if (viewMode === "loupe" && active?.kind === "video") {
-          // Analog shuttle: a light trigger squeeze nudges ~1s per tick, a full
-          // pull sweeps ~5s per tick (the tick rate lives in gamepad.svelte.ts).
-          loupeComp?.seekBy(dir * (1 + 4 * Math.min(1, Math.max(0, strength))));
+          // Predictable skip: the old strength curve fired at the trigger's
+          // first 35% threshold (~2.4s), then jumped to 5s while the trigger was
+          // still travelling and repeated every 120ms. One pull is now always
+          // ±5s; holding deliberately repeats after the grace period defined in
+          // gamepad.svelte.ts.
+          loupeComp?.seekBy(dir * 5);
         } else {
           move(dir * 10); // photos: triggers leaf through the folder fast
         }
@@ -2857,17 +2899,20 @@
         <div class="grp castWrap">
           <button
             class="ico castBtn"
-            class:on={castOpen || castStatus.connected}
+            class:on={castOpen || !!castDevice}
             onclick={toggleCastMenu}
-            title={castStatus.connected ? `Casting to ${castStatus.deviceName} — follows as you browse; click to manage` : "Cast to a TV (Chromecast) — the TV then follows whatever photo/video you're on"}
+            title={castDevice ? `${castStatus.connected ? "Casting" : "Connecting"} to ${castDevice.name} — follows as you browse; click to manage` : "Cast to a TV (Chromecast) — the TV then follows whatever photo/video you're on"}
             aria-label="Cast to TV"
           >
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 20h.01"/><path d="M2 16.5a3.5 3.5 0 0 1 3.5 3.5"/><path d="M2 13a7 7 0 0 1 7 7"/><path d="M2 9.5V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-8.5"/></svg>
           </button>
           {#if castOpen}
             <div class="castMenu">
-              {#if castStatus.connected}
-                <div class="castNow">Casting to <strong>{castStatus.deviceName}</strong> — the TV follows as you browse</div>
+              {#if castDevice}
+                <div class="castNow">
+                  {castStatus.connected ? "Casting" : "Connecting"} to
+                  <strong>{castDevice.name}</strong> — the TV follows as you browse
+                </div>
                 <button class="castRow stop" onclick={() => void stopCast()}>Stop casting</button>
                 <div class="menuSep"></div>
               {/if}

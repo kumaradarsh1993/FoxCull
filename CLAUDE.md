@@ -68,6 +68,13 @@ stamps the tag's version into **both** `tauri.conf.json` and `Cargo.toml`
 
 - **No heavy local builds** — never `npm run tauri build` (rustc OOMs on LTO);
   installers come from CI on tag push.
+- **Never hand off a local Windows-GNU installer without the runtime gate.**
+  This machine's GNU build dynamically imports `WebView2Loader.dll`, which
+  Tauri's NSIS bundle omitted on 2026-07-24 even though the build returned
+  success. **Windows-GNU artifacts are non-distributable, full stop.** Run
+  `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-windows-runtime.ps1 -ReleaseDir <target-release>`
+  after any explicitly authorized local build; it deliberately rejects GNU.
+  Use the Windows-MSVC GitHub Actions build for every handoff.
 - Rust toolchain is **windows-gnu** + winlibs MinGW (`D:\dev-tools\mingw64\bin`
   on PATH provides `dlltool`/`gcc`); `CARGO_TARGET_DIR` must stay the
   space-free `D:\dev-tools\rust\target-shared` (windres chokes on the space in

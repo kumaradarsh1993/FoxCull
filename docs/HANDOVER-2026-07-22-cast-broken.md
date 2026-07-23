@@ -4,6 +4,14 @@ Written at the end of a session that ran out of budget mid-diagnosis. Read this
 before touching cast. The controller work is done and confirmed by the owner;
 the Chromecast work is **shipped, live, and does not function at all.**
 
+> **2026-07-23 continuation:** the startup-race hypothesis in §3 was confirmed
+> directly in current code and fixed. The frontend now logs `cast-ui:` evidence,
+> polls from session intent so stale status can self-heal, and no longer gates
+> follow on the stale snapshot. The premature `playing_path` assignment was also
+> removed. Local checks pass; hardware behavior remains unverified. See the top
+> section of `CLAUDE_CODE_HANDOVER.md` and
+> `docs/changes/2026-07-23-cast-controller-seek.md`.
+
 ---
 
 ## 1. State of the world

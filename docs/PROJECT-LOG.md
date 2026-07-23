@@ -261,3 +261,52 @@ only version source.
 - **Confirmed working on the main machine** from its own log: HEVC Main 10
   (`hvc1.2.4`), 3840x2160 **and** 1728x3072 portrait, 88–290 ms to index, zero
   fallbacks across ~24 clips.
+
+---
+
+## 2026-07-23 — why cast loaded once and then ignored everything
+
+The previous night ended with a telling hardware report: the first Chromecast
+video loaded, but laptop play/pause, seeking, and moving to another item did
+nothing. The code confirmed the handover's race hypothesis. TCP and TLS had
+already connected successfully, but the status object was initialized as
+disconnected until a newly spawned actor thread sent its first two frames. The
+main thread normally returned that false snapshot first. Unfortunately every
+feature that could correct or use the session — follow, transport, and even the
+status poll — was gated on the same false value.
+
+The connection now becomes true when its synchronous TLS handshake succeeds,
+and the frontend's recovery path follows the user's session intent rather than
+making recovery conditional on the stale value it must recover. Frontend cast
+decisions are also written to `foxcull.log`; before this, the absence of Rust
+transport lines could not distinguish a frontend early return from an
+inaccessible/stale log file.
+
+The same pass revisited the owner's report that DualSense L2/R2 seeking felt
+glitchy. The analog curve fired while a trigger was only 35% depressed, so an
+initial skip was roughly 2.4 seconds before abruptly becoming 5-second seeks at
+an eight-per-second repeat rate. That was mechanically inconsistent, not just a
+matter of taste. Trigger behavior is now discrete and learnable: one pull skips
+five seconds; a deliberate hold repeats after a half-second grace period.
+
+Both changes pass local type, frontend production-build, and Rust compile gates.
+Chromecast remains a hardware feature: the Sony TV test, not compilation, is
+the point at which it can be called fixed.
+
+### The local installer that compiled but could not start
+
+At the owner's request, a one-off local Windows build was attempted despite the
+usual CI-only release rule. Compilation and NSIS packaging both returned
+success, but the installed app immediately failed because
+`WebView2Loader.dll` was missing. The machine uses Windows-GNU; FoxCull's
+supported GitHub Windows build uses MSVC. Tauri placed the loader beside the
+raw GNU executable but omitted it from the installer, proving that compile
+success and even a build-directory dependency check are not distributable
+artifact tests.
+
+The response is deliberately categorical: Windows-GNU artifacts are never
+handed off. The release workflow now launch-smokes the MSVC executable before
+publishing, requires FFmpeg, and verifies the portable ZIP contains it. This
+also exposed that earlier portable ZIPs had copied only FoxCull's small
+executable and omitted the 140 MB FFmpeg sidecar; that package path is corrected
+in the same nightly.

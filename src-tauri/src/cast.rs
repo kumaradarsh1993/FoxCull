@@ -634,7 +634,13 @@ impl CastConn {
             .ok();
 
         let status = Arc::new(Mutex::new(CastStatus {
-            connected: false,
+            // Reaching this point means the synchronous TCP + TLS handshake
+            // succeeded. Reporting false until the actor happened to run made
+            // cast_start race thread scheduling: the frontend usually received
+            // false, then disabled follow, transport, and even its status poll
+            // forever. The actor still clears this if its first CASTV2 write
+            // fails, so this is connection truth rather than optimism.
+            connected: true,
             device_name: Some(name.to_string()),
             playing_path: None,
         }));
@@ -1102,10 +1108,10 @@ pub fn cast_start(
         conn.cmd_tx
             .send(Cmd::Load { url, content_type, is_video, title, path: path.clone() })
             .map_err(|_| "cast connection closed".to_string())?;
-        let mut st = conn.status.lock();
-        st.playing_path = Some(path);
-        let snapshot = st.clone();
-        drop(st);
+        // `playing_path` is set by the actor only after LOAD is actually sent.
+        // Setting it while merely queueing the command made status claim the TV
+        // was showing media it had not received yet.
+        let snapshot = conn.status.lock().clone();
         Ok(snapshot)
     }
 }
