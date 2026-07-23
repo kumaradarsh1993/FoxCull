@@ -188,6 +188,8 @@ pub fn run() {
             cast::cast_play,
             cast::cast_pause,
             cast::cast_seek,
+            cast::cast_toggle,
+            cast::cast_seek_by,
             raw::raw_embedded_probe,
             raw::export_raw_jpegs,
         ])

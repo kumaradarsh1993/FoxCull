@@ -12,6 +12,36 @@ Claude-built `fox-cull` project.
 > **historical record** of names in effect at the time — left as-is for
 > accuracy; don't "fix" them.
 
+## 2026-07-24: Sony TV QA passed · TV-authority controls queued for nightly.4
+
+The owner tested `v1.2.1-nightly.3` on the actual Chromecast/Sony TV and
+confirmed that live follow now works: next/previous, Grid photos, Focus changes,
+and video playback all reach the TV. That closes the 2026-07-23 hardware-QA
+blocker. The remaining feedback was specifically about transport ownership,
+not connection/follow reliability.
+
+- **TV is the playback authority while casting.** The local `<video>` is muted,
+  prevented from autoplaying, and paused if it ever starts. This avoids doubled
+  audio regardless of the Video Autoplay preference.
+- **Direct controls, every library view.** Space toggles the TV and
+  Shift+Left/Right seeks it ±5 seconds in Grid and Focus. DualSense play/pause
+  and L2/R2 use the same direct receiver commands.
+- **No two-press pause.** Toggle is resolved from Chromecast's reported
+  `playerState`, not the laptop element's paused state. Commands arriving before
+  a new `mediaSessionId` are queued in order and applied to the new clip.
+- **Relative seek is receiver-time based.** MEDIA_STATUS now captures state,
+  time, and duration. The actor projects elapsed playing time between status
+  replies and clamps relative seeks to the clip duration.
+- **Clear cast presence.** A glowing CASTING pill reports Live, Loading, Paused,
+  or Connecting. Status refreshes once per second.
+- **No filename title card.** LOAD omits the optional metadata/title object.
+
+Local verification on 2026-07-24: `npm run check` (0 errors, 0 warnings),
+`npm run build` (pass), and `cargo check` (pass). `cargo fmt --check` still
+reports broad pre-existing drift across untouched Rust modules and is not a
+project gate. Runtime/hardware behavior in this refinement remains to be tested
+from the GitHub-built nightly.4; never hand off a local Windows-GNU build.
+
 ## 2026-07-23: cast deadlock fixed in code · L2/R2 made predictable · hardware QA pending
 
 The two issues handed over from 2026-07-22 were traced and fixed locally. All

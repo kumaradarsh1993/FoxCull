@@ -124,7 +124,23 @@
   let castOpen = $state(false);
   let castDevices = $state<CastDevice[]>([]);
   let castDiscovering = $state(false);
-  let castStatus = $state<CastStatus>({ connected: false, deviceName: null, playingPath: null });
+  let castStatus = $state<CastStatus>({
+    connected: false,
+    deviceName: null,
+    playingPath: null,
+    playerState: null,
+    currentTime: null,
+    duration: null,
+  });
+  let castStateLabel = $derived(
+    !castStatus.connected
+      ? "Connecting"
+      : castStatus.playerState === "PAUSED"
+        ? "Paused"
+        : castStatus.playerState === "BUFFERING"
+          ? "Loading"
+          : "Live",
+  );
   function castLog(message: string) {
     void api.logNote(`cast-ui: ${message}`);
   }
@@ -186,7 +202,13 @@
     }
     // Track by the LIBRARY path, not the (possibly cache-file) casted path, so
     // the UI names what the user is looking at.
-    castStatus = { ...st, playingPath: item.path };
+    castStatus = {
+      ...st,
+      playingPath: item.path,
+      playerState: item.kind === "video" ? "BUFFERING" : null,
+      currentTime: item.kind === "video" ? 0 : null,
+      duration: null,
+    };
     castLog(`LOAD queued; backend connected=${st.connected}, playing=${st.playingPath ?? "pending"}`);
   }
   async function startCast(d: CastDevice) {
@@ -211,7 +233,14 @@
     try {
       castStatus = await cast.stop();
     } catch {
-      castStatus = { connected: false, deviceName: null, playingPath: null };
+      castStatus = {
+        connected: false,
+        deviceName: null,
+        playingPath: null,
+        playerState: null,
+        currentTime: null,
+        duration: null,
+      };
     }
     castOpen = false;
   }
@@ -262,8 +291,42 @@
   const CAST_SEEK_EVERY_MS = 450;
   let castSeekAt = 0;
   let castSeekTimer: ReturnType<typeof setTimeout> | undefined;
-  let castPaused: boolean | null = null;
-  function onLoupeTransport(st: { paused: boolean; time: number }) {
+  async function ensureCastVideoTarget(): Promise<CastDevice | null> {
+    const d = castDevice;
+    const item = active;
+    if (!d || !item || item.kind !== "video") return null;
+    if (castWantedPath !== item.path) {
+      clearTimeout(castFollowTimer);
+      castWantedPath = item.path;
+      castLog(`control loading ${item.name} before transport command`);
+      try {
+        await castTo(item, d);
+      } catch (e) {
+        castWantedPath = null;
+        castLog(`control LOAD failed for ${item.name}: ${e}`);
+        activity.error("cast", `Cast failed (${e})`);
+        return null;
+      }
+    }
+    return castDevice?.id === d.id ? d : null;
+  }
+  async function toggleCastPlayback() {
+    const d = await ensureCastVideoTarget();
+    if (!d) return;
+    castLog(`TOGGLE -> ${d.name}`);
+    await cast.toggle();
+  }
+  async function seekCastBy(delta: number) {
+    const d = await ensureCastVideoTarget();
+    if (!d) return;
+    castLog(`SEEK ${delta > 0 ? "+" : ""}${delta}s -> ${d.name}`);
+    await cast.seekBy(delta);
+  }
+  function onLoupeTransport(st: { kind: "play" | "pause" | "seek"; paused: boolean; time: number }) {
+    // Local play/pause events are deliberately ignored during casting: the TV
+    // is the playback authority. A timeline/scrub seek remains useful and is
+    // sent as an absolute receiver position.
+    if (st.kind !== "seek") return;
     // Only mirror when the TV is actually showing the clip we're scrubbing —
     // during the 350 ms follow debounce it is still on the previous item, and
     // seeking that one would be visible nonsense.
@@ -275,11 +338,6 @@
     if (castWantedPath !== active.path) {
       castLog(`transport skipped: TV target has not followed ${active.name} yet`);
       return;
-    }
-    if (st.paused !== castPaused) {
-      castPaused = st.paused;
-      castLog(`${st.paused ? "PAUSE" : "PLAY"} -> ${castDevice.name} at ${st.time.toFixed(2)}s`);
-      void (st.paused ? cast.pause() : cast.play());
     }
     const now = performance.now();
     clearTimeout(castSeekTimer);
@@ -295,13 +353,6 @@
       }, CAST_SEEK_EVERY_MS - (now - castSeekAt));
     }
   }
-  // A new LOAD arrives autoplaying from 0 with a fresh media session, so the
-  // remembered pause state is meaningless the moment the item changes.
-  $effect(() => {
-    castStatus.playingPath;
-    castPaused = null;
-    clearTimeout(castSeekTimer);
-  });
 
   // ── notice when the session actually dies ─────────────────────────────────
   // Nothing polled the backend, so a connection that dropped (TV off, network
@@ -322,12 +373,19 @@
         castDevice = null;
         castWantedPath = null;
         castSeq++;
-        castStatus = { connected: false, deviceName: null, playingPath: null };
+        castStatus = {
+          connected: false,
+          deviceName: null,
+          playingPath: null,
+          playerState: null,
+          currentTime: null,
+          duration: null,
+        };
         activity.error("cast", "Cast session ended");
       } catch {
         // A failed status call is not evidence the session is dead — leave it.
       }
-    }, 2500);
+    }, 1000);
     return () => clearInterval(poll);
   });
   let libInfo = $state<LibraryInfo | null>(null);
@@ -2297,6 +2355,25 @@
       e.preventDefault();
       return;
     }
+    // While casting a video, these are TV controls in every library view.
+    // Handle them before Grid navigation or the local Focus player sees them.
+    if (castDevice && active?.kind === "video") {
+      if ((e.key === " " || e.code === "Space") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        void toggleCastPlayback();
+        e.preventDefault();
+        return;
+      }
+      if (e.shiftKey && e.key === "ArrowRight") {
+        void seekCastBy(5);
+        e.preventDefault();
+        return;
+      }
+      if (e.shiftKey && e.key === "ArrowLeft") {
+        void seekCastBy(-5);
+        e.preventDefault();
+        return;
+      }
+    }
     // Video playback keys (Focus mode, active clip): Space toggles play/pause,
     // , / . and Shift+←/→ step the clip ±5s. For a video, Shift+←/→ seeks rather
     // than extending the selection (that stays the default for photos/grid).
@@ -2372,7 +2449,8 @@
         break;
       }
       case "playPause":
-        if (viewMode === "loupe" && active?.kind === "video") loupeComp?.togglePlay();
+        if (castDevice && active?.kind === "video") void toggleCastPlayback();
+        else if (viewMode === "loupe" && active?.kind === "video") loupeComp?.togglePlay();
         break;
       // In/out marking is a Focus-on-a-video act. Say so rather than no-op:
       // from across the room a dead button is indistinguishable from a bug.
@@ -2390,7 +2468,9 @@
       case "seekBack":
       case "seekFwd": {
         const dir = a === "seekFwd" ? 1 : -1;
-        if (viewMode === "loupe" && active?.kind === "video") {
+        if (castDevice && active?.kind === "video") {
+          void seekCastBy(dir * 5);
+        } else if (viewMode === "loupe" && active?.kind === "video") {
           // Predictable skip: the old strength curve fired at the trigger's
           // first 35% threshold (~2.4s), then jumped to 5s while the trigger was
           // still travelling and repeated every 120ms. One pull is now always
@@ -2897,6 +2977,18 @@
         <!-- Cast to TV: discovery popover; the chip doubles as the connected
              indicator (name shown while casting). -->
         <div class="grp castWrap">
+          {#if castDevice}
+            <button
+              class="castBadge"
+              class:playing={castStatus.playerState === "PLAYING" || castStatus.playerState === "BUFFERING"}
+              onclick={toggleCastMenu}
+              title={`Casting to ${castDevice.name} — click to manage`}
+            >
+              <span class="castPulse" aria-hidden="true"></span>
+              <strong>CASTING</strong>
+              <span>{castStateLabel}</span>
+            </button>
+          {/if}
           <button
             class="ico castBtn"
             class:on={castOpen || !!castDevice}
@@ -3199,6 +3291,9 @@
             showInfo={showInfoOverlay}
             onchanged={refreshAfterMediaOutput}
             ontransport={onLoupeTransport}
+            casting={!!castDevice}
+            castPlayerState={castStatus.playerState}
+            oncasttoggle={() => void toggleCastPlayback()}
             bind:this={loupeComp}
           />
         {:else if viewMode === "details"}
@@ -3568,8 +3663,44 @@
   .btn-ico { vertical-align: -1px; margin-right: 4px; }
   .hold-lbl .btn-ico { margin-right: 3px; }
   /* Cast to TV */
-  .castWrap { position: relative; }
-  .castBtn.on { color: var(--accent); border-color: var(--accent); }
+  .castWrap { position: relative; display: flex; align-items: center; gap: 5px; }
+  .castBtn.on {
+    color: var(--accent);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  .castBadge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 25px;
+    padding: 0 8px;
+    border: 1px solid color-mix(in srgb, var(--accent) 70%, var(--border));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
+    color: var(--accent);
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+  .castBadge strong { font-size: 9.5px; }
+  .castBadge > span:last-child {
+    color: var(--text-dim);
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  .castPulse {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+  .castBadge.playing .castPulse { animation: castGlow 1.45s ease-in-out infinite; }
+  @keyframes castGlow {
+    0%, 100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent), 0 0 4px var(--accent); }
+    50% { box-shadow: 0 0 0 6px transparent, 0 0 11px var(--accent); }
+  }
   .castMenu { position: absolute; top: 32px; right: 0; z-index: 35; width: 230px; padding: 6px; display: grid; gap: 2px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-elev); box-shadow: var(--shadow); }
   .castRow { display: flex; flex-direction: column; gap: 1px; text-align: left; padding: 7px 9px; border-radius: 6px; color: var(--text); font-size: 12.5px; }
   .castRow span { font-size: 10.5px; color: var(--text-faint); }

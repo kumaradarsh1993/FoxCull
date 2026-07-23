@@ -4,11 +4,15 @@
      what happened on nightly.5 and .6, both of which announced themselves as
      "nightly.4". Write what changed; let the tag say which build it is. -->
 
-> **Chromecast test build.** The previous nightly could load the first video
-> but then ignored play, pause, seek, and item changes. This build fixes the
-> startup-state deadlock responsible for all four symptoms and adds a detailed
-> cast trace. It still needs confirmation on the Sony TV before the fix is
-> promoted to stable.
+> **Chromecast controls refined from the Sony TV test.** Casting now has one
+> clear playback authority: the TV. The laptop keeps its copy paused and muted,
+> so there is no doubled audio and Space works on the first press even when
+> local Video Autoplay is off. Space and Shift+Left/Right control the TV from
+> both Grid and Focus; the DualSense play/pause button and L2/R2 do the same.
+> A glowing CASTING badge reports Live, Loading, or Paused.
+
+> **Cleaner TV picture.** FoxCull no longer sends the filename as Cast media
+> metadata, removing the unnecessary title card shown at the start of a clip.
 
 > **Use the GitHub-built installer.** A local Windows-GNU test installer was
 > mistakenly handed off after compilation succeeded, but it could not start

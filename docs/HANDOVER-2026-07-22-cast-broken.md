@@ -11,6 +11,12 @@ the Chromecast work is **shipped, live, and does not function at all.**
 > removed. Local checks pass; hardware behavior remains unverified. See the top
 > section of `CLAUDE_CODE_HANDOVER.md` and
 > `docs/changes/2026-07-23-cast-controller-seek.md`.
+>
+> **2026-07-24 hardware closure:** the owner tested nightly.3 on the Sony TV and
+> confirmed follow, next/previous, Grid photos, Focus changes, and video
+> playback all work. The old “broken and unfixed” title is retained as history,
+> not current truth. The next refinement makes the TV the playback authority;
+> see `docs/changes/2026-07-24-cast-tv-authority-controls.md`.
 
 ---
 

@@ -310,3 +310,32 @@ publishing, requires FFmpeg, and verifies the portable ZIP contains it. This
 also exposed that earlier portable ZIPs had copied only FoxCull's small
 executable and omitted the 140 MB FFmpeg sidecar; that package path is corrected
 in the same nightly.
+
+---
+
+## 2026-07-24 — the TV became the player, not a mirror of the laptop
+
+The Sony-TV test of nightly.3 finally closed the original cast failure: moving
+through Grid or Focus changed the TV, photos followed, and videos played. The
+remaining flaw came from the control model. FoxCull still treated the laptop's
+`<video>` as the authority and mirrored its events to Chromecast. With local
+autoplay off, the first Space therefore started the laptop and only the second
+Space generated the pause the already-playing TV needed. With autoplay on, both
+screens played audio.
+
+Cast mode now has one authority: **the receiver**. The laptop stays paused and
+muted; Space asks the TV to toggle based on the TV's own reported player state.
+Relative seeking is calculated from receiver time, not a parked local playhead.
+Those controls are intercepted before Grid navigation, so Space and
+Shift+Left/Right work without entering Focus, and controller controls share the
+same path.
+
+There was one narrow race worth solving rather than documenting: immediately
+after navigating, the receiver has not yet minted the new clip's media-session
+id. Commands in that gap are queued and delivered in order once its first status
+arrives. The old session is invalidated as soon as LOAD is received, preventing
+a fast pause from accidentally controlling the previous clip.
+
+The TV's two-second filename card was self-inflicted optional metadata, so that
+metadata is no longer sent. A glowing CASTING pill now makes the session and its
+Live/Loading/Paused state unmistakable in the laptop UI.

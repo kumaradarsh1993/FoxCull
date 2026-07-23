@@ -16,17 +16,19 @@
     showInfo = false,
     onchanged = () => {},
     ontransport = () => {},
+    casting = false,
+    castPlayerState = null,
+    oncasttoggle = () => {},
   }: {
     item: MediaItem | null;
     showInfo?: boolean;
     onchanged?: (selectPath?: string | null) => void;
-    /** Fired whenever this clip's playback state settles — play, pause, or a
-     *  landed seek. The page forwards it to a live Chromecast session so the TV
-     *  follows what the laptop is doing. Deliberately hooked to the <video>
-     *  element's own events rather than to each call site: the transport bar,
-     *  the keyboard, the controller and a scrub drag all end up here, so one
-     *  hook covers every path instead of four. */
-    ontransport?: (state: { paused: boolean; time: number }) => void;
+    /** Reports local player events. Cast mode ignores local play/pause and only
+     *  forwards landed timeline seeks because the TV owns playback. */
+    ontransport?: (state: { kind: "play" | "pause" | "seek"; paused: boolean; time: number }) => void;
+    casting?: boolean;
+    castPlayerState?: string | null;
+    oncasttoggle?: () => void;
   } = $props();
 
   // Image transitions: the PREVIOUS photo stays painted until the next sharp
@@ -78,6 +80,9 @@
   // ── video trim state ──
   let vid = $state<HTMLVideoElement | null>(null);
   let paused = $state(true); // mirrors the element; default video behavior is paused
+  let displayPaused = $derived(
+    casting ? castPlayerState !== "PLAYING" && castPlayerState !== "BUFFERING" : paused,
+  );
   let dur = $state(0);
   let cur = $state(0);
   let inS = $state(0);
@@ -225,7 +230,7 @@
     releaseHold();
     // A landed seek — the page throttles these before they reach the TV, so a
     // held shuttle trigger doesn't become a SEEK storm on the Chromecast.
-    if (vid) ontransport({ paused: vid.paused, time: vid.currentTime || 0 });
+    if (vid) ontransport({ kind: "seek", paused: vid.paused, time: vid.currentTime || 0 });
   }
   /** Paint the frame at `t` into the small hover thumbnail above the timeline. */
   function paintPreview(t: number) {
@@ -555,6 +560,10 @@
 
   // ── playback (exposed to the page's global key handler) ──
   export function togglePlay() {
+    if (casting) {
+      oncasttoggle();
+      return;
+    }
     if (!vid) return;
     // Play/pause always wins over a sweep in progress — pressing Space to stop
     // a Glimpse and start watching is the obvious expectation.
@@ -565,6 +574,13 @@
     if (vid.paused) vid.play().catch(() => {});
     else vid.pause();
   }
+  // Cast mode is intentionally single-output: the TV owns playback and audio.
+  // Muting in markup closes the autoplay race; this effect then keeps the local
+  // decoder parked on its current/first frame.
+  $effect(() => {
+    const video = vid;
+    if (casting && video && !video.paused) video.pause();
+  });
   export function seekBy(d: number) {
     if (!vid) return;
     ensureFilmstrip(); // key/controller seeking is scrub intent too
@@ -914,7 +930,8 @@
           bind:this={vid}
           src={vsrc}
           poster={posterSrc ?? undefined}
-          autoplay={settings.s.videoAutoplay}
+          autoplay={settings.s.videoAutoplay && !casting}
+          muted={casting}
           preload="auto"
           playsinline
           onclick={togglePlay}
@@ -923,11 +940,11 @@
           onseeked={onSeeked}
           onplay={() => {
             paused = false;
-            ontransport({ paused: false, time: vid?.currentTime ?? cur });
+            ontransport({ kind: "play", paused: false, time: vid?.currentTime ?? cur });
           }}
           onpause={() => {
             paused = true;
-            ontransport({ paused: true, time: vid?.currentTime ?? cur });
+            ontransport({ kind: "pause", paused: true, time: vid?.currentTime ?? cur });
           }}
           onerror={() => {
             // Only a REAL decode/format failure shows the fallback card. An
@@ -1001,8 +1018,8 @@
                below when Clip tools is open. Overlays the bottom of the stage;
                reveals on hover in minimal mode (default), pinned otherwise. -->
           <div class="playrow">
-            <button class="pp" onclick={togglePlay} title={paused ? "Play (Space)" : "Pause (Space)"}>
-              {paused ? "▶" : "⏸"}
+            <button class="pp" onclick={togglePlay} title={displayPaused ? "Play (Space)" : "Pause (Space)"}>
+              {displayPaused ? "▶" : "⏸"}
             </button>
             <button
               class="pp glimpse"
