@@ -12,6 +12,36 @@ Claude-built `fox-cull` project.
 > **historical record** of names in effect at the time — left as-is for
 > accuracy; don't "fix" them.
 
+## 2026-07-28: Windows Cast discovery fallback ready for XPS QA
+
+The owner reported a deterministic split: the Alienware always listed the Sony
+TV and soundbar in FoxCull, while the XPS listed neither. Both sat on the same
+Wi-Fi, and Chrome/YouTube on the XPS listed both devices immediately. That
+rules out receiver power, SSID/band steering, and basic XPS LAN visibility.
+
+The app-specific fault line was FoxCull's single discovery route. `mdns-sd`
+listened for multicast replies on UDP/5353. Windows Firewall can already allow
+Chrome's signed executable while dropping the same inbound multicast for an
+unsigned FoxCull executable, and the old code surfaced that only as a
+misleading successful result containing zero devices.
+
+- Discovery now runs the original UDP/5353 browser and a second RFC 6762
+  legacy-unicast query in parallel.
+- The fallback binds a temporary outbound UDP port on every active IPv4
+  adapter, asks `224.0.0.251:5353` for `_googlecast._tcp.local.`, and accepts
+  replies sent directly back to that temporary port. It needs no admin rights,
+  installer firewall rule, or inbound exception.
+- A live LAN probe against the owner's Sony receiver confirmed that it answers
+  this exact query immediately from an ephemeral source port.
+- The fallback safely parses compressed DNS PTR/SRV/TXT/A records and merges
+  its results with the standard browser by Cast device id.
+- `foxcull.log` now records both route counts, active interface addresses,
+  socket failures, mDNS daemon errors, and mDNS packet metrics.
+
+Local verification on 2026-07-28: `cargo check`, `npm run check` (0 errors,
+0 warnings), and `npm run build` passed. Parser/query unit tests are included
+for CI; the XPS behavior remains hardware QA for the next nightly.
+
 ## 2026-07-24: Sony TV QA passed · TV-authority controls queued for nightly.4
 
 The owner tested `v1.2.1-nightly.3` on the actual Chromecast/Sony TV and

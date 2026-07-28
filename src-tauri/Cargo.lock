@@ -1302,6 +1302,7 @@ name = "foxcull"
 version = "1.0.1"
 dependencies = [
  "filetime",
+ "if-addrs",
  "image",
  "jpeg-decoder",
  "kamadak-exif",

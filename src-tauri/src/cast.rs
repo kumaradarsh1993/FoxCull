@@ -42,10 +42,10 @@
 //! 720p–1080p (it downscales); serving a custom receiver app for true full-res
 //! stills is a later work item.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::net::{SocketAddr, TcpStream, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -134,19 +134,87 @@ pub struct CastState {
 // 1. Discovery
 // ===========================================================================
 
+const CAST_SERVICE: &str = "_googlecast._tcp.local.";
+const MDNS_MULTICAST_V4: &str = "224.0.0.251:5353";
+
 /// Browse mDNS for Cast devices for up to `timeout_ms` and return what
-/// resolved. Deduplicated by fullname so a device advertising over several
-/// interfaces appears once.
+/// resolved. Two queries run in parallel:
+///
+/// * the normal long-lived mDNS listener on UDP/5353;
+/// * a one-shot RFC 6762 "legacy" query from an ephemeral port on every active
+///   IPv4 interface.
+///
+/// The second route matters on Windows. Windows Firewall can allow Chrome's
+/// signed executable to receive multicast while silently dropping the same
+/// inbound packets for FoxCull. Replies to FoxCull's outbound ephemeral socket
+/// are admitted as return traffic, so discovery works without an installer
+/// firewall rule or admin prompt.
 #[tauri::command]
 pub fn cast_discover(timeout_ms: u64) -> Result<Vec<CastDevice>, String> {
+    let timeout_ms = timeout_ms.clamp(200, 15_000);
+    let (standard, legacy) = thread::scope(|scope| {
+        let legacy = scope.spawn(|| discover_cast_legacy(timeout_ms));
+        let standard = discover_cast_standard(timeout_ms);
+        let legacy = legacy
+            .join()
+            .unwrap_or_else(|_| Err("legacy mDNS worker panicked".to_string()));
+        (standard, legacy)
+    });
+
+    let mut found: HashMap<String, CastDevice> = HashMap::new();
+    let mut failures = Vec::new();
+    for (method, result) in [("standard", standard), ("ephemeral", legacy)] {
+        match result {
+            Ok(devices) => {
+                crate::log::line(&format!(
+                    "cast: {method} discovery found {} device(s)",
+                    devices.len()
+                ));
+                for device in devices {
+                    let key = if device.id.is_empty() {
+                        format!("{}@{}", device.name.to_lowercase(), device.addr)
+                    } else {
+                        device.id.to_lowercase()
+                    };
+                    found.entry(key).or_insert(device);
+                }
+            }
+            Err(error) => {
+                crate::log::line(&format!("cast: {method} discovery failed — {error}"));
+                failures.push(format!("{method}: {error}"));
+            }
+        }
+    }
+
+    if found.is_empty() && failures.len() == 2 {
+        return Err(failures.join("; "));
+    }
+
+    let mut list: Vec<CastDevice> = found.into_values().collect();
+    list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    crate::log::line(&format!(
+        "cast: discovery merged {} device(s): {}",
+        list.len(),
+        list.iter()
+            .map(|d| format!("{} @{}", d.name, d.addr))
+            .collect::<Vec<_>>()
+            .join(", "),
+    ));
+    Ok(list)
+}
+
+/// The original multicast-listener discovery path. Deduplicated by fullname
+/// so a device advertising over several interfaces appears once.
+fn discover_cast_standard(timeout_ms: u64) -> Result<Vec<CastDevice>, String> {
     use mdns_sd::{ServiceDaemon, ServiceEvent};
 
     let mdns = ServiceDaemon::new().map_err(|e| format!("mdns init failed: {e}"))?;
+    let monitor = mdns.monitor().ok();
     let rx = mdns
-        .browse("_googlecast._tcp.local.")
+        .browse(CAST_SERVICE)
         .map_err(|e| format!("mdns browse failed: {e}"))?;
 
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms.clamp(200, 15_000));
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut found: HashMap<String, CastDevice> = HashMap::new();
 
     // Drain resolve events until the deadline. `recv_timeout` lets us keep the
@@ -169,23 +237,341 @@ pub fn cast_discover(timeout_ms: u64) -> Result<Vec<CastDevice>, String> {
                     .unwrap_or_else(|| info.get_fullname().to_string());
                 found.insert(
                     info.get_fullname().to_string(),
-                    CastDevice { id, name, addr, port: info.get_port() },
+                    CastDevice {
+                        id,
+                        name,
+                        addr,
+                        port: info.get_port(),
+                    },
                 );
             }
-            Ok(_) => {} // SearchStarted / ServiceFound / etc. — nothing to collect
+            Ok(_) => {}      // SearchStarted / ServiceFound / etc. — nothing to collect
             Err(_) => break, // timed out (deadline reached) or channel closed
         }
     }
 
+    if let Some(monitor) = monitor {
+        for event in monitor.try_iter() {
+            if let mdns_sd::DaemonEvent::Error(error) = event {
+                crate::log::line(&format!("cast: mDNS daemon error — {error}"));
+            }
+        }
+    }
+    if let Ok(metrics_rx) = mdns.get_metrics() {
+        if let Ok(metrics) = metrics_rx.recv_timeout(Duration::from_millis(100)) {
+            crate::log::line(&format!("cast: mDNS metrics {metrics:?}"));
+        }
+    }
     let _ = mdns.shutdown();
     let mut list: Vec<CastDevice> = found.into_values().collect();
     list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    crate::log::line(&format!(
-        "cast: discovery found {} device(s): {}",
-        list.len(),
-        list.iter().map(|d| format!("{} @{}", d.name, d.addr)).collect::<Vec<_>>().join(", "),
-    ));
     Ok(list)
+}
+
+/// Accumulated DNS-SD records from one or more response datagrams.
+#[derive(Default)]
+struct LegacyDnsRecords {
+    instances: HashSet<String>,
+    srv: HashMap<String, (u16, String)>,
+    txt: HashMap<String, HashMap<String, String>>,
+    ipv4: HashMap<String, Vec<Ipv4Addr>>,
+}
+
+impl LegacyDnsRecords {
+    fn devices(self) -> Vec<CastDevice> {
+        let mut devices = Vec::new();
+        let mut instance_names = self.instances.clone();
+        instance_names.extend(self.srv.keys().cloned());
+        for instance in &instance_names {
+            let Some((port, hostname)) = self.srv.get(instance) else {
+                continue;
+            };
+            let Some(addresses) = self.ipv4.get(hostname) else {
+                continue;
+            };
+            let properties = self.txt.get(instance);
+            let name = properties
+                .and_then(|p| p.get("fn"))
+                .cloned()
+                .unwrap_or_else(|| friendly_from_fullname(instance));
+            let id = properties
+                .and_then(|p| p.get("id"))
+                .cloned()
+                .unwrap_or_else(|| instance.clone());
+            for addr in addresses {
+                devices.push(CastDevice {
+                    id: id.clone(),
+                    name: name.clone(),
+                    addr: addr.to_string(),
+                    port: *port,
+                });
+            }
+        }
+        devices
+    }
+}
+
+/// Send a DNS-SD PTR query from an ephemeral port on every usable IPv4
+/// interface. RFC 6762 section 6.7 requires responders to return these queries
+/// via unicast to that source port. That makes the reply normal outbound return
+/// traffic from Windows Firewall's point of view.
+fn discover_cast_legacy(timeout_ms: u64) -> Result<Vec<CastDevice>, String> {
+    let mut interface_ips = if_addrs::get_if_addrs()
+        .map_err(|e| format!("interface enumeration failed: {e}"))?
+        .into_iter()
+        .filter(|interface| interface.is_oper_up() && !interface.is_loopback())
+        .filter_map(|interface| match interface.ip() {
+            std::net::IpAddr::V4(ip) => Some(ip),
+            std::net::IpAddr::V6(_) => None,
+        })
+        .collect::<Vec<_>>();
+    interface_ips.sort_unstable();
+    interface_ips.dedup();
+
+    if interface_ips.is_empty() {
+        return Err("no active IPv4 network interface".to_string());
+    }
+
+    let query = legacy_mdns_query();
+    let mut sockets = Vec::new();
+    let mut bind_errors = Vec::new();
+    for ip in &interface_ips {
+        match UdpSocket::bind((*ip, 0)) {
+            Ok(socket) => {
+                if let Err(error) = socket.set_nonblocking(true) {
+                    bind_errors.push(format!("{ip}: nonblocking failed ({error})"));
+                    continue;
+                }
+                if let Err(error) = socket.send_to(&query, MDNS_MULTICAST_V4) {
+                    bind_errors.push(format!("{ip}: initial query failed ({error})"));
+                    continue;
+                }
+                sockets.push((*ip, socket));
+            }
+            Err(error) => bind_errors.push(format!("{ip}: bind failed ({error})")),
+        }
+    }
+    crate::log::line(&format!(
+        "cast: ephemeral mDNS interfaces [{}]{}",
+        interface_ips
+            .iter()
+            .map(Ipv4Addr::to_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+        if bind_errors.is_empty() {
+            String::new()
+        } else {
+            format!("; errors: {}", bind_errors.join(", "))
+        }
+    ));
+    if sockets.is_empty() {
+        return Err(format!(
+            "could not open an ephemeral mDNS socket ({})",
+            bind_errors.join(", ")
+        ));
+    }
+
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut next_query = Instant::now() + Duration::from_secs(1);
+    let mut records = LegacyDnsRecords::default();
+    let mut buffer = [0u8; 9000];
+    while Instant::now() < deadline {
+        let mut received_any = false;
+        for (_, socket) in &sockets {
+            loop {
+                match socket.recv_from(&mut buffer) {
+                    Ok((length, _)) => {
+                        received_any = true;
+                        if let Err(error) = parse_legacy_dns_packet(&buffer[..length], &mut records)
+                        {
+                            crate::log::line(&format!(
+                                "cast: ignored malformed ephemeral mDNS reply — {error}"
+                            ));
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => {
+                        crate::log::line(&format!("cast: ephemeral mDNS receive failed — {error}"));
+                        break;
+                    }
+                }
+            }
+        }
+
+        if Instant::now() >= next_query {
+            for (_, socket) in &sockets {
+                let _ = socket.send_to(&query, MDNS_MULTICAST_V4);
+            }
+            next_query += Duration::from_secs(1);
+        }
+        if !received_any {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    let mut devices = records.devices();
+    devices.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(devices)
+}
+
+fn legacy_mdns_query() -> Vec<u8> {
+    // A non-zero transaction id is echoed by legacy-unicast responders. The
+    // rest is a regular DNS PTR question for `_googlecast._tcp.local.`.
+    let mut query = vec![
+        0x46, 0x43, // transaction id ("FC")
+        0, 0, // flags
+        0, 1, // one question
+        0, 0, 0, 0, 0, 0, // no answer/authority/additional records
+    ];
+    encode_dns_name(CAST_SERVICE, &mut query);
+    query.extend_from_slice(&[0, 12, 0, 1]); // PTR, class IN
+    query
+}
+
+fn encode_dns_name(name: &str, output: &mut Vec<u8>) {
+    for label in name.trim_end_matches('.').split('.') {
+        output.push(label.len() as u8);
+        output.extend_from_slice(label.as_bytes());
+    }
+    output.push(0);
+}
+
+fn parse_legacy_dns_packet(packet: &[u8], records: &mut LegacyDnsRecords) -> Result<(), String> {
+    if packet.len() < 12 {
+        return Err("DNS packet shorter than header".to_string());
+    }
+    let question_count = dns_u16(packet, 4)? as usize;
+    let record_count =
+        dns_u16(packet, 6)? as usize + dns_u16(packet, 8)? as usize + dns_u16(packet, 10)? as usize;
+    if question_count > 32 || record_count > 512 {
+        return Err("DNS packet contains unreasonable record counts".to_string());
+    }
+
+    let mut cursor = 12;
+    for _ in 0..question_count {
+        read_dns_name(packet, &mut cursor)?;
+        cursor = cursor
+            .checked_add(4)
+            .filter(|end| *end <= packet.len())
+            .ok_or_else(|| "truncated DNS question".to_string())?;
+    }
+
+    for _ in 0..record_count {
+        let owner = canonical_dns_name(&read_dns_name(packet, &mut cursor)?);
+        let rr_type = dns_u16(packet, cursor)?;
+        let rd_length = dns_u16(packet, cursor + 8)? as usize;
+        cursor += 10;
+        let data_start = cursor;
+        let data_end = data_start
+            .checked_add(rd_length)
+            .filter(|end| *end <= packet.len())
+            .ok_or_else(|| "truncated DNS record".to_string())?;
+
+        match rr_type {
+            1 if rd_length == 4 => {
+                records.ipv4.entry(owner).or_default().push(Ipv4Addr::new(
+                    packet[data_start],
+                    packet[data_start + 1],
+                    packet[data_start + 2],
+                    packet[data_start + 3],
+                ));
+            }
+            12 => {
+                let mut name_cursor = data_start;
+                let instance = canonical_dns_name(&read_dns_name(packet, &mut name_cursor)?);
+                if instance.ends_with(CAST_SERVICE) {
+                    records.instances.insert(instance);
+                }
+            }
+            16 => {
+                let mut properties = HashMap::new();
+                let mut text_cursor = data_start;
+                while text_cursor < data_end {
+                    let length = packet[text_cursor] as usize;
+                    text_cursor += 1;
+                    let end = text_cursor
+                        .checked_add(length)
+                        .filter(|end| *end <= data_end)
+                        .ok_or_else(|| "truncated DNS TXT value".to_string())?;
+                    if let Ok(value) = std::str::from_utf8(&packet[text_cursor..end]) {
+                        if let Some((key, value)) = value.split_once('=') {
+                            properties.insert(key.to_lowercase(), value.to_string());
+                        }
+                    }
+                    text_cursor = end;
+                }
+                records.txt.insert(owner, properties);
+            }
+            33 if rd_length >= 7 => {
+                let port = dns_u16(packet, data_start + 4)?;
+                let mut name_cursor = data_start + 6;
+                let hostname = canonical_dns_name(&read_dns_name(packet, &mut name_cursor)?);
+                records.srv.insert(owner, (port, hostname));
+            }
+            _ => {}
+        }
+        cursor = data_end;
+    }
+    Ok(())
+}
+
+fn dns_u16(packet: &[u8], offset: usize) -> Result<u16, String> {
+    let bytes = packet
+        .get(offset..offset + 2)
+        .ok_or_else(|| "truncated DNS integer".to_string())?;
+    Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
+}
+
+/// Decode a possibly-compressed DNS name and advance only across bytes present
+/// at the original cursor (compression pointers jump elsewhere in the packet).
+fn read_dns_name(packet: &[u8], cursor: &mut usize) -> Result<String, String> {
+    let mut labels = Vec::new();
+    let mut read_at = *cursor;
+    let mut resume_at = None;
+    for _ in 0..128 {
+        let length = *packet
+            .get(read_at)
+            .ok_or_else(|| "truncated DNS name".to_string())?;
+        if length & 0xc0 == 0xc0 {
+            let second = *packet
+                .get(read_at + 1)
+                .ok_or_else(|| "truncated DNS compression pointer".to_string())?;
+            let pointer = (((length & 0x3f) as usize) << 8) | second as usize;
+            if pointer >= packet.len() {
+                return Err("DNS compression pointer is out of bounds".to_string());
+            }
+            resume_at.get_or_insert(read_at + 2);
+            read_at = pointer;
+            continue;
+        }
+        if length & 0xc0 != 0 {
+            return Err("unsupported DNS label encoding".to_string());
+        }
+        read_at += 1;
+        if length == 0 {
+            *cursor = resume_at.unwrap_or(read_at);
+            return Ok(if labels.is_empty() {
+                ".".to_string()
+            } else {
+                format!("{}.", labels.join("."))
+            });
+        }
+        let end = read_at
+            .checked_add(length as usize)
+            .filter(|end| *end <= packet.len())
+            .ok_or_else(|| "truncated DNS label".to_string())?;
+        labels.push(String::from_utf8_lossy(&packet[read_at..end]).into_owned());
+        read_at = end;
+    }
+    Err("DNS compression pointer loop".to_string())
+}
+
+fn canonical_dns_name(name: &str) -> String {
+    let mut canonical = name.to_lowercase();
+    if !canonical.ends_with('.') {
+        canonical.push('.');
+    }
+    canonical
 }
 
 /// Turn `My-TV-abcdef._googlecast._tcp.local.` into a rough display name when
@@ -1439,5 +1825,73 @@ mod tests {
             duration: Some(10.0),
         };
         assert_eq!(projected_time(&status, Duration::from_secs(8)), 8.0);
+    }
+
+    fn append_dns_record(packet: &mut Vec<u8>, owner: &str, rr_type: u16, data: &[u8]) {
+        encode_dns_name(owner, packet);
+        packet.extend_from_slice(&rr_type.to_be_bytes());
+        packet.extend_from_slice(&0x8001u16.to_be_bytes()); // class IN + cache flush
+        packet.extend_from_slice(&120u32.to_be_bytes());
+        packet.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        packet.extend_from_slice(data);
+    }
+
+    #[test]
+    fn legacy_query_parser_builds_a_cast_device() {
+        let service = "_googlecast._tcp.local.";
+        let instance = "Living Room._googlecast._tcp.local.";
+        let hostname = "living-room.local.";
+        let mut packet = vec![
+            0x46, 0x43, 0x84, 0x00, // id + response flags
+            0, 0, // questions
+            0, 1, // answers
+            0, 0, // authority
+            0, 3, // additional
+        ];
+
+        let mut ptr = Vec::new();
+        encode_dns_name(instance, &mut ptr);
+        append_dns_record(&mut packet, service, 12, &ptr);
+
+        let mut srv = vec![0, 0, 0, 0];
+        srv.extend_from_slice(&8009u16.to_be_bytes());
+        encode_dns_name(hostname, &mut srv);
+        append_dns_record(&mut packet, instance, 33, &srv);
+
+        let mut txt = Vec::new();
+        for value in ["fn=Living Room", "id=receiver-123"] {
+            txt.push(value.len() as u8);
+            txt.extend_from_slice(value.as_bytes());
+        }
+        append_dns_record(&mut packet, instance, 16, &txt);
+        append_dns_record(&mut packet, hostname, 1, &[192, 168, 0, 190]);
+
+        let mut records = LegacyDnsRecords::default();
+        parse_legacy_dns_packet(&packet, &mut records).unwrap();
+        let devices = records.devices();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id, "receiver-123");
+        assert_eq!(devices[0].name, "Living Room");
+        assert_eq!(devices[0].addr, "192.168.0.190");
+        assert_eq!(devices[0].port, 8009);
+    }
+
+    #[test]
+    fn dns_name_decoder_handles_compression_and_rejects_loops() {
+        let mut packet = vec![0; 12];
+        encode_dns_name("receiver.local.", &mut packet);
+        let pointer_offset = packet.len();
+        packet.extend_from_slice(&[0xc0, 0x0c]);
+
+        let mut cursor = pointer_offset;
+        assert_eq!(
+            read_dns_name(&packet, &mut cursor).unwrap(),
+            "receiver.local."
+        );
+        assert_eq!(cursor, pointer_offset + 2);
+
+        let looping = [0xc0, 0x00];
+        let mut cursor = 0;
+        assert!(read_dns_name(&looping, &mut cursor).is_err());
     }
 }

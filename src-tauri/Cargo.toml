@@ -51,6 +51,9 @@ parking_lot = "0.12"
 # ── Cast to TV (src/cast.rs) — all three deliberately C-toolchain-free ──────
 # mDNS discovery of Google Cast devices (pure Rust).
 mdns-sd = "0.20"
+# Enumerate each active IPv4 interface for the ephemeral-port mDNS fallback.
+# On Windows this avoids relying on an inbound UDP/5353 firewall exception.
+if-addrs = { version = "0.15", features = ["link-local"] }
 # Local Range-enabled media server the TV fetches originals from (pure Rust;
 # no TLS feature — the receiver talks plain HTTP to us on the LAN).
 tiny_http = "0.12"

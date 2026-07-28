@@ -4,6 +4,14 @@
      what happened on nightly.5 and .6, both of which announced themselves as
      "nightly.4". Write what changed; let the tag say which build it is. -->
 
+> **Chromecast discovery fixed for Windows machines where Chrome could see the
+> TV but FoxCull could not.** FoxCull now searches through two independent
+> routes at the same time. The new route asks from a temporary outbound port on
+> every active network adapter, so it does not depend on Windows granting the
+> app an inbound UDP/5353 firewall exception. It also records the adapters,
+> discovery route, packet counts, and socket errors in `foxcull.log`, replacing
+> the old unhelpful “0 devices” result.
+
 > **Chromecast controls refined from the Sony TV test.** Casting now has one
 > clear playback authority: the TV. The laptop keeps its copy paused and muted,
 > so there is no doubled audio and Space works on the first press even when

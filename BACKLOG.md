@@ -66,6 +66,8 @@ Priorities: **P0** do next · **P1** high value soon · **P2** scheduled ·
 - [ ] **Cast server hardening** (SEC-2): clear the media-server allowlist on
       stop and expire tokens. Status polling/stale-session UI is complete
       (nightly.3 hardware verified; state polling refined for nightly.4).
+      Windows discovery now has a firewall-independent ephemeral-port fallback
+      (2026-07-28); token/allowlist expiry remains the unfinished part.
 - [ ] **Pin ffmpeg sidecar downloads** in release.yml to exact release tags +
       checksums (SEC-3); document the bundled build's GPL license in the
       release notes/about.

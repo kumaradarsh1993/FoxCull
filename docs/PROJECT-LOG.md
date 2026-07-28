@@ -339,3 +339,28 @@ a fast pause from accidentally controlling the previous clip.
 The TV's two-second filename card was self-inflicted optional metadata, so that
 metadata is no longer sent. A glowing CASTING pill now makes the session and its
 Live/Loading/Paused state unmistakable in the laptop UI.
+
+---
+
+## 2026-07-28 — when Chrome found the TV but FoxCull did not
+
+The owner's two Windows laptops made the problem unusually clean. FoxCull
+always found both Cast receivers on the Alienware and found neither on the XPS,
+even with the laptops side by side. YouTube in Chrome on the XPS immediately
+found both. The Wi-Fi, dual-band SSID, TV, and soundbar were therefore not the
+missing piece; FoxCull's own discovery route was.
+
+FoxCull had exactly one route: open the standard mDNS listener on UDP/5353 and
+wait for multicast replies. Windows can permit that inbound traffic for Chrome
+while dropping it for a different unsigned executable. Because the discovery
+library initializes its network sockets on a background thread, FoxCull also
+could not distinguish a blocked listener from a real empty network and simply
+said no devices were found.
+
+The app now asks twice in parallel. It keeps the standard listener, and also
+sends the same Cast DNS question from a temporary outbound port on every active
+IPv4 adapter. Cast receivers return that form of question directly to the
+temporary port, which Windows treats as a reply to outbound traffic instead of
+unsolicited inbound multicast. A real probe to the Sony receiver confirmed
+that it supports this route. Results from both searches are merged, and the log
+now says which route worked and which adapters or sockets failed.
