@@ -1,5 +1,27 @@
 # Agent Handover: FoxCull
 
+## 2026-08-02: nightly.7 removes fast-scroll GPU layer churn
+
+The owner confirmed that installed nightly.6 worked under slow scrolling but
+still visually froze as soon as the Grid was scrolled quickly. Nightly.6's new
+settled-range telemetry disproved its own prior root-cause theory: after a fast
+jump to `scrollTop=52900`, VirtualGrid reported the correct rows 286-298 with
+117 mounted cells. Twenty-second JS heartbeats continued, heap stayed at 18-19
+MB, all thumbnail counters were zero, and the FoxCull/WebView processes remained
+responsive. There was no Crashpad report or Windows application error.
+
+The presentation path was the remaining failure domain. VirtualGrid and
+SectionedGrid positioned every mounted cell with a CSS transform and explicitly
+set `will-change: transform`, forcing roughly 108-117 media tiles through
+individual compositor layers that were replaced rapidly during fast scrolling.
+The WebView2 GPU subprocess retained roughly 227 MB privately after the visual
+freeze while the DOM continued updating correctly.
+
+All virtual media surfaces now use ordinary absolute `left`/`top` coordinates:
+VirtualGrid, SectionedGrid headers/cells, and both VirtualStrip orientations.
+The per-cell `will-change` promotion is gone. Range calculation, keyed cell
+identity, async thumbnail loading, native scrolling and overscan are unchanged.
+
 ## 2026-08-02: nightly.6 removes the remaining scroll freeze
 
 The owner immediately reproduced the permanent Grid freeze in installed

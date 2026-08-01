@@ -123,7 +123,9 @@
     {#each visibleIndices as i (i)}
       <div
         class="cellpos"
-        style="transform:{orientation === 'h' ? `translateX(${i * step}px)` : `translateY(${i * step}px)`}; width:var(--cell); height:var(--cell)"
+        style={orientation === "h"
+          ? `left:${i * step}px; width:var(--cell); height:var(--cell)`
+          : `top:${i * step}px; width:var(--cell); height:var(--cell)`}
       >
         {@render cell(items[i], i)}
       </div>
@@ -157,13 +159,13 @@
   }
   .cellpos {
     position: absolute;
+    /* Avoid transform-positioned image layers for the same fast-scroll safety
+       contract as VirtualGrid. */
   }
   .strip.h .cellpos {
     top: calc((100% - var(--cell)) / 2);
-    left: 0;
   }
   .strip.v .cellpos {
     left: calc((100% - var(--cell)) / 2);
-    top: 0;
   }
 </style>

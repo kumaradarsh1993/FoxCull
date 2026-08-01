@@ -115,7 +115,7 @@
       <div
         class="cellpos"
         class:active={i === activeIndex}
-        style="transform:translate({col * (cellW + gap)}px,{row * rowH}px); width:{cellW}px; height:{cellW}px"
+        style="left:{col * (cellW + gap)}px; top:{row * rowH}px; width:{cellW}px; height:{cellW}px"
       >
         {@render cell(items[i], i)}
       </div>
@@ -136,8 +136,7 @@
   }
   .cellpos {
     position: absolute;
-    top: 0;
-    left: 0;
-    will-change: transform;
+    /* Keep media tiles out of individual GPU layers. Transform positioning plus
+       will-change can black out WebView2's surface during rapid scroll churn. */
   }
 </style>

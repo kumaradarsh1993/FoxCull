@@ -494,3 +494,21 @@ A 6,825-cell stress harness exercised the shipped virtual components through a
 full 120-step descent and twelve alternating end-to-end traversals. It retained
 the correct populated range at both extremes every time, then was removed from
 the product tree.
+
+---
+
+## 2026-08-02 - the range was correct but the GPU surface was not
+
+Nightly.6 proved that fast scrolling could still make the installed application
+look crashed even when the virtual Grid had moved to exactly the right rows.
+The new range log reported the correct cells after a large jump; the JavaScript
+heartbeat, thumbnail queues and processes all stayed alive. This corrected the
+previous diagnosis: a stale range was no longer the active failure.
+
+The remaining pressure was in presentation. Each mounted virtual tile was
+positioned with a transform and explicitly marked `will-change: transform`, so
+rapid scrolling continuously created and discarded more than a hundred image
+compositor layers. Those transforms never animated and did not need promotion.
+Grid, grouped Grid and filmstrip tiles now use normal absolute coordinates.
+Virtualization still limits DOM work and thumbnail loading remains asynchronous,
+but WebView2 no longer has to churn a GPU layer per visible media item.

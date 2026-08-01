@@ -141,7 +141,7 @@
   <div class="canvas" style="height:{totalH}px">
     {#each visible as r (r.key)}
       {#if r.type === "header"}
-        <div class="hdr level-{r.level}" style="transform:translateY({r.y}px); height:{r.h}px">
+        <div class="hdr level-{r.level}" style="top:{r.y}px; height:{r.h}px">
           <strong>{r.label}</strong>
           <span>{r.count}</span>
         </div>
@@ -150,7 +150,7 @@
           <div
             class="cellpos"
             class:active={gi === activeIndex}
-            style="transform:translate({c * (cellW + gap)}px, {r.y}px); width:{cellW}px; height:{cellW}px"
+            style="left:{c * (cellW + gap)}px; top:{r.y}px; width:{cellW}px; height:{cellW}px"
           >
             {@render cell(items[gi], gi)}
           </div>
@@ -173,7 +173,6 @@
   }
   .hdr {
     position: absolute;
-    top: 0;
     left: 0;
     right: 0;
     display: flex;
@@ -211,8 +210,7 @@
   }
   .cellpos {
     position: absolute;
-    top: 0;
-    left: 0;
-    will-change: transform;
+    /* Coordinates are deliberate: per-tile transform promotion overwhelmed
+       WebView2's compositor during fast Grid traversal. */
   }
 </style>
