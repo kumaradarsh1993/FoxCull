@@ -33,14 +33,18 @@
     Math.min(rowCount - 1, Math.ceil((scrollTop + vpHeight) / rowH) + overscanRows),
   );
 
-  let visible = $derived.by(() => {
-    const out: { item: T; index: number; x: number; y: number }[] = [];
+  // Keep each-block context primitive and stable. Rebuilding wrapper objects on
+  // every scroll frame made Svelte re-send every visible `item` prop even when
+  // the item had not changed, restarting Thumb's image state and causing the
+  // entire loaded viewport to blink.
+  let visibleIndices = $derived.by(() => {
+    const out: number[] = [];
     if (!items.length) return out;
     for (let r = firstRow; r <= lastRow; r++) {
       for (let c = 0; c < cols; c++) {
         const i = r * cols + c;
         if (i >= items.length) break;
-        out.push({ item: items[i], index: i, x: c * (cellW + gap), y: r * rowH });
+        out.push(i);
       }
     }
     return out;
@@ -96,13 +100,15 @@
 
 <div class="vp" bind:this={viewport} onscroll={onScroll}>
   <div class="canvas" style="height:{totalH}px">
-    {#each visible as v (v.index)}
+    {#each visibleIndices as i (i)}
+      {@const row = Math.floor(i / cols)}
+      {@const col = i % cols}
       <div
         class="cellpos"
-        class:active={v.index === activeIndex}
-        style="transform:translate({v.x}px,{v.y}px); width:{cellW}px; height:{cellW}px"
+        class:active={i === activeIndex}
+        style="transform:translate({col * (cellW + gap)}px,{row * rowH}px); width:{cellW}px; height:{cellW}px"
       >
-        {@render cell(v.item, v.index)}
+        {@render cell(items[i], i)}
       </div>
     {/each}
   </div>
@@ -114,7 +120,6 @@
     height: 100%;
     overflow-y: auto;
     overflow-x: hidden;
-    overflow-anchor: none;
   }
   .canvas {
     position: relative;
@@ -125,6 +130,5 @@
     top: 0;
     left: 0;
     will-change: transform;
-    contain: layout paint style;
   }
 </style>

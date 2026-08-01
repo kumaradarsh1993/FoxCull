@@ -3,6 +3,10 @@
 
 ## Interface recovery and smoother browsing
 
+- Grid and filmstrip rendering no longer pass through nested whole-app
+  compositor transforms or per-cell paint containment. Loaded images remain
+  stable during smooth scrolling, and virtualized cells load directly instead
+  of depending on a second visibility observer that could leave the view black.
 - Collapsing the folder explorer now leaves a clearly visible restore button
   above the command bar, with space reserved so it cannot cover View controls.
 - FoxCull's established orange fox, film strip and green/red status dots are

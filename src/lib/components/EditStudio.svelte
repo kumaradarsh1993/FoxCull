@@ -2413,7 +2413,7 @@
           >
             <span class="sourceThumb">
               {#if item.kind === "video"}
-                <Thumb item={sourceToMedia(item)} size={192} />
+                <Thumb item={sourceToMedia(item)} size={192} deferUntilVisible />
               {:else}
                 <span class="audioIcon">♪</span>
               {/if}

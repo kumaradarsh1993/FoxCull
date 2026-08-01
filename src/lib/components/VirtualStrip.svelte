@@ -28,11 +28,14 @@
   let first = $derived(Math.max(0, Math.floor(scrollPos / step) - overscan));
   let last = $derived(Math.min(items.length - 1, Math.ceil((scrollPos + vpMain) / step) + overscan));
 
-  let visible = $derived.by(() => {
-    const out: { item: T; index: number; pos: number }[] = [];
+  // Primitive indices keep retained cells stable during the many small scroll
+  // events emitted by eased wheel motion. Fresh wrapper objects made every
+  // Thumb receive a redundant prop update on every animation frame.
+  let visibleIndices = $derived.by(() => {
+    const out: number[] = [];
     for (let i = first; i <= last; i++) {
       if (i < 0 || i >= items.length) continue;
-      out.push({ item: items[i], index: i, pos: i * step });
+      out.push(i);
     }
     return out;
   });
@@ -123,12 +126,12 @@
 
 <div class="strip {orientation}" bind:this={viewport} {onscroll} style="--cell:{cellSize}px">
   <div class="canvas" style={orientation === "h" ? `width:${total}px` : `height:${total}px`}>
-    {#each visible as v (v.index)}
+    {#each visibleIndices as i (i)}
       <div
         class="cellpos"
-        style="transform:{orientation === 'h' ? `translateX(${v.pos}px)` : `translateY(${v.pos}px)`}; width:var(--cell); height:var(--cell)"
+        style="transform:{orientation === 'h' ? `translateX(${i * step}px)` : `translateY(${i * step}px)`}; width:var(--cell); height:var(--cell)"
       >
-        {@render cell(v.item, v.index)}
+        {@render cell(items[i], i)}
       </div>
     {/each}
   </div>

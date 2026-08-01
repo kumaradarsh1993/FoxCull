@@ -4193,10 +4193,6 @@
 
   /* ── 2026 studio finish ─────────────────────────────────────────────── */
   .app {
-    width: calc(100vw / var(--ui-scale));
-    height: calc(100vh / var(--ui-scale));
-    transform: scale(var(--ui-scale));
-    transform-origin: top left;
     background: var(--bg);
   }
   .tree {

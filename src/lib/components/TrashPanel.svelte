@@ -122,7 +122,7 @@
           tabindex="0"
           onkeydown={(e) => e.key === "Enter" && toggle(it.stored)}
         >
-          <div class="thumbwrap"><Thumb item={asMedia(it)} size={320} /></div>
+          <div class="thumbwrap"><Thumb item={asMedia(it)} size={320} deferUntilVisible /></div>
           <div class="meta">
             <span class="nm" title={it.orig}>{it.name}</span>
             <span class="dt">{when(it.deleted_at)}</span>

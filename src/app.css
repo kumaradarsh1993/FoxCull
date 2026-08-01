@@ -170,13 +170,20 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* One deliberate scale transform keeps every existing pixel-perfect media
-   surface proportional. Distance mode is meant for a large monitor/TV; compact
-   recovers working room on an XPS without creating a separate layout dialect. */
+/* Standard mode must have no transformed ancestor: WebView2 can stop painting
+   virtualized image layers inside a transformed scrolling surface. Apply the
+   one whole-interface transform only when the user actually requests scaling.
+   (`.app` must not apply a second transform.) */
 :root:not([data-ui-scale]),
 :root[data-ui-scale="comfortable"] { --ui-scale: 1; }
 
 body > div:first-child {
+  width: 100vw;
+  height: 100vh;
+}
+
+:root[data-ui-scale="compact"] body > div:first-child,
+:root[data-ui-scale="distance"] body > div:first-child {
   width: calc(100vw / var(--ui-scale));
   height: calc(100vh / var(--ui-scale));
   transform: scale(var(--ui-scale));

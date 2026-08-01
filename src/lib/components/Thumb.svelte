@@ -12,11 +12,24 @@
   import { activity } from "$lib/activity.svelte";
   import { ScrubEngine, paintFrame } from "$lib/scrub-engine";
   import type { FilmstripInfo, MediaItem } from "$lib/types";
+  import { untrack } from "svelte";
 
   // `armed` = this tile is the selected/active item. Hover-scrub only runs when
   // armed, so sweeping the pointer across a wall of videos never kicks off strip
   // builds — you click a clip to arm it, THEN hover it to skim frames.
-  let { item, size = 320, armed = false }: { item: MediaItem; size?: number; armed?: boolean } = $props();
+  let {
+    item,
+    size = 320,
+    armed = false,
+    deferUntilVisible = false,
+  }: {
+    item: MediaItem;
+    size?: number;
+    armed?: boolean;
+    /** For genuinely unvirtualized lists only. Virtual grids already mount just
+     *  the viewport and must not depend on a second visibility observer. */
+    deferUntilVisible?: boolean;
+  } = $props();
 
   const SCRUB_BUILD_DELAY_MS = 140;
 
@@ -55,6 +68,9 @@
   let tilePainted = $state(false);
 
   let isVideo = $derived(item.kind === "video");
+  // A primitive load identity prevents parent virtualization updates from
+  // resetting an already-loaded image when the actual media did not change.
+  let mediaLoadKey = $derived(`${item.kind}:${item.path}@${size}`);
   let scrubBox = $derived.by(() => {
     const aspect = mediaAspect || (strip?.tile_w && strip.tile_h ? strip.tile_w / strip.tile_h : 16 / 9);
     const boxAspect = thumbW / thumbH;
@@ -87,15 +103,20 @@
   // the expensive part, without touching either component's layout.
   let onScreen = $state(false);
   $effect(() => {
+    if (!deferUntilVisible) {
+      onScreen = true;
+      return;
+    }
     const el = thumbEl;
     if (!el) return;
-    // One-row look-ahead keeps scrolling ready without launching poster work
-    // for several unseen rows (especially expensive in video folders).
+    // A generous look-ahead is cheap for regular images and prevents a quick
+    // scroll from outrunning observation. Heavy video work is independently
+    // limited by the loader, so this no longer needs to be reduced globally.
     const io = new IntersectionObserver(
       (entries) => {
         for (const e of entries) if (e.isIntersecting) onScreen = true;
       },
-      { rootMargin: "220px" },
+      { rootMargin: "400px" },
     );
     io.observe(el);
     return () => io.disconnect();
@@ -106,7 +127,11 @@
   // sprite sheet is shared with Focus view and only requested once the tile is
   // armed and hovered.
   $effect(() => {
-    const it = item;
+    void mediaLoadKey;
+    // `item` is deliberately untracked here. Virtual containers can refresh a
+    // prop binding during scroll; only the primitive key above should restart
+    // image state.
+    const it = untrack(() => item);
     const visible = onScreen;
     src = null;
     failed = false;
@@ -399,7 +424,6 @@
     max-height: 100%;
     object-fit: contain;
     opacity: 0;
-    transition: opacity 0.18s ease;
   }
   .media.in {
     opacity: 1;

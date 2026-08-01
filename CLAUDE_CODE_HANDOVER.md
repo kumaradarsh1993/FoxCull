@@ -1,5 +1,33 @@
 # Agent Handover: FoxCull
 
+## 2026-08-01: nightly.5 fixes the black/frozen virtual grid
+
+The owner reproduced a release-blocking failure in installed nightly.4: after a
+small Grid scroll, new cells stayed blank; returning upward left the viewport
+black for at least five minutes. Loaded images also blinked at every scroll
+increment in both Grid and the bottom filmstrip.
+
+The live installed-app log ruled out backend saturation and memory pressure.
+The heartbeat continued every 20 seconds at roughly 18-19 MB JS heap, while
+thumbnail state stayed `pending=0 queue=0 inflight=0` and memoized URLs remained
+available. The renderer was alive but neither requesting nor painting cells.
+
+The visual pass had accidentally applied whole-app scale transforms twice:
+once to the Svelte root in `app.css` and again to `.app` in `+page.svelte`.
+Even Standard mode therefore put every virtual scroller inside two transformed
+compositor layers. Nightly.2 then added `contain: layout paint style` to every
+transformed Grid cell. That WebView2 compositor combination was removed. At
+Standard scale there is now no transformed ancestor; Compact/TV use exactly one
+root transform.
+
+VirtualGrid and VirtualStrip now expose primitive visible indices rather than
+allocating a fresh wrapper object for every retained cell on every scroll
+frame. Thumb loading keys off a stable primitive media identity and no longer
+restarts `src`/opacity for redundant parent updates. The virtual Grid, strip and
+Details list load mounted cells immediately; IntersectionObserver deferral is
+reserved for genuinely unvirtualized Edit-source and Trash lists. The global
+image fade was removed so remounted cached cells paint immediately.
+
 ## 2026-08-01: nightly.4 restores the collapsed folder tree
 
 The command-bar stacking fix in nightly.2 raised `.bar` to an isolated z=100

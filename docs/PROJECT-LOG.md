@@ -447,3 +447,26 @@ checking that a control exists is not enough when it can still be visually
 unreachable. The restore button now owns a layer above the bar, and the bar
 reserves its footprint when the tree is collapsed. The same existence,
 stacking and reachability audit was applied to every other collapsible surface.
+
+---
+
+## 2026-08-01 - the loader was idle because painting had failed
+
+The black Grid initially looked like another thumbnail backlog, but the live
+log showed the opposite: the UI heartbeat was healthy, memory was flat, and the
+thumbnail queue had no pending or running work. The URLs already existed. That
+evidence shifted the investigation from Rust and decoding to WebView painting.
+
+The design pass had unknowingly nested two whole-application scale transforms,
+including two nominal `scale(1)` compositor layers in Standard mode. The next
+performance patch placed each transformed virtual cell in its own paint
+containment boundary. WebView2 could flash those layers while scrolling and
+eventually stop painting them, while JavaScript and the backend continued
+normally underneath.
+
+FoxCull now leaves Standard mode entirely untransformed and uses only one root
+transform for the two opt-in interface sizes. Cell paint containment was
+removed. Virtual scrollers also retain primitive cell identities, and thumbnail
+state listens to a stable path/size key rather than every parent scroll update.
+Visibility observation remains only where it adds value: large unvirtualized
+lists, never a grid that has already virtualized its own mounted cells.
