@@ -114,6 +114,7 @@
     height: 100%;
     overflow-y: auto;
     overflow-x: hidden;
+    overflow-anchor: none;
   }
   .canvas {
     position: relative;
@@ -124,5 +125,6 @@
     top: 0;
     left: 0;
     will-change: transform;
+    contain: layout paint style;
   }
 </style>

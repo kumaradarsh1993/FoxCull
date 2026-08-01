@@ -2464,7 +2464,7 @@
         {/each}
       </div>
       <div class="layoutTools">
-        <button class="miniBtn" class:on={!sourceCollapsed} onclick={() => (sourceCollapsed = !sourceCollapsed)}>Source</button>
+        <button class="miniBtn" class:on={!sourceCollapsed} onclick={() => (sourceCollapsed = !sourceCollapsed)}>Media</button>
         <button class="miniBtn" class:on={!timelineCollapsed} onclick={() => (timelineCollapsed = !timelineCollapsed)}>Timeline</button>
         <button class="miniBtn" class:on={!inspectorCollapsed} onclick={() => (inspectorCollapsed = !inspectorCollapsed)}>Look</button>
       </div>
@@ -2536,11 +2536,23 @@
           </feComponentTransfer>
         </filter>
       </svg>
+      {#if sourceCollapsed && !productionPreview}
+        <button class="restoreTab restoreSource" onclick={() => (sourceCollapsed = false)} title="Show media picker">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><line x1="9.5" y1="4.5" x2="9.5" y2="19.5"/><path d="m14 9 3 3-3 3"/></svg>
+          Media
+        </button>
+      {/if}
       {#if inspectorCollapsed}
         <button class="restoreTab restoreLook" onclick={() => (inspectorCollapsed = false)} title="Show Look panel">Look</button>
       {/if}
       {#if timelineCollapsed}
         <button class="restoreTab restoreTimeline" onclick={() => (timelineCollapsed = false)} title="Show timeline">Timeline</button>
+      {/if}
+      {#if productionPreview}
+        <button class="previewExit" onclick={() => setOutputPreview(false)} title="Return to the edit workspace">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/><path d="M9 12h10"/></svg>
+          Back to edit
+        </button>
       {/if}
       {#if clips.length}
         {#if productionPreview && selectedClip && productionFrame && productionVideoRect}
@@ -2573,7 +2585,7 @@
               value={currentTime}
               oninput={(e) => seekProduction(Number((e.currentTarget as HTMLInputElement).value))}
             />
-            <button class="miniBtn" onclick={() => setOutputPreview(false)}>Exit</button>
+            <button class="miniBtn" onclick={() => setOutputPreview(false)}>Back to edit</button>
           </div>
         {:else}
           <!-- svelte-ignore a11y_media_has_caption -->
@@ -3342,6 +3354,7 @@
     position: relative;
     overflow: visible;
     z-index: 2;
+    container-type: inline-size;
   }
   .productionPreviewMode .workPane {
     grid-column: 3;
@@ -3542,6 +3555,16 @@
     padding: 7px 10px;
     border-radius: 8px;
   }
+  .restoreSource {
+    left: 10px;
+    top: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 10px;
+    border-radius: 8px;
+  }
+  .restoreSource svg { width: 14px; height: 14px; }
   .restoreTimeline {
     left: 50%;
     bottom: 12px;
@@ -3558,6 +3581,27 @@
     grid-row: 1;
     background: #000;
   }
+  .previewExit {
+    position: absolute;
+    z-index: 100;
+    left: 18px;
+    top: 18px;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 34px;
+    padding: 7px 11px;
+    border: 1px solid rgba(255,255,255,.2);
+    border-radius: 9px;
+    background: rgba(20,24,29,.86);
+    color: #f6f7f8;
+    box-shadow: 0 8px 24px rgba(0,0,0,.34);
+    backdrop-filter: blur(12px);
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .previewExit:hover { background: rgba(34,40,47,.94); border-color: rgba(255,255,255,.34); }
+  .previewExit svg { width: 15px; height: 15px; }
   .productionFrame {
     position: absolute;
     overflow: hidden;
@@ -4535,6 +4579,25 @@
     .presetGroup button {
       min-width: 64px;
     }
+  }
+
+  /* The work pane can be narrow even when the outer window is wide because the
+     folder tree and Look panel consume width. Respond to this pane itself. */
+  @container (max-width: 720px) {
+    .editTop { align-items: center; }
+    .layoutTools { order: 1; }
+    .topGap { order: 1; }
+    .exportOpts { order: 1; }
+    .presetGroup {
+      order: 2;
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      overflow-x: auto;
+      overscroll-behavior-inline: contain;
+      scrollbar-width: thin;
+    }
+    .presetGroup button { min-width: 68px; }
   }
 
   /* ── 2026 studio finish ─────────────────────────────────────────────── */

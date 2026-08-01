@@ -1,5 +1,32 @@
 # Agent Handover: FoxCull
 
+## 2026-08-01: nightly.2 interface-regression recovery
+
+Owner feedback against `v1.3.0-nightly.1` identified several concrete polish
+regressions. The follow-up nightly replaces the legacy native icon with a
+single fox/aperture identity, makes the runtime window title product-first,
+and replaces the improvised refresh glyph with the shared SVG icon language.
+
+Arrange and Filters now establish an opaque, isolated stacking layer above the
+virtual grid. Edit exposes a persistent Media restore tab when its picker is
+collapsed and a persistent Back to edit control during production preview.
+The command bar enters its two-row layout at 1400 px so tree width cannot hide
+mode and settings controls on laptop displays.
+
+The filmstrip wheel path now normalizes delta modes, corrects precision-wheel
+horizontal direction, clamps a smoothed target and respects reduced motion for
+automatic reveals. Thumbnail loading remains async and virtualized; expensive
+video poster/hires work is additionally limited to two concurrent jobs so it
+cannot occupy the entire loader while the user scrolls. Intersection lookahead
+was reduced to one row and grid cells use layout/paint containment.
+
+Automated verification on 2026-08-01: `npm run check` 0/0; `cargo check`
+passed; production frontend build and release CI are recorded in the change
+ledger. Native spot checks confirmed the new title/icon, overlay stacking and
+Media recovery. The owner stopped extended UI automation to reclaim the PC, so
+final mouse-wheel feel and Preview navigation are intentionally owner QA on the
+nightly rather than a release blocker.
+
 This file is intended to give Claude Code or any future coding agent enough
 context to continue FoxCull without accidentally touching the original
 Claude-built `fox-cull` project.

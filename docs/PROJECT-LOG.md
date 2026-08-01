@@ -404,3 +404,23 @@ memory again.
 Before this design line began, the exact latest nightly commit was promoted as
 `v1.2.1` stable at the owner's instruction. Fresh Windows/macOS/Linux artifacts
 passed CI; the visual work starts after that immutable stable point.
+
+---
+
+## 2026-08-01 - the polish pass got a recovery pass
+
+The first visual nightly exposed the sort of small regressions that make a
+finished product feel unfinished: an old native icon beside the new identity,
+version noise in the title, a home-made refresh glyph, menus slipping under
+tiles, and Edit modes with no visible route back. Those are now treated as one
+system rather than isolated screenshot fixes. Native and in-app branding share
+one icon; floating surfaces own an explicit stacking layer; every collapsible
+or temporary Edit state has a visible recovery action; and the laptop toolbar
+wraps before the folder tree can squeeze important controls away.
+
+The performance work stayed narrow. FoxCull already virtualized the grid and
+generated thumbnails asynchronously, but six simultaneous video-poster jobs
+could still contend for disk and decoder time. Heavy jobs now have their own
+two-slot budget while lighter images continue through the shared queue. The
+filmstrip also converts wheel input into a clamped, eased target instead of
+applying every device delta as an abrupt jump.

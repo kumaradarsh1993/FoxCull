@@ -115,10 +115,10 @@ pub fn run() {
             // the empty slots.
             app.manage(cast::CastState::default());
 
-            // Title carries the exact build (stable or nightly) so the user can
-            // always tell which version they're testing at a glance.
+            // Keep the native title bar product-first. Exact build details live
+            // in package metadata and Settings, not in the primary identity.
             if let Some(win) = app.get_webview_window("main") {
-                let _ = win.set_title(&format!("FoxCull v{}", env!("CARGO_PKG_VERSION")));
+                let _ = win.set_title("FoxCull");
             }
             Ok(())
         })

@@ -2699,7 +2699,12 @@
             onclick={refreshCounts}
             title="Refresh folders and current view"
             aria-label="Refresh folders and current view"
-          ><span class="refreshGlyph" aria-hidden="true"></span></button>
+          >
+            <svg class="refreshIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20 7v5h-5" />
+              <path d="M19 12a7 7 0 1 0-1.8 4.7" />
+            </svg>
+          </button>
           <button class="btn sm openFolder" onclick={openFolderPicker} title="Jump to a folder">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5h6l2 2h10v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 8V5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2.5"/></svg>
             Open
@@ -3519,7 +3524,7 @@
 
   .center { display: flex; flex-direction: column; flex: 1; min-width: 0; height: 100vh; }
 
-  .bar { position: relative; display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--bg-panel); flex-wrap: nowrap; }
+  .bar { position: relative; z-index: 100; isolation: isolate; display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--bg-panel); flex-wrap: nowrap; }
   .tool-group { display: flex; align-items: center; gap: 5px; min-width: 0; flex: 0 0 auto; }
   .ctl-label { color: var(--text-faint); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; white-space: nowrap; }
   .viewGroup { padding-right: 1px; }
@@ -3535,27 +3540,7 @@
   .ico:hover { background: var(--bg-hover); }
   .ico.on { border-color: var(--accent); color: var(--accent); }
   .panelGlyph { display: block; opacity: 0.9; }
-  .refreshGlyph {
-    position: relative;
-    display: block;
-    width: 15px;
-    height: 15px;
-    border: 2px solid currentColor;
-    border-right-color: transparent;
-    border-radius: 50%;
-  }
-  .refreshGlyph::after {
-    content: "";
-    position: absolute;
-    right: -1px;
-    top: -3px;
-    width: 0;
-    height: 0;
-    border-left: 5px solid currentColor;
-    border-top: 4px solid transparent;
-    border-bottom: 4px solid transparent;
-    transform: rotate(18deg);
-  }
+  .refreshIcon { display: block; width: 15px; height: 15px; }
   .chip { padding: 4px 9px; border-radius: 6px; font-size: 12px; color: var(--text-dim); border: 1px solid transparent; white-space: nowrap; }
   .chip:hover { background: var(--bg-hover); }
   .chip.on { background: var(--accent); color: var(--accent-on); }
@@ -3597,7 +3582,7 @@
   .arrangeMenu,
   /* Sized so the widest row (Status: All/Picks/Rejected/Unflagged) fits, and
      rows WRAP as a backstop — a chip must never clip past the popover edge. */
-  .filtermenu { position: absolute; top: 34px; left: 0; z-index: 30; width: 316px; max-width: min(316px, 90vw); background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 11px; display: flex; flex-direction: column; gap: 11px; }
+  .filtermenu { position: absolute; top: 34px; left: 0; z-index: 120; width: 316px; max-width: min(316px, 90vw); background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 11px; display: flex; flex-direction: column; gap: 11px; }
   .filtermenu .seg { flex-wrap: wrap; min-width: 0; }
   /* "N of M" passing the active filters — lives beside the Filters chip. */
   .shown-count {
@@ -4233,9 +4218,8 @@
     gap: 7px;
     padding: 7px 10px;
     border-bottom-color: var(--border-soft);
-    background: color-mix(in srgb, var(--bg-panel) 94%, transparent);
+    background: var(--bg-panel);
     box-shadow: 0 1px 0 color-mix(in srgb, black 18%, transparent), 0 7px 20px rgba(0,0,0,.08);
-    backdrop-filter: blur(18px) saturate(1.08);
   }
   .ctl-label { margin-right: 2px; letter-spacing: .08em; }
   .div { margin: 5px 3px; background: var(--border-soft); }
@@ -4381,7 +4365,7 @@
 
   /* XPS split-screen / small window: preserve every control in two calm rows
      instead of clipping the destructive actions off-screen. */
-  @media (max-width: 1250px) {
+  @media (max-width: 1400px) {
     .tree { max-width: 230px; }
     .bar { flex-wrap: wrap; align-content: center; min-height: 91px; }
     .bar > .spacer { display: none; }

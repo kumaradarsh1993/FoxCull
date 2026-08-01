@@ -1,6 +1,25 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
+## Interface recovery and smoother browsing
+
+- FoxCull now uses one modern fox/aperture identity across the Windows title
+  bar, executable, installer and in-app chrome. The native title is simply
+  **FoxCull**, without build metadata competing with the product name.
+- Arrange and Filters reliably float above the media grid again.
+- Edit always exposes a **Media** recovery control after its picker is hidden,
+  and Preview now has a visible **Back to edit** action instead of relying on
+  Escape.
+- The refresh action uses the same balanced SVG language as the rest of the
+  command bar.
+- Horizontal filmstrip input is direction-corrected for precision mouse wheels
+  and eased to remove abrupt stepping.
+- Grid thumbnail work is throttled so video poster extraction cannot saturate
+  every loader slot while scrolling; virtualization and asynchronous loading
+  remain intact.
+- The responsive command bar switches to its two-row layout earlier, keeping
+  Library, Edit and Settings reachable on laptop-width workspaces.
+
 ## A complete visual refit
 
 FoxCull now looks and behaves like one coherent professional media workstation.

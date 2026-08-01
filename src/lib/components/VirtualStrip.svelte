@@ -43,7 +43,9 @@
   }
 
   // Measure viewport length along the scroll axis; also wire a non-passive wheel
-  // handler so a normal vertical mouse wheel scrolls a HORIZONTAL strip.
+  // handler so a normal vertical wheel and a Logitech-style thumb wheel both
+  // move a horizontal strip. WebView2 reports the thumb wheel with the opposite
+  // physical sign, so dedicated deltaX input is intentionally inverted here.
   $effect(() => {
     const el = viewport;
     if (!el) return;
@@ -53,18 +55,41 @@
     ro.observe(el);
 
     let onWheel: ((e: WheelEvent) => void) | null = null;
+    let wheelRAF = 0;
+    let wheelTarget = el.scrollLeft;
     if (orientation === "h") {
-      onWheel = (e: WheelEvent) => {
-        const d = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
-        if (d !== 0) {
-          el.scrollLeft += d;
-          e.preventDefault();
+      const animateWheel = () => {
+        wheelRAF = 0;
+        const delta = wheelTarget - el.scrollLeft;
+        if (Math.abs(delta) < 0.45) {
+          el.scrollLeft = wheelTarget;
+          return;
         }
+        el.scrollLeft += delta * 0.24;
+        wheelRAF = requestAnimationFrame(animateWheel);
+      };
+      onWheel = (e: WheelEvent) => {
+        const horizontal = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+        const raw = horizontal ? -e.deltaX : e.deltaY;
+        if (raw === 0) return;
+        const unit = e.deltaMode === WheelEvent.DOM_DELTA_LINE
+          ? 16
+          : e.deltaMode === WheelEvent.DOM_DELTA_PAGE
+            ? el.clientWidth
+            : 1;
+        // A scrollbar drag or keyboard scroll may have moved independently of
+        // our last wheel target; begin a fresh gesture from the live position.
+        if (!wheelRAF && Math.abs(wheelTarget - el.scrollLeft) > 2) wheelTarget = el.scrollLeft;
+        const max = Math.max(0, el.scrollWidth - el.clientWidth);
+        wheelTarget = Math.max(0, Math.min(max, wheelTarget + raw * unit));
+        if (!wheelRAF) wheelRAF = requestAnimationFrame(animateWheel);
+        e.preventDefault();
       };
       el.addEventListener("wheel", onWheel, { passive: false });
     }
     return () => {
       ro.disconnect();
+      if (wheelRAF) cancelAnimationFrame(wheelRAF);
       if (onWheel) el.removeEventListener("wheel", onWheel);
     };
   });
@@ -90,8 +115,9 @@
     else if (cellEnd > cur + vpMain - margin) v = cellEnd + margin - vpMain;
     v = Math.max(0, Math.min(v, Math.max(0, total - vpMain)));
     if (Math.abs(v - cur) < 1) return; // already in view — don't move
-    if (orientation === "h") el.scrollLeft = v;
-    else el.scrollTop = v;
+    const behavior = matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    if (orientation === "h") el.scrollTo({ left: v, behavior });
+    else el.scrollTo({ top: v, behavior });
   });
 </script>
 
@@ -117,6 +143,7 @@
     height: 100%;
     overflow-x: auto;
     overflow-y: hidden;
+    overscroll-behavior-inline: contain;
   }
   .strip.v {
     width: 100%;

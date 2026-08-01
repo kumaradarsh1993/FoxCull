@@ -89,13 +89,13 @@
   $effect(() => {
     const el = thumbEl;
     if (!el) return;
-    // Generous margin so scrolling still feels instant — a tile starts loading
-    // roughly a screenful before it arrives.
+    // One-row look-ahead keeps scrolling ready without launching poster work
+    // for several unseen rows (especially expensive in video folders).
     const io = new IntersectionObserver(
       (entries) => {
         for (const e of entries) if (e.isIntersecting) onScreen = true;
       },
-      { rootMargin: "400px" },
+      { rootMargin: "220px" },
     );
     io.observe(el);
     return () => io.disconnect();

@@ -28,15 +28,20 @@ import { activity } from "./activity.svelte";
 import type { FilmstripInfo } from "./types";
 
 const MAX_INFLIGHT = 6; // parallel decodes — enough to fill a viewport, gentle on the USB SSD
+// Video posters/sprites launch ffmpeg and read far more source data than an
+// image thumbnail. Six concurrent ffmpeg processes made video-grid scrolling
+// hitch even though every command was correctly off the UI thread.
+const MAX_HEAVY_INFLIGHT = 2;
 const MEMO_CAP = 4000; // bound the URL cache so a long session can't grow it unbounded
 
 const memo = new Map<string, string>(); // key -> asset url (LRU, bounded)
 const pending = new Map<string, Promise<string | null>>(); // key -> in-flight promise
 const stripMemo = new Map<string, FilmstripInfo>(); // key -> filmstrip geometry + asset url
 const stripPending = new Map<string, Promise<FilmstripInfo | null>>();
-type QItem = { key: string; run: () => void };
+type QItem = { key: string; heavy: boolean; run: () => void };
 let queue: QItem[] = []; // served LIFO (newest request = current viewport first)
 let inflight = 0;
+let heavyInflight = 0;
 let generation = 0;
 
 function memoGet(key: string): string | undefined {
@@ -73,7 +78,13 @@ function stripMemoSet(key: string, info: FilmstripInfo) {
 
 function pump() {
   while (inflight < MAX_INFLIGHT && queue.length) {
-    queue.pop()!.run(); // LIFO: the most recently requested cell wins the slot
+    // LIFO among runnable work: the current viewport wins, but a wall of
+    // uncached videos cannot occupy every slot while image thumbs wait.
+    let i = queue.length - 1;
+    while (i >= 0 && queue[i].heavy && heavyInflight >= MAX_HEAVY_INFLIGHT) i--;
+    if (i < 0) return;
+    const [next] = queue.splice(i, 1);
+    next.run();
   }
 }
 
@@ -182,6 +193,7 @@ export function loaderStats() {
     stripPending: stripPending.size,
     queue: queue.length,
     inflight,
+    heavyInflight,
   };
 }
 
@@ -224,7 +236,7 @@ export function prefetchLoupe(path: string): void {
 
 /** Shared queue/dedup/cap machinery. `fetchFsPath` resolves to a filesystem path
  *  the backend produced; we convert it to an asset URL and memoize it. */
-function enqueue(key: string, fetchFsPath: () => Promise<string>): Promise<string | null> {
+function enqueue(key: string, fetchFsPath: () => Promise<string>, heavy = false): Promise<string | null> {
   const cached = memoGet(key);
   if (cached) return Promise.resolve(cached);
 
@@ -250,6 +262,7 @@ function enqueue(key: string, fetchFsPath: () => Promise<string>): Promise<strin
         return;
       }
       inflight++;
+      if (heavy) heavyInflight++;
       fetchFsPath()
         .then((fsPath) => {
           const url = api.fileSrc(fsPath);
@@ -259,12 +272,13 @@ function enqueue(key: string, fetchFsPath: () => Promise<string>): Promise<strin
         .catch(() => resolve(null))
         .finally(() => {
           inflight--;
+          if (heavy) heavyInflight--;
           pending.delete(key);
           pump();
           jobFinished();
         });
     };
-    queue.push({ key, run });
+    queue.push({ key, heavy, run });
     pump();
     jobReport();
   });
@@ -298,6 +312,7 @@ function enqueueStrip(key: string, fetchInfo: () => Promise<FilmstripInfo>): Pro
         return;
       }
       inflight++;
+      heavyInflight++;
       fetchInfo()
         .then((info) => {
           const hydrated = { ...info, src: api.fileSrc(info.src) };
@@ -307,6 +322,7 @@ function enqueueStrip(key: string, fetchInfo: () => Promise<FilmstripInfo>): Pro
         .catch(() => resolve(null))
         .finally(() => {
           inflight--;
+          heavyInflight--;
           // Only clear our own registration — a cancelled build's promise may
           // outlive it while a FRESH request for the same clip is registered.
           if (stripPending.get(key) === promise) stripPending.delete(key);
@@ -314,7 +330,7 @@ function enqueueStrip(key: string, fetchInfo: () => Promise<FilmstripInfo>): Pro
           jobFinished();
         });
     };
-    queue.push({ key, run });
+    queue.push({ key, heavy: true, run });
     pump();
     jobReport();
   });
@@ -332,11 +348,11 @@ export function cancelThumb(path: string, size: number): void {
 
 /** Cached video poster frame (bundled ffmpeg), through the same capped queue. */
 export function loadVideoPoster(path: string): Promise<string | null> {
-  return enqueue(`vid:${path}`, () => api.videoPoster(path));
+  return enqueue(`vid:${path}`, () => api.videoPoster(path), true);
 }
 /** Sharp ~1280px poster for Focus view — same queue, separate cache key. */
 export function loadVideoPosterHires(path: string): Promise<string | null> {
-  return enqueue(`vidhi:${path}`, () => api.videoPosterHires(path));
+  return enqueue(`vidhi:${path}`, () => api.videoPosterHires(path), true);
 }
 export function cancelVideoPoster(path: string): void {
   cancel(`vid:${path}`);
