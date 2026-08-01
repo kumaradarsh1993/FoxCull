@@ -103,14 +103,15 @@
   .cm {
     position: fixed;
     z-index: 201;
-    min-width: 196px;
-    padding: 5px;
-    background: var(--bg-elev);
-    border: 1px solid var(--border);
-    border-radius: 10px;
+    min-width: 218px;
+    padding: 7px;
+    background: color-mix(in srgb, var(--bg-elev) 95%, transparent);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
     box-shadow: var(--shadow);
     font-size: 12.5px;
     user-select: none;
+    backdrop-filter: blur(22px) saturate(1.1);
   }
   .cm-item {
     display: flex;
@@ -118,13 +119,14 @@
     gap: 9px;
     width: 100%;
     text-align: left;
-    padding: 6px 9px;
-    border-radius: 6px;
+    min-height: 31px;
+    padding: 7px 10px;
+    border-radius: 8px;
     color: var(--text);
     line-height: 1.2;
   }
   .cm-item:hover {
-    background: var(--bg-hover);
+    background: color-mix(in srgb, var(--accent) 10%, var(--bg-hover));
   }
   .cm-item:disabled {
     opacity: 0.4;
@@ -154,7 +156,7 @@
   }
   .cm-sep {
     height: 1px;
-    margin: 4px 6px;
-    background: var(--border);
+    margin: 5px 7px;
+    background: var(--border-soft);
   }
 </style>

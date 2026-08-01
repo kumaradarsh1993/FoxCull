@@ -1,6 +1,6 @@
 # FoxCull Backlog
 
-Prioritized from the July 2026 holistic audit
+Prioritized from the July 2026 holistic audit and August 2026 visual audit
 ([docs/AUDIT-2026-07.md](docs/AUDIT-2026-07.md) has the full analysis behind
 each item). Target hardware for perf items: Alienware 15 R4 (GTX 1070) and
 XPS 13 (4-core, iGPU). Mac-only issues are P2 by decision.
@@ -78,9 +78,10 @@ Priorities: **P0** do next · **P1** high value soon · **P2** scheduled ·
 - [ ] **Loupe photo zoom** (UX-audit 2026-07-19): 1:1 / zoom+pan in Focus
       (scroll-zoom around cursor, Z toggle) — the main Lightroom-parity gap
       left in the viewer.
-- [ ] **Responsive toolbar collapse** (UX-audit 2026-07-19): below ~900 px
-      the nowrap toolbar can clip the right action cluster; collapse labeled
-      groups into menus. Needs real window-size testing on the XPS half-snap.
+- [x] **Responsive toolbar collapse** (UX-audit 2026-07-19): DONE 2026-08-01.
+      Toolbar compacts below 1600 px and becomes two rows below 1250 px; TV-large
+      mode explicitly uses the two-row contract. Visually tested at 1440×900,
+      1366×768 and 1024×768 with Settings and destructive actions reachable.
 - [ ] **Blur-up placeholder uses the grid tier** instead of always 320px
       (avoids an extra cache variant per photo).
 - [ ] **Trash auto-expiry option** (e.g. purge items older than 30 days, off

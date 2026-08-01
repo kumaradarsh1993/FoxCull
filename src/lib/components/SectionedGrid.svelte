@@ -170,14 +170,16 @@
     display: flex;
     align-items: center;
     gap: 10px;
+    font-family: var(--font-display);
     font-size: 15px;
-    font-weight: 700;
-    letter-spacing: 0.01em;
+    font-weight: 680;
+    letter-spacing: -0.01em;
     color: var(--text);
-    border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
-    border-bottom: 1px solid var(--border);
-    background: color-mix(in srgb, var(--bg-panel) 88%, var(--bg));
-    padding: 0 10px 4px;
+    border-top: 1px solid var(--border-soft);
+    border-bottom: 1px solid var(--border-soft);
+    background: color-mix(in srgb, var(--bg-panel) 78%, transparent);
+    padding: 0 14px 4px;
+    backdrop-filter: blur(12px);
   }
   .hdr.level-2 {
     left: 18px;
@@ -193,7 +195,7 @@
     min-width: 24px;
     padding: 2px 7px;
     border-radius: 999px;
-    background: var(--bg-elev);
+    background: color-mix(in srgb, var(--bg-elev) 82%, transparent);
     color: var(--text-faint);
     font-size: 11px;
     text-align: center;

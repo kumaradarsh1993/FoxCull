@@ -10,9 +10,11 @@
     activity.init(); // start listening for backend `activity` events
   });
 
-  // Apply the chosen theme to <html data-theme>; reacts to live toggles.
+  // Apply appearance choices at the document root so component-scoped styles
+  // and native-looking overlays share one visual system.
   $effect(() => {
     document.documentElement.setAttribute("data-theme", settings.s.theme);
+    document.documentElement.setAttribute("data-ui-scale", settings.s.uiScale);
   });
 </script>
 

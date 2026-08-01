@@ -188,12 +188,14 @@
   .trow {
     display: flex;
     align-items: center;
-    gap: 1px;
+    gap: 2px;
     width: 100%;
-    border-radius: 4px;
+    min-height: 29px;
+    border-radius: 7px;
   }
   .trow.active {
-    background: color-mix(in srgb, var(--text-faint) 20%, transparent);
+    background: color-mix(in srgb, var(--accent) 11%, var(--bg-elev));
+    box-shadow: inset 2px 0 var(--accent), inset 0 0 0 1px var(--border-soft);
   }
   .trow.drophot {
     background: color-mix(in srgb, var(--accent) 24%, transparent);
@@ -217,7 +219,7 @@
     justify-content: center;
     font-size: 12px;
     color: var(--text-faint);
-    border-radius: 4px;
+    border-radius: 6px;
   }
   .chev:hover {
     color: var(--text);
@@ -234,9 +236,9 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 4px 6px;
+    padding: 5px 7px;
     text-align: left;
-    border-radius: 4px;
+    border-radius: 6px;
     color: var(--text-dim);
     font-size: 12.5px;
     line-height: 1.2;

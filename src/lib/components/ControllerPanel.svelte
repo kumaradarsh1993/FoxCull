@@ -218,7 +218,8 @@
   .backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.55);
+    background: rgba(0, 0, 0, 0.66);
+    backdrop-filter: blur(6px);
     z-index: 100;
   }
   .panel {
@@ -226,9 +227,9 @@
     inset: 6% 22%;
     min-width: 560px;
     z-index: 101;
-    background: var(--bg-panel);
-    border: 1px solid var(--border);
-    border-radius: 14px;
+    background: color-mix(in srgb, var(--bg-panel) 97%, transparent);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-xl);
     box-shadow: var(--shadow);
     display: flex;
     flex-direction: column;
@@ -241,12 +242,15 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 12px 14px;
-    border-bottom: 1px solid var(--border);
+    min-height: 56px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-soft);
   }
   header h2 {
     margin: 0;
-    font-size: 15px;
+    font-family: var(--font-display);
+    font-size: 17px;
+    letter-spacing: -.015em;
   }
   .status {
     font-size: 12.5px;
@@ -303,10 +307,11 @@
     gap: 12px;
   }
   .card {
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: var(--bg-elev);
-    padding: 12px 14px 10px;
+    border: 1px solid var(--border-soft);
+    border-radius: 13px;
+    background: color-mix(in srgb, var(--bg-elev) 82%, transparent);
+    padding: 14px 16px 12px;
+    box-shadow: var(--shadow-soft);
   }
   .cardHead {
     display: flex;
@@ -457,9 +462,9 @@
     align-items: center;
     min-height: 34px;
     padding: 6px 10px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg-elev);
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--bg-elev) 78%, transparent);
     font-size: 12.5px;
   }
   .tester.live {

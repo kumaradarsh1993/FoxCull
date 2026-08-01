@@ -1165,7 +1165,7 @@
     /* Near-black NEUTRAL in every theme: the Focus surround is the reference
        your eye judges the photo's colors against, so it never takes the UI
        theme's tint (the old #0a0805 had a warm cast). */
-    background: #0c0b0a;
+    background: #050607;
     overflow: hidden;
   }
   img,
@@ -1267,11 +1267,11 @@
     right: 0;
     bottom: 0;
     z-index: 6;
-    padding: 30px 14px 12px;
+    padding: 42px 18px 15px;
     background: linear-gradient(
       to top,
-      rgba(0, 0, 0, 0.74) 0%,
-      rgba(0, 0, 0, 0.5) 42%,
+      rgba(0, 0, 0, 0.86) 0%,
+      rgba(0, 0, 0, 0.52) 48%,
       rgba(0, 0, 0, 0) 100%
     );
     transition:
@@ -1313,9 +1313,9 @@
   .playrow .pp {
     width: 34px;
     height: 30px;
-    border-radius: 7px;
-    border: 1px solid var(--border);
-    background: var(--bg-elev);
+    border-radius: 9px;
+    border: 1px solid rgba(255,255,255,.18);
+    background: rgba(20,24,29,.78);
     color: var(--text);
     font-size: 13px;
     line-height: 1;
@@ -1368,10 +1368,10 @@
   }
   .miniToggle {
     padding: 3px 7px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-elev);
-    color: var(--text-dim);
+    border: 1px solid rgba(255,255,255,.16);
+    border-radius: 8px;
+    background: rgba(20,24,29,.72);
+    color: rgba(255,255,255,.78);
     font-size: 11.5px;
     white-space: nowrap;
   }
@@ -1383,9 +1383,9 @@
     position: relative;
     flex: 1;
     min-width: 0;
-    height: 16px;
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--text-faint) 30%, transparent);
+    height: 15px;
+    border-radius: 999px;
+    background: rgba(255,255,255,.16);
     margin-bottom: 0;
     cursor: pointer;
     touch-action: none; /* let pointer-drag scrub instead of scrolling */
@@ -1398,7 +1398,7 @@
     top: 0;
     bottom: 0;
     background: color-mix(in srgb, var(--accent) 55%, transparent);
-    border-radius: 6px;
+    border-radius: 999px;
     pointer-events: none;
   }
   .segmark {
@@ -1462,9 +1462,11 @@
   .clippanel {
     margin-top: 10px;
     padding: 10px 12px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: color-mix(in srgb, var(--bg-elev) 60%, transparent);
+    border: 1px solid rgba(255,255,255,.14);
+    border-radius: 13px;
+    background: rgba(18,22,27,.78);
+    box-shadow: 0 12px 32px rgba(0,0,0,.28);
+    backdrop-filter: blur(18px);
   }
   /* Single row: wraps only when it must (5-6 marked segments) — the common
      case of a couple of marks plus the fixed buttons fits on one line. */
@@ -1563,12 +1565,14 @@
     z-index: 20;
     max-width: min(560px, calc(100% - 44px));
     padding: 11px 13px;
-    border-radius: 8px;
-    background: rgba(0, 0, 0, 0.42);
+    border: 1px solid rgba(255,255,255,.13);
+    border-radius: 12px;
+    background: rgba(8, 10, 13, 0.64);
     color: #fff;
     font-size: 14px;
     line-height: 1.45;
-    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+    box-shadow: 0 16px 38px rgba(0, 0, 0, 0.40);
+    backdrop-filter: blur(14px) saturate(.8);
     pointer-events: none;
   }
 

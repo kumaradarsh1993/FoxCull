@@ -12,6 +12,35 @@ Claude-built `fox-cull` project.
 > **historical record** of names in effect at the time — left as-is for
 > accuracy; don't "fix" them.
 
+## 2026-08-01: v1.2.1 stable published · visual-system nightly ready
+
+The owner explicitly asked to promote the latest nightly before starting a
+design-focused pass. `v1.2.1` was tagged from the exact
+`v1.2.1-nightly.5` commit (`e951f74`), not from later work. GitHub Actions built
+fresh stable-versioned Windows, macOS and Linux artifacts; all jobs passed,
+including the Windows launch/runtime and portable-sidecar gates. The release is
+published non-prerelease/latest.
+
+The following commit line is the new visual nightly series (planned tag:
+`v1.3.0-nightly.1`). The functionality model is intentionally unchanged.
+
+- Rebuilt the four themes as Studio, Midnight, Amber and Daylight around one
+  semantic, spectrally-neutral media design system.
+- Refit Library, grid, Details, Focus/video, Edit, menus, settings, dialogs,
+  Trash, controller setup, activity and first-run surfaces.
+- Added a persisted `uiScale`: Compact 90%, Standard 100%, TV / large 122%.
+- The toolbar compacts on laptops and becomes two rows in narrow windows or
+  TV-large mode, so the right-side action/Settings cluster never clips.
+- Added `docs/UX-AUDIT-2026-08.md`: product posture, workflow map, permutation
+  coverage, every surface and the responsive contract.
+
+Verification on 2026-08-01: visual QA at 1440×900, 1366×768 and 1024×768 plus
+TV-large; `npm run check` 0/0; `npm run build` passed; `cargo check` passed;
+`git diff --check` passed with normal Windows line-ending notices only. Real
+Tauri chrome/settings were also inspected in a 1280×850 native dev window with
+real drive roots and restored folder context. Media-heavy owner QA remains
+appropriate on the Alienware and XPS.
+
 ## 2026-07-28: Windows Cast discovery fallback ready for XPS QA
 
 The owner reported a deterministic split: the Alienware always listed the Sony

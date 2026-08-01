@@ -364,3 +364,43 @@ temporary port, which Windows treats as a reply to outbound traffic instead of
 unsolicited inbound multicast. A real probe to the Sony receiver confirmed
 that it supports this route. Results from both searches are merged, and the log
 now says which route worked and which adapters or sockets failed.
+
+---
+
+## 2026-08-01 — the interface became one designed product
+
+The owner made the scope unusually explicit: functionality was already nailed;
+the new job was to audit every surface, menu, control, container, state and
+workflow, then make FoxCull look like professionally made software in August
+2026. The same app also needed to remain useful on the Alienware, the smaller
+XPS, and a 65-inch TV viewed from six feet away over HDMI.
+
+The important design decision was not to turn this into a different workflow.
+The Library / Focus / Edit model, keyboard language, filmstrip docks, culling
+marks, cast behavior and file operations have all been proven in real use. The
+visual refit therefore builds a system under them: semantic surfaces, quiet
+neutral stage, consistent type and iconography, coherent selected/active/pick/
+reject states, and one depth language for every floating menu and modal.
+
+Four themes now have jobs rather than just colours: Studio is neutral graphite,
+Midnight is a cooler deep-black room, Amber is for low-blue late work, and
+Daylight is for bright rooms. The actual media stage remains neutral and dark in
+all four, because the surrounding chrome must not tint colour judgement.
+
+The large-display requirement became a real product feature rather than a note
+about Windows scaling. Interface size is persisted as Compact, Standard or
+TV-large. It scales the whole workstation proportionally, and TV-large forces
+the command bar into its two-row contract so zooming cannot push Settings or
+destructive actions off the right edge. Narrow windows use the same contract.
+
+The old first-run screen said what to do; the new one feels like the beginning of
+a product. The folder tree carries FoxCull's identity and active context. The
+grid, Details, Focus video overlay, Edit panes/timeline/inspector, culling footer,
+settings, Trash, controller guide, progress and menus now look like parts of the
+same tool. The full workflow/permutation/surface map lives in
+`docs/UX-AUDIT-2026-08.md` so future polish does not begin from screenshots and
+memory again.
+
+Before this design line began, the exact latest nightly commit was promoted as
+`v1.2.1` stable at the owner's instruction. Fresh Windows/macOS/Linux artifacts
+passed CI; the visual work starts after that immutable stable point.

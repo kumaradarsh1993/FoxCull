@@ -142,16 +142,17 @@
   .backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.55);
+    background: rgba(0, 0, 0, 0.66);
+    backdrop-filter: blur(6px);
     z-index: 100;
   }
   .panel {
     position: fixed;
-    inset: 5% 6%;
+    inset: 4.5% 5%;
     z-index: 101;
-    background: var(--bg-panel);
-    border: 1px solid var(--border);
-    border-radius: 14px;
+    background: color-mix(in srgb, var(--bg-panel) 97%, transparent);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-xl);
     box-shadow: var(--shadow);
     display: flex;
     flex-direction: column;
@@ -161,12 +162,15 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 12px 14px;
-    border-bottom: 1px solid var(--border);
+    min-height: 56px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-soft);
   }
   header h2 {
     margin: 0;
-    font-size: 15px;
+    font-family: var(--font-display);
+    font-size: 17px;
+    letter-spacing: -.015em;
   }
   .count {
     font-size: 12.5px;
@@ -229,24 +233,27 @@
   .grid {
     flex: 1;
     overflow-y: auto;
-    padding: 14px;
+    padding: 18px;
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: 12px;
+    gap: 14px;
     align-content: start;
   }
   .cell {
     position: relative;
-    border: 1px solid var(--border);
-    border-radius: 10px;
+    border: 1px solid var(--border-soft);
+    border-radius: 13px;
     overflow: hidden;
     background: var(--viewport-bg);
+    box-shadow: var(--shadow-soft);
+    transition: border-color 100ms ease, transform 100ms ease, box-shadow 100ms ease;
     cursor: pointer;
   }
   .cell.on {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
   }
+  .cell:hover { border-color: var(--border-strong); transform: translateY(-1px); box-shadow: 0 9px 22px rgba(0,0,0,.24); }
   .thumbwrap {
     aspect-ratio: 1;
     width: 100%;

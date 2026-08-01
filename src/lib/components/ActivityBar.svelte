@@ -74,8 +74,8 @@
 <style>
   /* Docked at the BOTTOM of the sidebar, so the rule goes on top. */
   .act {
-    border-top: 1px solid var(--border);
-    background: var(--bg-panel);
+    border-top: 1px solid var(--border-soft);
+    background: color-mix(in srgb, var(--bg-panel) 94%, transparent);
     flex: 0 0 auto;
   }
   .main {
@@ -84,7 +84,7 @@
     gap: 6px;
     flex-wrap: wrap;
     width: 100%;
-    padding: 6px 10px 7px;
+    padding: 8px 10px 9px;
     text-align: left;
   }
   .main:hover {
@@ -116,16 +116,17 @@
   }
   .bar {
     flex: 0 0 100%;
-    height: 3px;
+    height: 4px;
     border-radius: 2px;
-    background: color-mix(in srgb, var(--text-faint) 25%, transparent);
+    background: color-mix(in srgb, var(--text-faint) 18%, transparent);
     overflow: hidden;
   }
   .fill {
     display: block;
     height: 100%;
     border-radius: 2px;
-    background: var(--accent);
+    background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+    box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 35%, transparent);
     transition: width 0.25s ease;
   }
   .fill.err {

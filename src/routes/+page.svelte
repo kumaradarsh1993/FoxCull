@@ -2688,7 +2688,10 @@
           <!-- Standard "sidebar panel" glyph: rounded frame + left-panel divider. -->
           <svg class="panelGlyph" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><line x1="9.4" y1="4.6" x2="9.4" y2="19.4"/></svg>
         </button>
-        <span class="brand">Folders</span>
+        <span class="sidebarIdentity">
+          <img src="/favicon.png" alt="" width="26" height="26" />
+          <span class="brandLockup"><strong>FoxCull</strong><small>{currentDir ? basename(currentDir) : "Library"}</small></span>
+        </span>
         <div class="tree-actions">
           <button
             class="ico sm"
@@ -2697,7 +2700,10 @@
             title="Refresh folders and current view"
             aria-label="Refresh folders and current view"
           ><span class="refreshGlyph" aria-hidden="true"></span></button>
-          <button class="btn sm" onclick={openFolderPicker} title="Jump to a folder">Open</button>
+          <button class="btn sm openFolder" onclick={openFolderPicker} title="Jump to a folder">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5h6l2 2h10v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 8V5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2.5"/></svg>
+            Open
+          </button>
         </div>
       </div>
       <div class="tree-body">
@@ -2737,9 +2743,15 @@
       <div class="tool-group viewGroup">
         <span class="ctl-label">View</span>
         <div class="seg modes" title="View">
-          <button class="chip" class:on={viewMode === "grid" && !editOpen} onclick={() => setView("grid")} title="Grid (G)">Grid</button>
-          <button class="chip" class:on={viewMode === "details" && !editOpen} onclick={() => setView("details")} title="Details list (D)">Details</button>
-          <button class="chip" class:on={viewMode === "loupe" && !editOpen} onclick={() => setView("loupe")} title="Focus — one item large (Enter)">Focus</button>
+          <button class="chip viewChip" class:on={viewMode === "grid" && !editOpen} onclick={() => setView("grid")} title="Grid (G)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Grid</span>
+          </button>
+          <button class="chip viewChip" class:on={viewMode === "details" && !editOpen} onclick={() => setView("details")} title="Details list (D)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/></svg><span>Details</span>
+          </button>
+          <button class="chip viewChip" class:on={viewMode === "loupe" && !editOpen} onclick={() => setView("loupe")} title="Focus — one item large (Enter)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H4a1 1 0 0 0-1 1v4M16 3h4a1 1 0 0 1 1 1v4M8 21H4a1 1 0 0 1-1-1v-4M16 21h4a1 1 0 0 0 1-1v-4"/><circle cx="12" cy="12" r="4"/></svg><span>Focus</span>
+          </button>
         </div>
       </div>
 
@@ -2753,7 +2765,7 @@
           onclick={() => (arrangeOpen = !arrangeOpen)}
           title="Sort, group and subgroup"
         >
-          Arrange
+          <svg class="toolbarIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M4 17h16M4 12h16"/><circle cx="17" cy="7" r="2"/><circle cx="8" cy="17" r="2"/><circle cx="10" cy="12" r="2"/></svg><span class="actionText">Arrange</span>
         </button>
         {#if arrangeOpen}
           <div class="arrangeMenu">
@@ -2805,7 +2817,7 @@
       <!-- media, culling and metadata filters -->
       <div class="grp filterwrap">
         <button class="chip" class:on={filtersOpen || activeFilterCount > 0} onclick={() => (filtersOpen = !filtersOpen)} title="Media, culling and metadata filters">
-          Filters{activeFilterCount ? ` ${activeFilterCount}` : ""}
+          <svg class="toolbarIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6.4 7.2V19l-3.2 1.5v-8.3z"/></svg><span class="actionText">Filters</span>{#if activeFilterCount}<span class="filterCount">{activeFilterCount}</span>{/if}
         </button>
         <!-- N of M passing filters, pre-stack-folding — always visible while any
              filter is active (baseView = filtered; items = whole folder view). -->
@@ -2916,7 +2928,7 @@
               <span class="prep-ico" aria-hidden="true">
                 {#if preparing}◌{:else if prepared}✓{:else}<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M13 2 4.5 13.2c-.4.5 0 1.3.7 1.3H11l-1.4 8.2c-.1.7.8 1.1 1.2.5L19.5 12c.4-.5 0-1.3-.7-1.3H12.9L14.2 2.6c.1-.7-.8-1.1-1.2-.6Z"/></svg>{/if}
               </span>
-              {#if preparing}{prepPct}%{prepEta ? ` ${prepEta}` : ""}{:else if prepared}Ready{:else}Prepare{/if}
+              <span class="actionText">{#if preparing}{prepPct}%{prepEta ? ` ${prepEta}` : ""}{:else if prepared}Ready{:else}Prepare{/if}</span>
             </span>
           </button>
           <button
@@ -2940,12 +2952,12 @@
         </div>
         <button class="btn sm danger" onclick={rejectSelected} disabled={actionTargets.length === 0} title="Toggle rejected on the active item or selection (X)">
           <svg class="btn-ico" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
-          {allTargetsRejected ? "Unreject" : "Reject"}{selected.size > 1 ? ` ${selected.size}` : ""}
+          <span class="actionText">{allTargetsRejected ? "Unreject" : "Reject"}{selected.size > 1 ? ` ${selected.size}` : ""}</span>
         </button>
         <div class="grp clearWrap">
           <button class="btn sm" class:on={clearOpen} onclick={() => (clearOpen = !clearOpen)} disabled={actionTargets.length === 0} title="Clear ratings, labels, flags or tags from the active item or selection">
             <svg class="btn-ico" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 8 14 2 3 13l6 6h4l7-7z"/><line x1="9" y1="19" x2="21" y2="19"/></svg>
-            Clear
+            <span class="actionText">Clear</span>
           </button>
           {#if clearOpen}
             <div class="clearMenu">
@@ -2970,7 +2982,7 @@
           <span class="hold-fill" style="width:{(holdMs / HOLD_MS) * 100}%"></span>
           <span class="hold-lbl">
             <svg class="btn-ico" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/><line x1="10" y1="11" x2="10" y2="16"/><line x1="14" y1="11" x2="14" y2="16"/></svg>
-            Delete{rejectedCount ? ` ${rejectedCount}` : ""}
+            <span class="actionText">Delete{rejectedCount ? ` ${rejectedCount}` : ""}</span>
           </span>
         </button>
         {/if}
@@ -3042,12 +3054,19 @@
              ONE place, logically bunched, no scattered duplicates). Stacks and
              Live Scrub have no other home — this popover is it. -->
         <div class="grpHead">Appearance</div>
-        <div class="row"><span>Theme</span>
+        <div class="row appearanceRow"><span>Theme</span>
+          <div class="seg themeSeg">
+            <button class="chip" class:on={settings.s.theme === "neutral"} onclick={() => settings.set({ theme: "neutral" })} title="Neutral professional editing chrome"><i class="themeSwatch studio"></i>Studio</button>
+            <button class="chip" class:on={settings.s.theme === "dark"} onclick={() => settings.set({ theme: "dark" })}><i class="themeSwatch midnight"></i>Midnight</button>
+            <button class="chip" class:on={settings.s.theme === "warm"} onclick={() => settings.set({ theme: "warm" })} title="Low-blue-light late-night chrome"><i class="themeSwatch amber"></i>Amber</button>
+            <button class="chip" class:on={settings.s.theme === "light"} onclick={() => settings.set({ theme: "light" })}><i class="themeSwatch daylight"></i>Daylight</button>
+          </div>
+        </div>
+        <div class="row"><span>Interface size</span>
           <div class="seg">
-            <button class="chip" class:on={settings.s.theme === "dark"} onclick={() => settings.set({ theme: "dark" })}>Dark</button>
-            <button class="chip" class:on={settings.s.theme === "neutral"} onclick={() => settings.set({ theme: "neutral" })} title="Lightroom-like neutral graphite chrome; the photo stage stays neutral">Neutral</button>
-            <button class="chip" class:on={settings.s.theme === "warm"} onclick={() => settings.set({ theme: "warm" })} title="Warm late-night graphite chrome for yellow-lamp work">Warm</button>
-            <button class="chip" class:on={settings.s.theme === "light"} onclick={() => settings.set({ theme: "light" })}>Light</button>
+            <button class="chip" class:on={settings.s.uiScale === "compact"} onclick={() => settings.set({ uiScale: "compact" })} title="More media on a small laptop display">Compact</button>
+            <button class="chip" class:on={settings.s.uiScale === "comfortable"} onclick={() => settings.set({ uiScale: "comfortable" })}>Standard</button>
+            <button class="chip" class:on={settings.s.uiScale === "distance"} onclick={() => settings.set({ uiScale: "distance" })} title="Large controls and type for a TV or distant monitor">TV / large</button>
           </div>
         </div>
         <div class="row"><span>Filmstrip</span>
@@ -3266,13 +3285,19 @@
           <div class="welcome"><p>Scanning {currentDir ? basename(currentDir) : ""}…</p></div>
         {:else if !currentDir}
           <div class="welcome">
-            <img class="wIcon" src="/favicon.png" alt="" width="72" height="72" />
-            <h1>FoxCull</h1>
-            <p>Pick a folder on the left to start culling. Browse-in-place — nothing is imported or changed.</p>
-            <p class="wHints">
-              <kbd>?</kbd> shortcuts · <kbd>P</kbd> pick · <kbd>X</kbd> reject · <kbd>F</kbd> play mode ·
-              right-click anything for its menu
-            </p>
+            <div class="welcomeMark"><img class="wIcon" src="/favicon.png" alt="" width="74" height="74" /></div>
+            <div class="welcomeCopy">
+              <span class="welcomeEyebrow">Photo &amp; video review studio</span>
+              <h1>Make the keepers obvious.</h1>
+              <p>Open any folder and start culling in place. Nothing is imported, duplicated or changed until you ask.</p>
+            </div>
+            <button class="btn accent welcomeOpen" onclick={openFolderPicker}>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5h6l2 2h10v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 8V5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2.5"/></svg>
+              Open a folder
+            </button>
+            <div class="welcomeHints">
+              <span><kbd>P</kbd> Pick</span><span><kbd>X</kbd> Reject</span><span><kbd>Enter</kbd> Focus</span><span><kbd>?</kbd> All shortcuts</span>
+            </div>
           </div>
         {:else if editOpen}
           <EditStudio {active} {selectedItems} sourceItems={items} currentDir={currentDir} recursive={settings.s.includeSub} refreshKey={folderRefreshKey} onexported={() => void refreshAfterMediaOutput()} bind:this={editComp} />
@@ -3332,8 +3357,11 @@
     <!-- active-item info bar -->
     {#if active && !editOpen}
       <div class="info">
-        <span class="name" title={active.path}>{active.name}</span>
-        <span class="meta">{active.kind} · {activeIndex + 1}/{view.length}</span>
+        <span class="activeIdentity">
+          <span class="name" title={active.path}>{active.name}</span>
+          <span class="meta">{active.kind} · {activeIndex + 1} of {view.length}</span>
+        </span>
+        <span class="infoDivider"></span>
         <div class="rate" title="Star rating (1–5 · ` clears)">
           {#each [1, 2, 3, 4, 5] as n}
             <button class="star" class:on={active.rating >= n} onclick={() => rate(n)}>★</button>
@@ -3359,8 +3387,8 @@
         </div>
 
         <span class="spacer"></span>
-        <button class="ico" title="Reveal in file manager" onclick={() => active && api.reveal(active.path)}>⤴</button>
-        <span class="counts">✓ {pickCount} · ✕ {rejectedCount}</span>
+        <button class="ico" title="Reveal in file manager" aria-label="Reveal in file manager" onclick={() => active && api.reveal(active.path)}><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6"/><path d="m20 4-9 9"/><path d="M18 13v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/></svg></button>
+        <span class="counts"><span class="pickCount">✓ {pickCount}</span><span class="rejectCount">✕ {rejectedCount}</span></span>
       </div>
     {/if}
 
@@ -3455,7 +3483,6 @@
   .ico.sm { width: 26px; height: 26px; font-size: 13px; }
   .ico.spin { animation: spin 0.5s linear; color: var(--accent); border-color: var(--accent); }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .brand { font-weight: 700; }
   .tree-body { overflow-y: auto; padding: 6px; flex: 1; }
   .hint { padding: 10px; color: var(--text-faint); font-size: 12.5px; }
 
@@ -3951,7 +3978,6 @@
   .welcome { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--text-dim); text-align: center; padding: 24px; }
   .welcome h1 { font-size: 28px; margin: 0; }
   .welcome .wIcon { border-radius: 16px; opacity: 0.95; }
-  .welcome .wHints { margin: 4px 0 0; font-size: 12px; color: var(--text-faint); }
   .welcome kbd {
     display: inline-block;
     min-width: 16px;
@@ -4171,4 +4197,222 @@
   /* dim / lights-out scrim */
   .scrim { position: fixed; inset: 0; z-index: 40; border: none; padding: 0; cursor: pointer; background: rgba(0,0,0,0.55); transition: background 0.18s; }
   .app[data-dim="2"] .scrim { background: rgba(0,0,0,0.93); }
+
+  /* ── 2026 studio finish ─────────────────────────────────────────────── */
+  .app {
+    width: calc(100vw / var(--ui-scale));
+    height: calc(100vh / var(--ui-scale));
+    transform: scale(var(--ui-scale));
+    transform-origin: top left;
+    background: var(--bg);
+  }
+  .tree {
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 96%, white 4%), var(--bg-panel));
+    border-right-color: var(--border-soft);
+    box-shadow: 1px 0 0 color-mix(in srgb, black 18%, transparent);
+  }
+  .tree-head {
+    min-height: 54px;
+    padding: 8px 10px;
+    border-bottom-color: var(--border-soft);
+  }
+  .sidebarIdentity { min-width: 0; display: flex; align-items: center; gap: 8px; margin-right: auto; }
+  .sidebarIdentity img { flex: 0 0 auto; border-radius: 7px; box-shadow: 0 4px 14px rgba(0,0,0,.28); }
+  .brandLockup { min-width: 0; display: flex; flex-direction: column; line-height: 1.05; }
+  .brandLockup strong { font-family: var(--font-display); font-size: 13px; font-weight: 720; letter-spacing: -.01em; }
+  .brandLockup small { max-width: 95px; margin-top: 4px; overflow: hidden; color: var(--text-faint); font-size: 9.5px; font-weight: 620; letter-spacing: .075em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+  .tree-actions { gap: 5px; }
+  .tree-body { padding: 8px 7px 10px; }
+  .hint { margin: 0; padding: 18px 10px; line-height: 1.5; }
+  .vsplit { flex-basis: 4px; }
+  .vsplit:hover { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+
+  .bar {
+    min-height: 54px;
+    gap: 7px;
+    padding: 7px 10px;
+    border-bottom-color: var(--border-soft);
+    background: color-mix(in srgb, var(--bg-panel) 94%, transparent);
+    box-shadow: 0 1px 0 color-mix(in srgb, black 18%, transparent), 0 7px 20px rgba(0,0,0,.08);
+    backdrop-filter: blur(18px) saturate(1.08);
+  }
+  .ctl-label { margin-right: 2px; letter-spacing: .08em; }
+  .div { margin: 5px 3px; background: var(--border-soft); }
+  .seg.modes {
+    gap: 1px;
+    padding: 3px;
+    border-color: var(--border-soft);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--bg-elev) 76%, transparent);
+    box-shadow: inset 0 1px 3px rgba(0,0,0,.16);
+  }
+  .chip {
+    min-height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 4px 9px;
+    border-radius: 7px;
+    font-weight: 540;
+    transition: background 100ms ease, color 100ms ease, border-color 100ms ease, transform 90ms ease;
+  }
+  .chip:hover { color: var(--text); }
+  .chip:active { transform: translateY(1px); }
+  .chip.on { box-shadow: inset 0 1px color-mix(in srgb, white 16%, transparent), 0 2px 7px color-mix(in srgb, var(--accent) 16%, transparent); }
+  .viewChip svg,
+  .toolbarIcon { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .filterCount { min-width: 17px; height: 17px; display: inline-flex; align-items: center; justify-content: center; margin-left: 1px; border-radius: 999px; background: var(--accent); color: var(--accent-on); font-size: 10px; font-weight: 750; }
+  .ico {
+    border-color: var(--border-soft);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg-elev) 82%, transparent);
+    box-shadow: inset 0 1px color-mix(in srgb, white 6%, transparent);
+    transition: background 100ms ease, border-color 100ms ease, color 100ms ease, transform 90ms ease;
+  }
+  .ico:hover { border-color: var(--border-strong); color: var(--text); }
+  .ico:active { transform: translateY(1px); }
+  .btn.sm { min-height: 29px; border-radius: 8px; font-weight: 560; }
+  .rightTools { gap: 6px; }
+  .modeToggle { gap: 2px; padding: 3px; border-color: var(--border-soft); border-radius: 10px; box-shadow: inset 0 1px 4px rgba(0,0,0,.2); }
+  .modeToggle button { min-width: 68px; padding: 6px 10px; border-radius: 7px; font-size: 12.5px; }
+  .modeToggle button.on { box-shadow: inset 0 1px color-mix(in srgb, white 16%, transparent), 0 2px 8px color-mix(in srgb, var(--accent) 20%, transparent); }
+  .zoom input { width: 78px; }
+  .prep { min-width: 78px; }
+  .castBadge { height: 27px; padding-inline: 9px; border-color: color-mix(in srgb, var(--accent) 48%, var(--border)); background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev)); }
+
+  .arrangeMenu,
+  .filtermenu,
+  .clearMenu,
+  .castMenu,
+  .pop {
+    border-color: color-mix(in srgb, var(--border-strong) 72%, transparent);
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--bg-elev) 94%, transparent);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(22px) saturate(1.12);
+  }
+  .arrangeMenu,
+  .filtermenu { top: 37px; padding: 14px; gap: 12px; }
+  .clearMenu,
+  .castMenu { top: 35px; padding: 7px; }
+  .clearMenu button,
+  .castRow,
+  .tagrow { border-radius: 8px; }
+  .pop {
+    top: 58px;
+    right: 10px;
+    width: 396px;
+    max-height: calc(100vh / var(--ui-scale) - 72px);
+    overflow-y: auto;
+    padding: 15px;
+    gap: 11px;
+  }
+  .pop .grpHead { margin-top: 5px; padding-bottom: 6px; letter-spacing: .095em; }
+  .pop .row { min-height: 29px; }
+  .appearanceRow { align-items: flex-start !important; }
+  .themeSeg { width: 250px; display: grid; grid-template-columns: 1fr 1fr; }
+  .themeSeg .chip { justify-content: flex-start; }
+  .themeSwatch { width: 13px; height: 13px; border: 1px solid rgba(255,255,255,.16); border-radius: 4px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.12); }
+  .themeSwatch.studio { background: linear-gradient(135deg, #17191d 50%, #78b9ef 50%); }
+  .themeSwatch.midnight { background: linear-gradient(135deg, #0d1015 50%, #63b7f2 50%); }
+  .themeSwatch.amber { background: linear-gradient(135deg, #1b1917 50%, #d8ad68 50%); }
+  .themeSwatch.daylight { background: linear-gradient(135deg, #f7f9fb 50%, #2d7fc2 50%); }
+  .sel { min-height: 29px; border-color: var(--border-soft); }
+
+  .viewport {
+    background:
+      radial-gradient(circle at 50% 38%, color-mix(in srgb, var(--bg-elev) 9%, transparent), transparent 42%),
+      var(--viewport-bg);
+  }
+  .welcome { gap: 0; padding: 42px; }
+  .welcomeMark { display: grid; place-items: center; width: 94px; height: 94px; margin-bottom: 22px; border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border-soft)); border-radius: 26px; background: color-mix(in srgb, var(--bg-elev) 36%, transparent); box-shadow: 0 22px 60px rgba(0,0,0,.28), inset 0 1px rgba(255,255,255,.06); }
+  .welcome .wIcon { border-radius: 18px; filter: drop-shadow(0 8px 16px rgba(0,0,0,.32)); }
+  .welcomeCopy { max-width: 610px; }
+  .welcomeEyebrow { color: var(--accent); font-size: 10.5px; font-weight: 720; letter-spacing: .14em; text-transform: uppercase; }
+  .welcome h1 { margin-top: 8px; color: var(--text); font-family: var(--font-display); font-size: clamp(30px, 3.2vw, 47px); font-weight: 690; letter-spacing: -.035em; line-height: 1.04; }
+  .welcome p { max-width: 560px; margin: 13px auto 0; font-size: 14px; line-height: 1.65; }
+  .welcomeOpen { min-height: 39px; margin-top: 23px; padding: 8px 18px; border-radius: 10px; font-weight: 680; }
+  .welcomeHints { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 18px; margin-top: 24px; color: var(--text-faint); font-size: 11.5px; }
+  .welcomeHints span { display: inline-flex; align-items: center; gap: 6px; }
+  .welcome kbd { min-width: 21px; padding: 1px 6px; border-color: var(--border-strong); border-radius: 6px; background: color-mix(in srgb, var(--bg-elev) 75%, transparent); box-shadow: 0 2px 0 rgba(0,0,0,.24); }
+
+  .cell { padding-top: 9px; border-radius: 10px; transition: border-color 100ms ease, background 100ms ease, transform 100ms ease; }
+  .cellclip { border-radius: 8px; background: #060708; box-shadow: 0 2px 7px rgba(0,0,0,.28); }
+  .cell:hover { background: color-mix(in srgb, var(--bg-elev) 18%, var(--viewport-bg)); }
+  .cell.selected { background: color-mix(in srgb, var(--select) 8%, var(--viewport-bg)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--select) 18%, transparent); }
+  .cell.active { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent), 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent); }
+  .scell { border-radius: 7px; }
+  .scell .cellclip { border-radius: 5px; }
+
+  .info { min-height: 49px; gap: 9px; padding: 6px 11px; border-top-color: var(--border-soft); background: color-mix(in srgb, var(--bg-panel) 96%, transparent); box-shadow: 0 -6px 20px rgba(0,0,0,.08); }
+  .activeIdentity { min-width: 0; display: flex; flex-direction: column; line-height: 1.1; }
+  .info .name { max-width: 260px; font-size: 12px; font-weight: 650; }
+  .info .meta { margin-top: 4px; font-size: 10px; letter-spacing: .03em; text-transform: uppercase; }
+  .infoDivider { align-self: stretch; width: 1px; margin: 3px 1px; background: var(--border-soft); }
+  .rate { gap: 1px; padding: 2px 5px; border: 1px solid var(--border-soft); border-radius: 999px; background: color-mix(in srgb, var(--bg-elev) 58%, transparent); }
+  .star { width: 19px; height: 22px; padding: 0; font-size: 15px; transition: color 90ms ease, transform 90ms ease; }
+  .star:hover { color: color-mix(in srgb, var(--star) 65%, var(--text-faint)); transform: translateY(-1px); }
+  .tag { border-color: var(--border-soft); background: color-mix(in srgb, var(--bg-elev) 70%, transparent); }
+  .taginput { height: 25px; border-color: var(--border-soft); background: color-mix(in srgb, var(--bg-elev) 65%, transparent); transition: width 120ms ease, border-color 120ms ease; }
+  .info .counts { display: inline-flex; gap: 9px; padding: 4px 7px; border: 1px solid var(--border-soft); border-radius: 999px; background: color-mix(in srgb, var(--bg-elev) 50%, transparent); }
+  .pickCount { color: var(--pick); }
+  .rejectCount { color: var(--reject); }
+
+  .askBox,
+  .kbGuide,
+  .padGuide { border-color: var(--border-strong); border-radius: var(--radius-xl); background: color-mix(in srgb, var(--bg-elev) 96%, transparent); box-shadow: var(--shadow); backdrop-filter: blur(24px) saturate(1.1); }
+  .askBox { padding: 21px 22px 18px; }
+  .askTitle { font-family: var(--font-display); font-size: 17px; }
+  .askBtn { min-height: 33px; border-radius: 9px; }
+  .kbBackdrop { background: rgba(0,0,0,.60); backdrop-filter: blur(5px); }
+
+  /* Breakpoints use the whole window, while the toolbar only owns the window
+     minus the folder pane. Start compacting early enough for a 1440 px laptop. */
+  @media (max-width: 1600px) {
+    .ctl-label { display: none; }
+    .bar { gap: 5px; }
+    .div { margin-inline: 1px; }
+    .rightTools { gap: 4px; }
+    .zoom input { width: 62px; }
+    .modeToggle button { min-width: 58px; padding-inline: 8px; }
+  }
+
+  /* XPS split-screen / small window: preserve every control in two calm rows
+     instead of clipping the destructive actions off-screen. */
+  @media (max-width: 1250px) {
+    .tree { max-width: 230px; }
+    .bar { flex-wrap: wrap; align-content: center; min-height: 91px; }
+    .bar > .spacer { display: none; }
+    .rightTools { width: 100%; justify-content: flex-end; }
+    .viewGroup { margin-right: auto; }
+    .pop { top: 94px; }
+  }
+
+  @media (max-width: 760px) {
+    .tree { max-width: 190px; }
+    .openFolder { width: 29px; padding-inline: 0; font-size: 0; }
+    .actionText { display: none; }
+    .prep { min-width: 35px; }
+    .viewChip span { display: none; }
+    .viewChip { width: 31px; padding-inline: 0; }
+    .zoom { display: none; }
+    .modeToggle button { min-width: 48px; }
+    .info .name { max-width: 145px; }
+    .tags { display: none; }
+  }
+
+  /* Scaling changes the app's effective layout width without changing the
+     browser media-query width. Give TV mode the same two-row command bar a
+     genuinely narrower window receives, so zoom never hides Settings. */
+  :global(html[data-ui-scale="distance"]) .bar {
+    flex-wrap: wrap;
+    align-content: center;
+    min-height: 91px;
+  }
+  :global(html[data-ui-scale="distance"]) .bar > .spacer { display: none; }
+  :global(html[data-ui-scale="distance"]) .rightTools { width: 100%; justify-content: flex-end; }
+  :global(html[data-ui-scale="distance"]) .viewGroup { margin-right: auto; }
+  :global(html[data-ui-scale="distance"]) .pop { top: 94px; }
 </style>

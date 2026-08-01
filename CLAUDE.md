@@ -26,6 +26,7 @@ frozen history — never edit it.
 | `CLAUDE_CODE_HANDOVER.md` | **Authoritative current state of the world.** Newest dated section first. |
 | `BACKLOG.md` | Prioritized P0–P3 worklist (from the 2026-07 audit). Do P0s next. |
 | `docs/AUDIT-2026-07.md` | Full independent audit writeup (perf/memory/security/Mac). |
+| `docs/UX-AUDIT-2026-08.md` | Visual-system brief: workflow/permutation map, every audited surface, responsive contract and QA matrix. |
 | `docs/HANDOFF-FROM-FABLE-AUDIT.md` | Short brief that accompanied audit PR #1. |
 | `docs/ROADMAP.md` | Product direction. |
 | `docs/INSTAGRAM_EXPORT_PLAYBOOK.md` | The IG export pipeline's reasoning. |

@@ -1,189 +1,81 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
-     release body, and the GitHub release title already carries the tag. A
-     heading here goes stale the moment you forget to bump it — which is exactly
-     what happened on nightly.5 and .6, both of which announced themselves as
-     "nightly.4". Write what changed; let the tag say which build it is. -->
+     release body; the GitHub release title is the version source. -->
 
-> **Chromecast discovery fixed for Windows machines where Chrome could see the
-> TV but FoxCull could not.** FoxCull now searches through two independent
-> routes at the same time. The new route asks from a temporary outbound port on
-> every active network adapter, so it does not depend on Windows granting the
-> app an inbound UDP/5353 firewall exception. It also records the adapters,
-> discovery route, packet counts, and socket errors in `foxcull.log`, replacing
-> the old unhelpful “0 devices” result.
+## A complete visual refit
 
-> **Chromecast controls refined from the Sony TV test.** Casting now has one
-> clear playback authority: the TV. The laptop keeps its copy paused and muted,
-> so there is no doubled audio and Space works on the first press even when
-> local Video Autoplay is off. Space and Shift+Left/Right control the TV from
-> both Grid and Focus; the DualSense play/pause button and L2/R2 do the same.
-> A glowing CASTING badge reports Live, Loading, or Paused.
+FoxCull now looks and behaves like one coherent professional media workstation.
+The Library, Focus player, Edit workspace, folder tree, details table, filmstrip,
+menus, settings, dialogs, Trash and controller setup share the same surface
+hierarchy, spacing, type, corners, shadows and interaction states.
 
-> **Cleaner TV picture.** FoxCull no longer sends the filename as Cast media
-> metadata, removing the unnecessary title card shown at the start of a clip.
+The media stage stays spectrally neutral in every theme. Chrome is layered with
+quiet luminance and depth instead of colour that could bias a photo or video
+judgement.
 
-> **Use the GitHub-built installer.** A local Windows-GNU test installer was
-> mistakenly handed off after compilation succeeded, but it could not start
-> because `WebView2Loader.dll` was missing. The release pipeline now launches
-> the Windows executable before publishing it and checks every required
-> sidecar. The portable ZIP now includes FFmpeg as well.
+## Four purpose-built themes
 
-Everything below carries forward from the v1.2.0 stable release; the new
-sections are the controller, in/out points, the pairing guide, the filmstrip
-and the TV following your player.
+- **Studio** is the refined neutral graphite default.
+- **Midnight** is a deeper, cooler black workspace.
+- **Amber** reduces blue light for late-night sessions.
+- **Daylight** is a crisp light workspace for bright rooms.
 
-## Scrubbing works the way it should have from the start
+Each theme now carries the whole semantic palette: selection, focus, hover,
+pick, reject, ratings, labels, stacks, borders, overlays and floating surfaces.
 
-Drag the playhead on a 4K60 clip and the picture follows your cursor. No lag, no
-waiting, full resolution.
+## Built for the XPS, Alienware and the TV
 
-**And nothing is pre-built any more.** No "preparing scrub frames", no progress
-bar to sit through, no cache written to your drives. Open a clip and skim it
-immediately — including the first time you ever touch it.
+Settings now has three persistent interface sizes:
 
-What changed underneath: FoxCull now decodes the exact frame you're pointing at,
-on demand, using your GPU. The old approach extracted hundreds of small frames
-to disk first and painted those. That was minutes of work per folder for a
-blurry result.
+- **Compact** recovers canvas room on the XPS 13.
+- **Standard** is tuned for normal laptop and monitor use.
+- **TV / large** enlarges the entire interface for a distant display or a
+  65-inch TV over HDMI.
 
-This works in the **grid** too — click a clip to select it, then hover across
-its tile to skim through it.
+The command bar no longer clips its right-hand controls. It compacts at laptop
+widths and becomes a calm two-row bar in narrow windows or TV-large mode, keeping
+Settings, casting and destructive actions reachable.
 
-## Glimpse — press Ctrl+Space
+## Library polish
 
-A long clip's cover frame tells you almost nothing. Glimpse plays through it
-fast so you can see what's in it, then stop and cull.
+- The folder panel has a real FoxCull identity and shows the active folder.
+- Grid, Details and Focus use one SVG icon language.
+- Arrange and Filters are easier to scan; active filter counts are separate,
+  high-contrast badges.
+- Media tiles feel like real objects: cleaner focus/selection, better stack
+  treatment, neutral image wells and less visual noise.
+- The bottom culling bar has a stronger filename/metadata hierarchy, a contained
+  rating control, quieter tags and explicit pick/reject totals.
+- The first-run screen is now a purposeful launch surface with an Open Folder
+  action and the four keys that matter first.
 
-It runs at a **plain multiple of real time**, like a player's 2x or 5x — so the
-pace is the same on every clip. At the default 5x, a 20-second clip takes 4
-seconds and a 10-minute clip takes 2 minutes. **Settings → Glimpse speed**
-adjusts it from 2x to 10x.
+## Focus and Edit polish
 
-Press Ctrl+Space again, hit Space, or grab the playhead to stop; it lands
-cleanly wherever you stopped.
+- Focus keeps a true near-black reference surround. Video transport and clip
+  tools use a legible glass overlay over any frame, with a cleaner scrub track
+  and metadata card.
+- Edit has clearer separation between Source, preview, Timeline and Look. Source
+  cards, tracks, clips, preset groups, export menus, restore tabs and the export
+  dialog now belong to the same design system as Library.
+- Trash and controller setup use full-workspace modal surfaces with clearer
+  headers, cards and selected states.
 
-## Chromecast follow and controls — root cause fixed for testing
+No culling, playback, export, cast or file-management behavior was intentionally
+changed in this pass. The work is a visual and responsive refit over the proven
+workflow model.
 
-Quality was always good — FoxCull sends the original file untouched and lets the
-TV decode it. Previous fixes addressed receiver relaunches and out-of-order
-loads, but one startup race still disabled the entire live-control path:
+## Verification
 
-- FoxCull completed the secure connection, then briefly reported itself as
-  disconnected while a background thread started.
-- The UI cached that false answer.
-- Item follow, play/pause/seek, and even the status poll were all conditional on
-  the cached false value, so none of them ever ran.
+- Visual QA: 1440×900, 1366×768 and 1024×768, plus TV-large scaling.
+- `svelte-check`: 0 errors, 0 warnings.
+- Production frontend build: passed.
+- Rust `cargo check`: passed.
 
-The secure handshake now establishes the connection immediately. Recovery
-polling follows the session you asked for rather than depending on its stale
-answer, and successful polls refresh the UI. The log now records every
-frontend LOAD, follow, play, pause and seek attempt — including why an attempt
-was skipped — alongside the existing receiver protocol trace.
+---
 
-Earlier fixes carried in this build:
+**Pick your installer:**
+- **Windows:** installer `.exe` or `foxcull_*_x64_portable.zip`
+- **macOS Apple Silicon:** `.dmg`
+- **Linux:** `*.AppImage` or `*.deb`
 
-- **The receiver app on your TV closes itself when idle**, and FoxCull only ever
-  launched it once. After it closed, everything you selected silently went
-  nowhere while the button still said "Casting". It's relaunched as needed now.
-- FoxCull marked a file as "on the TV" when it *decided* to send it rather than
-  when it actually went — so a failed send looked like a success and nothing
-  retried.
-- Two fast presses of → could arrive out of order, leaving the TV on the earlier
-  shot.
-
-It now also notices when a session has genuinely ended instead of claiming a
-connection that's gone. This exact path cannot be proven without the TV, so
-this nightly deliberately says “test build,” not “reliable now.”
-
-## Culling from the couch, on a PlayStation controller
-
-The controller layout has been rebuilt around a full review session done from
-across the room — you shouldn't need to walk back to the laptop for anything.
-
-- **Press the touchpad** to open the selected shot in Focus, press it again to
-  go back. It's the pad's Enter key.
-- **✕ rejects, △ picks, ○ clears every mark** on the shot, **□ plays and
-  pauses**.
-- **Ratings live on the left stick** — flick up, right, down, left for one to
-  four stars, click the stick in for five.
-- **Colour labels live on the right stick**, the same way: blue, purple, red,
-  green, and yellow on the click. (Same order as the 6/7/8/9/0 keys.)
-- **L1 and R1 mark a video's in and out points**; the triggers still shuttle.
-- **Create/Share hides and shows the filmstrip**, the **PS button** goes
-  fullscreen, and **Options** brings up the button guide.
-
-All of it is still remappable, and the Controller panel now has a **button
-tester** — press anything and it tells you what the pad reported, so you can
-check the PS button and touchpad work on your setup before relying on them.
-
-Because the layout changed shape, **any bindings you'd customised are reset
-once** to pick up the new defaults.
-
-## The pairing guide is actually readable now
-
-Two side-by-side cards — pairing to this PC, and pairing back to your PS5 —
-each a short numbered list instead of one block of prose. The console direction
-is documented for the first time: plug in USB-C, press PS, done.
-
-## Your video in/out points are saved now
-
-Mark an in and out point on a clip, move to the next one, come back — the
-markers are still there, committed or not. They're stored per drive alongside
-your ratings and labels.
-
-They were never being saved before. Not "lost on navigation" — never written at
-all, and the failure was being discarded silently, which is why it looked like a
-missing feature rather than a bug. The same fault also disabled the **Cut**
-button in Focus, which should now work.
-
-## The TV should now follow what you're doing
-
-With a cast session running, pausing or scrubbing on the laptop now pauses and
-scrubs on the TV, and moving between items in Grid or Focus sends the new item.
-Those are the specific hardware checks for this nightly.
-
-## Predictable L2/R2 seeking
-
-The DualSense triggers used to fire while only partly depressed, then abruptly
-jump from a roughly 2.4-second seek to repeated 5-second seeks eight times a
-second. One pull now skips exactly five seconds. Hold for half a second to start
-repeating at a controlled pace.
-
-## The filmstrip gets out of the way
-
-It hides itself in Grid, where it just repeats what's already on screen, and
-comes back in Focus, where it's the only way to see where you are in the folder.
-Toggle it by hand and that view remembers your answer.
-
-## Fixes
-
-- **A frozen picture with the audio still playing.** Clicking the timeline
-  during playback could leave the frame stuck. Two things race there — the
-  decoded frame and the video's own seek — and when the seek won, a late frame
-  put itself back on screen with nothing left to take it down. Fixed, with a
-  second check four times a second so anything similar recovers on its own.
-- **Edit mode on a big folder.** Opening Edit on 229 clips used ~8 GB and left
-  every item reading "Reading details..." — items past the 80th were in fact
-  never loaded at all. Now ~0.5 GB, and everything loads as you scroll.
-- **Opening a clip no longer blips**, showing one frame and then swapping to
-  another a moment later.
-- Thumbnail loading reports progress instead of leaving you looking at a blank
-  grid wondering if anything is happening.
-
-## Smaller things
-
-- **Press B** to hide or show the filmstrip; a slim rail stays behind to bring
-  it back. It remembers which side it was docked to.
-- The activity indicator moved to the **bottom-left**, and no longer disappears
-  when you collapse the folder panel.
-- The timestamp that floated over the middle of the picture while dragging is
-  gone; the transport clock is bigger and readable over a bright frame.
-- **Arrange** has icons beside Sort/Group/Subgroup, and the sort-direction arrow
-  is a proper button.
-
-## Known limits
-
-- Skimming needs a codec your GPU can decode. Everything else falls back to the
-  older behaviour automatically — you'll see it disable itself, not break.
-- Edit mode's source list loads as you scroll, but a very large folder scrolled
-  end to end still adds up. Fine at a few hundred clips.
+**Windows:** the app is not code-signed yet; use “More info” → “Run anyway”.
+**macOS:** the app is not notarized yet; right-click it → Open on first launch.

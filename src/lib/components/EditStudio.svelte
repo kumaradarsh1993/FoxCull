@@ -4536,4 +4536,83 @@
       min-width: 64px;
     }
   }
+
+  /* ── 2026 studio finish ─────────────────────────────────────────────── */
+  .editShell { background: #0a0c0f; }
+  .sourcePane,
+  .inspector {
+    border-color: var(--border-soft);
+    background: linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 97%, white 3%), var(--bg-panel));
+  }
+  .sourceHead,
+  .editTop,
+  .timelineHead {
+    min-height: 50px;
+    border-bottom-color: var(--border-soft);
+    background: color-mix(in srgb, var(--bg-panel) 94%, transparent);
+  }
+  .sourceHead strong { font-family: var(--font-display); font-size: 14px; letter-spacing: -.01em; }
+  .panelSplitter,
+  .timelineResize { background: transparent; border-color: var(--border-soft); }
+  .panelSplitter:hover,
+  .panelSplitter:active,
+  .timelineResize:hover,
+  .timelineResize:active { background: color-mix(in srgb, var(--accent) 50%, transparent); }
+  .chip,
+  .miniIcon,
+  .play,
+  .miniBtn,
+  .ghost,
+  .dangerBtn {
+    min-height: 29px;
+    border-color: var(--border-soft);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg-elev) 82%, transparent);
+    transition: background 100ms ease, border-color 100ms ease, color 100ms ease, transform 90ms ease;
+  }
+  .chip:hover,
+  .miniIcon:hover,
+  .play:hover,
+  .miniBtn:hover,
+  .ghost:hover,
+  .dangerBtn:hover { border-color: var(--border-strong); }
+  .chip:active,
+  .miniIcon:active,
+  .play:active,
+  .miniBtn:active,
+  .ghost:active,
+  .dangerBtn:active { transform: translateY(1px); }
+  .sourceList { padding: 10px; gap: 8px; }
+  .sourceItem {
+    border-color: var(--border-soft);
+    border-radius: 11px;
+    background: color-mix(in srgb, var(--bg-elev) 62%, transparent);
+    box-shadow: 0 1px 2px rgba(0,0,0,.14);
+    transition: background 100ms ease, border-color 100ms ease, box-shadow 100ms ease, transform 100ms ease;
+  }
+  .sourceItem:hover,
+  .sourceItem.focused { transform: translateY(-1px); box-shadow: var(--shadow-soft); }
+  .sourceItem.focused { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev)); }
+  .sourceThumb { border-radius: 8px; background: #060709; box-shadow: 0 3px 9px rgba(0,0,0,.28); }
+  .sourceChips span { padding: 3px 6px; border-radius: 6px; }
+  .presetGroup { padding: 3px; border-color: var(--border-soft); border-radius: 10px; background: color-mix(in srgb, var(--bg-elev) 74%, transparent); box-shadow: inset 0 1px 4px rgba(0,0,0,.18); }
+  .presetGroup button { border-radius: 7px; }
+  .exportBtn { min-height: 32px; border-radius: 9px; box-shadow: 0 5px 14px color-mix(in srgb, var(--accent) 22%, transparent); }
+  .exportMenu { border-color: var(--border-strong); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--bg-elev) 95%, transparent); box-shadow: var(--shadow); backdrop-filter: blur(22px); }
+  .preview { background: radial-gradient(circle at center, #11151a, #030405 68%); }
+  .transport { min-height: 46px; padding-inline: 13px; border-top-color: var(--border-soft); background: color-mix(in srgb, var(--bg-panel) 96%, transparent); }
+  .timeline { background: color-mix(in srgb, var(--bg) 96%, black 4%); }
+  .timelineHead { padding-inline: 13px; }
+  .track { border-color: var(--border-soft); border-radius: 9px; background: color-mix(in srgb, var(--bg-elev) 58%, transparent); }
+  .timelineClip { border-radius: 7px; box-shadow: 0 3px 10px rgba(0,0,0,.24); }
+  .block { margin: 10px; border-color: var(--border-soft); border-radius: 12px; background: color-mix(in srgb, var(--bg-elev) 46%, transparent); box-shadow: inset 0 1px rgba(255,255,255,.025); }
+  .blockHead { border-radius: 9px; }
+  .lookGroup { border-color: var(--border-soft); border-radius: 10px; overflow: hidden; }
+  .lookGroupHead { min-height: 34px; }
+  .lookPreset { border-radius: 9px; }
+  .lookPreset.active { box-shadow: inset 3px 0 var(--accent); }
+  .restoreTab { border-color: var(--border-strong); border-radius: 10px; background: rgba(25,30,36,.86); backdrop-filter: blur(14px); }
+  .igBackdrop { background: rgba(0,0,0,.68); backdrop-filter: blur(7px); }
+  .igDialog { border-color: var(--border-strong); border-radius: var(--radius-xl); background: color-mix(in srgb, var(--bg-panel) 97%, transparent); box-shadow: var(--shadow); }
+  .igDialog h2 { font-family: var(--font-display); letter-spacing: -.02em; }
 </style>

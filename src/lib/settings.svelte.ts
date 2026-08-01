@@ -4,6 +4,7 @@
 import { Store } from "@tauri-apps/plugin-store";
 
 export type Theme = "light" | "dark" | "neutral" | "warm";
+export type UiScale = "compact" | "comfortable" | "distance";
 export type ViewMode = "grid" | "details" | "loupe";
 /** Where the filmstrip docks. "left" sits between the folder tree and the
  *  viewport — the same column your eye is already in when picking folders. */
@@ -17,6 +18,9 @@ export type RelatedMode = "expanded" | "collapsed";
 
 export interface AppSettings {
   theme: Theme;
+  /** Whole-interface scale. Distance is intentionally large enough for an HDMI
+   *  TV workflow; compact recovers canvas space on the XPS 13. */
+  uiScale: UiScale;
   viewMode: ViewMode;
   filmstripPos: FilmstripPos;
   treeWidth: number;
@@ -77,6 +81,7 @@ export interface AppSettings {
 
 const DEFAULTS: AppSettings = {
   theme: "neutral",
+  uiScale: "comfortable",
   viewMode: "grid",
   filmstripPos: "bottom",
   treeWidth: 270,
@@ -133,6 +138,7 @@ class Settings {
         const migrated: Partial<AppSettings> = {
           ...loaded,
           theme: loaded.theme ?? DEFAULTS.theme,
+          uiScale: loaded.uiScale ?? DEFAULTS.uiScale,
         };
         // Migrate the old boolean month toggle to the new granularity field.
         if (loaded.groupBy === undefined && loaded.groupByMonth) migrated.groupBy = "month";

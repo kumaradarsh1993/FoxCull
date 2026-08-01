@@ -280,25 +280,25 @@
 
 <style>
   .details { width: 100%; height: 100%; display: flex; flex-direction: column; background: var(--viewport-bg); overflow: hidden; }
-  .toolbar { position: relative; flex: 0 0 34px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 5px 10px; border-bottom: 1px solid var(--border); background: var(--bg-panel); color: var(--text-faint); font-size: 12px; }
-  .colsBtn { padding: 4px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-elev); color: var(--text-dim); }
+  .toolbar { position: relative; flex: 0 0 38px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 5px 11px; border-bottom: 1px solid var(--border-soft); background: color-mix(in srgb, var(--bg-panel) 92%, transparent); color: var(--text-faint); font-size: 12px; }
+  .colsBtn { min-height: 28px; padding: 4px 10px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg-elev); color: var(--text-dim); }
   .colsBtn.on { color: var(--accent); border-color: var(--accent); }
-  .colsMenu { position: absolute; z-index: 50; top: 30px; right: 10px; width: 210px; max-height: 320px; overflow: auto; padding: 8px; display: grid; gap: 6px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-elev); box-shadow: var(--shadow); }
+  .colsMenu { position: absolute; z-index: 50; top: 34px; right: 10px; width: 220px; max-height: 340px; overflow: auto; padding: 10px; display: grid; gap: 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--bg-elev) 95%, transparent); box-shadow: var(--shadow); backdrop-filter: blur(20px); }
   .colsMenu label { display: flex; align-items: center; gap: 7px; color: var(--text-dim); }
   .head,
   .row { display: grid; align-items: center; gap: 0; padding: 0 10px; }
-  .head { flex: 0 0 32px; overflow: hidden; border-bottom: 1px solid var(--border); background: var(--bg-panel); color: var(--text-faint); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+  .head { flex: 0 0 34px; overflow: hidden; border-bottom: 1px solid var(--border-soft); background: color-mix(in srgb, var(--bg-panel) 94%, transparent); color: var(--text-faint); font-size: 10.5px; font-weight: 720; text-transform: uppercase; letter-spacing: 0.07em; }
   .head > span { position: relative; height: 100%; display: flex; align-items: center; padding-right: 10px; min-width: 0; }
   .resizer { position: absolute; top: 5px; right: 0; width: 7px; height: 22px; cursor: col-resize; border-right: 1px solid color-mix(in srgb, var(--border) 80%, transparent); }
   .resizer:hover { border-color: var(--accent); }
   .vp { flex: 1; overflow: auto; }
   .canvas { position: relative; width: 100%; }
-  .row { position: absolute; top: 0; left: 0; min-width: 100%; height: 52px; text-align: left; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); color: var(--text); background: transparent; }
-  .row:hover { background: var(--bg-hover); }
+  .row { position: absolute; top: 0; left: 0; min-width: 100%; height: 52px; text-align: left; border-bottom: 1px solid var(--border-soft); color: var(--text); background: transparent; transition: background 90ms ease; }
+  .row:hover { background: color-mix(in srgb, var(--bg-hover) 72%, transparent); }
   .row.selected { background: color-mix(in srgb, var(--accent) 12%, transparent); }
   .row.active { background: color-mix(in srgb, var(--accent) 22%, transparent); box-shadow: inset 2px 0 0 var(--accent); }
   .row.reject { opacity: 0.5; }
-  .c-thumb { width: 42px; height: 42px; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 5px; }
+  .c-thumb { width: 42px; height: 42px; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 7px; background: #07080a; box-shadow: 0 2px 6px rgba(0,0,0,.28); }
   .txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 10px; color: var(--text-dim); font-size: 12.5px; }
   .row .txt:nth-child(2) { color: var(--text); font-weight: 600; }
   .ar { justify-content: flex-end; text-align: right; }
