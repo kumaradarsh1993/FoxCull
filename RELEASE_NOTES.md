@@ -3,6 +3,8 @@
 
 ## Interface recovery and smoother browsing
 
+- Collapsing the folder explorer now leaves a clearly visible restore button
+  above the command bar, with space reserved so it cannot cover View controls.
 - FoxCull's established orange fox, film strip and green/red status dots are
   restored as the single identity across the Windows title bar, executable,
   installer and in-app chrome. The unrelated square/screen mark is gone.

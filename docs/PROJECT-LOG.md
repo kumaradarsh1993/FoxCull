@@ -435,3 +435,15 @@ keep; the adjacent square/screen symbol was the obsolete artifact. Because Git
 retained the exact original master, the established fox could be restored
 without approximation. It now generates every native platform icon and the
 in-app favicon, making the intended identity consistent everywhere.
+
+---
+
+## 2026-08-01 - a restore control hidden in plain sight
+
+The folder explorer had not lost its restore button or state transition. The
+button was simply below the command bar in the stacking order after the menu
+layering repair made that bar opaque and isolated. That is a useful distinction:
+checking that a control exists is not enough when it can still be visually
+unreachable. The restore button now owns a layer above the bar, and the bar
+reserves its footprint when the tree is collapsed. The same existence,
+stacking and reachability audit was applied to every other collapsible surface.

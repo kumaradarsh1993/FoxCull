@@ -2679,7 +2679,7 @@
   </button>
 {/snippet}
 
-<div class="app" data-dim={dimLevel} class:fs={fullscreen}>
+<div class="app" data-dim={dimLevel} class:fs={fullscreen} class:treeCollapsed>
   <!-- ░ left: drives + folder tree ░ -->
   {#if !treeCollapsed}
     <aside class="tree" style="width:{settings.s.treeWidth}px">
@@ -3463,9 +3463,14 @@
   .tree-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 45px; padding: 9px 10px; border-bottom: 1px solid var(--border); }
   .treeRestore {
     position: absolute;
-    z-index: 80;
+    /* The command bar is an isolated z=100 stacking context so its popovers
+       stay above media. This recovery control must sit above that context or
+       collapsing the tree removes the only route to bring it back. */
+    z-index: 160;
     left: 8px;
     top: 8px;
+    background: var(--bg-elev);
+    border-color: var(--border-strong);
     box-shadow: var(--shadow);
   }
   /* Floating stand-in for the sidebar's activity chip while the sidebar is
@@ -3525,6 +3530,9 @@
   .center { display: flex; flex-direction: column; flex: 1; min-width: 0; height: 100vh; }
 
   .bar { position: relative; z-index: 100; isolation: isolate; display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--bg-panel); flex-wrap: nowrap; }
+  /* Reserve the restore button's footprint instead of covering the first
+     command-bar control when the folder tree is hidden. */
+  .treeCollapsed .bar { padding-left: 48px; }
   .tool-group { display: flex; align-items: center; gap: 5px; min-width: 0; flex: 0 0 auto; }
   .ctl-label { color: var(--text-faint); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; white-space: nowrap; }
   .viewGroup { padding-right: 1px; }

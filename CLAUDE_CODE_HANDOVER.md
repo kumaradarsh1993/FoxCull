@@ -1,5 +1,20 @@
 # Agent Handover: FoxCull
 
+## 2026-08-01: nightly.4 restores the collapsed folder tree
+
+The command-bar stacking fix in nightly.2 raised `.bar` to an isolated z=100
+context so Arrange and Filters could not fall behind grid tiles. The existing
+collapsed-tree restore button remained z=80 at the same top-left coordinates,
+so it still existed in the DOM but was painted underneath the opaque bar.
+
+The app root now exposes its `treeCollapsed` state as a class. The restore
+button sits at z=160 with an opaque elevated surface, and the collapsed command
+bar reserves 48 px for it instead of placing View controls underneath. A source
+audit covered every hide/collapse state: folder tree, filmstrip, Edit Media,
+Timeline and Look, production Preview, fullscreen, and related-item stacks.
+Each now has a persistent visible control or its documented Escape/key route;
+only the folder restore had a stacking collision.
+
 ## 2026-08-01: nightly.3 restores the established FoxCull identity
 
 The owner clarified that the original orange fox above a film strip, flanked
