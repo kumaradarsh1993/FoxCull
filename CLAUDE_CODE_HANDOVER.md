@@ -1,5 +1,31 @@
 # Agent Handover: FoxCull
 
+## 2026-08-02: nightly.6 removes the remaining scroll freeze
+
+The owner immediately reproduced the permanent Grid freeze in installed
+nightly.5 by scrolling roughly two pages quickly. The sidebar's Loading
+thumbnails activity also froze. The live `.5` log again showed a responsive
+process, stable 18-19 MB JS heap and `pending=0 queue=0 inflight=0` after 180
+memoized thumbnails. Nightly.5 removed compositor hazards but still left the
+virtual Grid's correctness dependent on a queued `requestAnimationFrame`.
+
+VirtualGrid and SectionedGrid now update their reactive scroll position directly
+from every native scroll event. A 160 ms timer reads the DOM position again,
+repairs any missed final compositor event and writes the settled visible range
+to `foxcull.log`. The horizontal strip keeps smooth motion but delegates it to
+native `scrollTo({ behavior: "smooth" })` rather than a JavaScript rAF loop.
+
+There was also a separate activity-state bug: if fast scrolling canceled every
+queued thumbnail before any completed, `jobDone === 0` prevented the already
+visible Loading thumbnails job from being ended. The loader now ends every
+drained batch, including all-canceled batches.
+
+Before release, a temporary browser harness rendered the real VirtualGrid and
+VirtualStrip components with 6,825 synthetic media cells. VirtualGrid passed a
+120-step full descent and 12 complete bottom/top reversals. Every settled state
+mounted the correct range (81 cells at top, 66 at the end); the temporary route
+and local server were removed after the test.
+
 ## 2026-08-01: nightly.5 fixes the black/frozen virtual grid
 
 The owner reproduced a release-blocking failure in installed nightly.4: after a

@@ -3,6 +3,10 @@
 
 ## Interface recovery and smoother browsing
 
+- Fast Grid scrolling now synchronizes the virtual range directly from native
+  scroll events, with a timer-backed final-position check instead of depending
+  on an animation-frame callback. The thumbnail activity chip also closes when
+  a fast scroll cancels an entire queued batch.
 - Grid and filmstrip rendering no longer pass through nested whole-app
   compositor transforms or per-cell paint containment. Loaded images remain
   stable during smooth scrolling, and virtualized cells load directly instead

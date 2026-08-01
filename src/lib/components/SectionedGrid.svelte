@@ -1,5 +1,6 @@
 <script lang="ts" generics="T">
   import type { Snippet } from "svelte";
+  import { api } from "$lib/api";
 
   type GridSection = { label: string; count: number; level?: 1 | 2; cellCount?: number };
 
@@ -94,16 +95,24 @@
     return () => ro.disconnect();
   });
 
-  // Coalesce scroll events to one visible-set recompute per animation frame (see
-  // VirtualGrid) so fast flicks don't thrash the main thread mounting cells.
-  let scrollRAF = 0;
+  // Keep the virtual range synchronized with the compositor's real position.
+  // An rAF gate can remain pending in WebView2 after a fast scroll, permanently
+  // stranding the rendered rows above or below the visible viewport.
+  let scrollSettleTimer: ReturnType<typeof setTimeout> | undefined;
   function onScroll() {
-    if (scrollRAF) return;
-    scrollRAF = requestAnimationFrame(() => {
-      scrollRAF = 0;
-      if (viewport) scrollTop = viewport.scrollTop;
-    });
+    const el = viewport;
+    if (!el) return;
+    scrollTop = el.scrollTop;
+    clearTimeout(scrollSettleTimer);
+    scrollSettleTimer = setTimeout(() => {
+      if (viewport && scrollTop !== viewport.scrollTop) scrollTop = viewport.scrollTop;
+      void api.logNote(
+        `sectioned-grid-scroll top=${Math.round(viewport?.scrollTop ?? 0)} visibleRows=${visible.length}`,
+      );
+    }, 160);
   }
+
+  $effect(() => () => clearTimeout(scrollSettleTimer));
 
   /** Bring a global item index into view (used by keyboard navigation). With
    *  `center`, place it mid-viewport (restores position on return from Focus). */

@@ -117,7 +117,14 @@ function jobReport() {
     // Drained. Close the job out (if it was ever shown) and reset the batch.
     clearTimeout(jobTimer);
     jobTimer = undefined;
-    if (jobShown && jobDone > 0) activity.local(JOB_ID, JOB_LABEL, jobDone, jobDone);
+    if (jobShown) {
+      // A fast scroll can cancel every queued request before any starts. That is
+      // still a completed batch; previously jobDone===0 left the visible
+      // "Loading thumbnails" activity stuck in its running state forever even
+      // though queue, pending and inflight were all zero.
+      if (jobDone > 0) activity.local(JOB_ID, JOB_LABEL, jobDone, jobDone);
+      else activity.end(JOB_ID);
+    }
     jobShown = false;
     jobDone = 0;
     return;

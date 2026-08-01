@@ -58,19 +58,9 @@
     ro.observe(el);
 
     let onWheel: ((e: WheelEvent) => void) | null = null;
-    let wheelRAF = 0;
     let wheelTarget = el.scrollLeft;
+    let lastWheelAt = 0;
     if (orientation === "h") {
-      const animateWheel = () => {
-        wheelRAF = 0;
-        const delta = wheelTarget - el.scrollLeft;
-        if (Math.abs(delta) < 0.45) {
-          el.scrollLeft = wheelTarget;
-          return;
-        }
-        el.scrollLeft += delta * 0.24;
-        wheelRAF = requestAnimationFrame(animateWheel);
-      };
       onWheel = (e: WheelEvent) => {
         const horizontal = Math.abs(e.deltaX) > Math.abs(e.deltaY);
         const raw = horizontal ? -e.deltaX : e.deltaY;
@@ -80,19 +70,23 @@
           : e.deltaMode === WheelEvent.DOM_DELTA_PAGE
             ? el.clientWidth
             : 1;
-        // A scrollbar drag or keyboard scroll may have moved independently of
-        // our last wheel target; begin a fresh gesture from the live position.
-        if (!wheelRAF && Math.abs(wheelTarget - el.scrollLeft) > 2) wheelTarget = el.scrollLeft;
+        const now = performance.now();
+        // A new gesture begins from the live DOM position; events in the same
+        // gesture accumulate toward one compositor-owned smooth target.
+        if (now - lastWheelAt > 120) wheelTarget = el.scrollLeft;
+        lastWheelAt = now;
         const max = Math.max(0, el.scrollWidth - el.clientWidth);
         wheelTarget = Math.max(0, Math.min(max, wheelTarget + raw * unit));
-        if (!wheelRAF) wheelRAF = requestAnimationFrame(animateWheel);
+        el.scrollTo({
+          left: wheelTarget,
+          behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        });
         e.preventDefault();
       };
       el.addEventListener("wheel", onWheel, { passive: false });
     }
     return () => {
       ro.disconnect();
-      if (wheelRAF) cancelAnimationFrame(wheelRAF);
       if (onWheel) el.removeEventListener("wheel", onWheel);
     };
   });

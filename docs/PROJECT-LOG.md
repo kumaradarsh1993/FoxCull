@@ -470,3 +470,27 @@ removed. Virtual scrollers also retain primitive cell identities, and thumbnail
 state listens to a stable path/size key rather than every parent scroll update.
 Visibility observation remains only where it adds value: large unvirtualized
 lists, never a grid that has already virtualized its own mounted cells.
+
+---
+
+## 2026-08-02 - scrolling stopped waiting for the next frame
+
+The first render recovery removed invalid compositor pressure, but the owner
+could still strand the Grid after two quick pages. The remaining weak link was
+older than the visual pass: virtual-range updates were gated by one outstanding
+animation-frame callback. WebView2 could continue compositor scrolling while
+that callback remained pending, leaving the DOM populated with cells for an old
+position. Timers and the backend stayed alive, which is why the memory heartbeat
+looked healthy while the screen stayed blank.
+
+Virtual ranges now follow native scroll events synchronously and verify the
+settled DOM position on a short timer. Smooth filmstrip movement is handed to
+the browser's scroll compositor rather than driven by a JavaScript frame loop.
+The apparently frozen thumbnail progress had its own smaller cause: an
+all-canceled queue was drained but never marked done because it had zero
+completed items. A drained queue now always closes its activity.
+
+A 6,825-cell stress harness exercised the shipped virtual components through a
+full 120-step descent and twelve alternating end-to-end traversals. It retained
+the correct populated range at both extremes every time, then was removed from
+the product tree.

@@ -1,5 +1,6 @@
 <script lang="ts" generics="T">
   import type { Snippet } from "svelte";
+  import { api } from "$lib/api";
 
   let {
     items,
@@ -64,19 +65,27 @@
     return () => ro.disconnect();
   });
 
-  // Coalesce scroll events to one read per animation frame. The native scroll
-  // event can fire many times per frame during a fast flick; recomputing the
-  // visible set (and mounting/unmounting cells + their image requests) on each
-  // one is wasted main-thread work that shows up as scroll jank. One rAF-aligned
-  // update per frame keeps the grid smooth.
-  let scrollRAF = 0;
+  // Correctness cannot depend on requestAnimationFrame here. WebView2 can keep
+  // compositor scrolling while pausing an outstanding rAF; the stale scrollTop
+  // then leaves every virtual cell positioned outside the actual viewport.
+  // Reading the native scroll event directly is cheap (only two row bounds
+  // change) and always catches the final position after a fast wheel gesture.
+  let scrollSettleTimer: ReturnType<typeof setTimeout> | undefined;
   function onScroll() {
-    if (scrollRAF) return;
-    scrollRAF = requestAnimationFrame(() => {
-      scrollRAF = 0;
-      if (viewport) scrollTop = viewport.scrollTop;
-    });
+    const el = viewport;
+    if (!el) return;
+    scrollTop = el.scrollTop;
+    clearTimeout(scrollSettleTimer);
+    scrollSettleTimer = setTimeout(() => {
+      // Timer fallback catches a missed/throttled final compositor scroll event.
+      if (viewport && scrollTop !== viewport.scrollTop) scrollTop = viewport.scrollTop;
+      void api.logNote(
+        `grid-scroll top=${Math.round(viewport?.scrollTop ?? 0)} first=${firstRow} last=${lastRow} mounted=${visibleIndices.length}`,
+      );
+    }, 160);
   }
+
+  $effect(() => () => clearTimeout(scrollSettleTimer));
 
   /** Keep a given index visible — used by keyboard navigation. With `center`,
    *  place it mid-viewport (used to restore position when returning from Focus). */
