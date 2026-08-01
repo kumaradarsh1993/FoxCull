@@ -1,5 +1,18 @@
 # Agent Handover: FoxCull
 
+## 2026-08-01: nightly.3 restores the established FoxCull identity
+
+The owner clarified that the original orange fox above a film strip, flanked
+by green and red status dots, is the intentional FoxCull logo. In the feedback
+screenshot, the obsolete artifact was the separate square/screen mark inside
+the app, not the native fox icon. Nightly.2 misread that distinction and
+replaced both.
+
+Nightly.3 restores the exact pre-design-pass `icon.png` from commit `65b1052`
+as `src-tauri/icons/app-icon-source.png`, regenerates every Tauri platform size
+from it, and derives `static/favicon.png` from that same master. Do not replace
+this identity in future visual passes without explicit owner direction.
+
 ## 2026-08-01: nightly.2 interface-regression recovery
 
 Owner feedback against `v1.3.0-nightly.1` identified several concrete polish

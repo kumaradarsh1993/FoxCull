@@ -424,3 +424,14 @@ could still contend for disk and decoder time. Heavy jobs now have their own
 two-slot budget while lighter images continue through the shared queue. The
 filmstrip also converts wheel input into a clamped, eased target instead of
 applying every device delta as an abrupt jump.
+
+---
+
+## 2026-08-01 - the fox was the identity, not the artifact
+
+The first recovery pass misunderstood a two-icon screenshot. The native orange
+fox with its film strip and green/red dots was the mark the owner wanted to
+keep; the adjacent square/screen symbol was the obsolete artifact. Because Git
+retained the exact original master, the established fox could be restored
+without approximation. It now generates every native platform icon and the
+in-app favicon, making the intended identity consistent everywhere.

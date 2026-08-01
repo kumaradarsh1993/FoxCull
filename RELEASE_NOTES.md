@@ -3,9 +3,11 @@
 
 ## Interface recovery and smoother browsing
 
-- FoxCull now uses one modern fox/aperture identity across the Windows title
-  bar, executable, installer and in-app chrome. The native title is simply
-  **FoxCull**, without build metadata competing with the product name.
+- FoxCull's established orange fox, film strip and green/red status dots are
+  restored as the single identity across the Windows title bar, executable,
+  installer and in-app chrome. The unrelated square/screen mark is gone.
+- The native title is simply **FoxCull**, without build metadata competing with
+  the product name.
 - Arrange and Filters reliably float above the media grid again.
 - Edit always exposes a **Media** recovery control after its picker is hidden,
   and Preview now has a visible **Back to edit** action instead of relying on
