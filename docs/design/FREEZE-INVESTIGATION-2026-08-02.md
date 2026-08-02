@@ -15,8 +15,45 @@ visual refit). Two distinct causes were found by live measurement:
 - **Mode B — idle / on-launch paint stall.** WebView2 native-window-occlusion
   misfire. **FIXED** (`--disable-features=CalculateNativeWinOcclusion` in
   `lib.rs`, v1.3.0-nightly.9). Confirmed: booted unstuck.
-- **Mode A — fast-scroll compositor stall.** **NOT yet fixed.** Root cause is now
-  isolated to the **image fetch/decode path**, not the DOM. This is the open item.
+- **Mode A — fast-scroll compositor stall.** Root cause found — see the
+  **2026-08-03 UPDATE** immediately below, which supersedes the "not a regression"
+  line above and the image-fetch-path theory.
+
+## 2026-08-03 UPDATE — Mode A root-caused as a v1.2.0 regression, and fixed
+
+The owner bisected against **installed stables**: **v1.0.1 and v1.1.0 are clean**
+(fast wheel-fling and fast held-↓ both lazy-load smoothly); **v1.2.0 introduced
+the freeze.** That overturns the earlier "not a regression from the visual refit"
+framing here — it is a regression, from the **video-playback overhaul**, not the
+refit. (The earlier "reproduces on v1.2.1 too" observation was right but
+mis-scoped: v1.2.1 is *after* the overhaul, so it has the bug; the clean line is
+v1.1.0, which we hadn't tested then.)
+
+**Cause.** v1.2.0 extended the WebCodecs `ScrubEngine` into **grid tiles**
+(commit `93b9328`; the decoder-open bug fixed in `a2dcf6b` so it actually ran),
+against the DECIDED architecture (`video-player-migration.md` §2/§10: the live
+decoder is Focus-only, "a decoder per grid tile is not a thing"). An armed+hovered
+grid tile opened a `VideoDecoder` and painted into a per-tile `<canvas>`. A live
+`<canvas>` is its own WebView2 GPU layer and `VideoDecoder.configure()` pins
+D3D11/Media-Foundation handles; fast scroll (pointer over grid) and especially
+**held-arrow nav** (each step re-arms a tile) churned decoders + canvases faster
+than async teardown released them → compositor surface blackout, GPU idle, +16k
+handles. Fully matches the captured signature, and explains why photos (no
+decoder, no canvas) were less affected and why DOM recycling (v1.4.0) made it
+worse (more arm/hover churn per scroll).
+
+**Fix (v1.4.0-nightly.4, `2026-08-03-grid-decoder-removed.md`).** Removed the
+live decoder + canvas from `Thumb.svelte` entirely — grid returns to
+poster + optional sprite skim (v1.1.0 behavior). **Focus scrubbing in
+`Loupe.svelte` is untouched.** Also: recycled tiles reset `hovering` on item
+change; the loader's `activity` progress chip stays silent during a fling (kills
+the per-tile store-write churn and the "% counts backwards" whipsaw).
+
+**Confirm on device** — the fix is diff- and symptom-supported but the freeze is a
+compositor effect the local gate can't reproduce. Test plan: on BOTH a video and a
+photo folder, fast wheel-fling then hold ↓. If either still freezes, `foxcull.log`
+captures it and the video-vs-photo split localizes the next step (a photo-only
+residual would point back at the image-fetch/`setScrolling` path, not the decoder).
 
 ## How it was measured (reuse these)
 

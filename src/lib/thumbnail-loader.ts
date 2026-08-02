@@ -64,7 +64,10 @@ let scrolling = false;
 export function setScrolling(v: boolean) {
   const was = scrolling;
   scrolling = v;
-  if (was && !v) pump(); // settled — drain the deferred viewport now
+  if (was && !v) {
+    pump(); // settled — drain the deferred viewport now
+    jobReport(); // and refresh the progress chip we held quiet during the fling
+  }
 }
 
 function pump() {
@@ -136,6 +139,13 @@ let jobTimer: ReturnType<typeof setTimeout> | undefined;
 /** Outstanding = queued but not started, plus running. Reported as part of the
  *  total so the denominator is honest while a scroll keeps adding work. */
 function jobReport() {
+  // Stay silent during a fast fling. Enqueue/cancel churn calls this ~2× per
+  // recycled tile, and each emission is a reactive `activity` store write that
+  // re-renders the chip — hundreds per second mid-scroll, for a number nobody
+  // reads while flinging (and it was the "36% → 28% going backwards" whipsaw).
+  // `setScrolling(false)` calls jobReport() again on settle, so the chip catches
+  // up the moment motion stops.
+  if (scrolling) return;
   const outstanding = queue.length + inflight;
   if (outstanding === 0) {
     // Drained. Close the job out (if it was ever shown) and reset the batch.

@@ -10,7 +10,6 @@
   import { api } from "$lib/api";
   import { settings } from "$lib/settings.svelte";
   import { activity } from "$lib/activity.svelte";
-  import { ScrubEngine, paintFrame } from "$lib/scrub-engine";
   import type { FilmstripInfo, MediaItem } from "$lib/types";
   import { untrack } from "svelte";
 
@@ -46,26 +45,19 @@
   let building = $state(false);
   let scrubTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // ── live-decode skim ──────────────────────────────────────────────────────
-  // The same decoder Focus uses. Viable here only because of the ARMED rule:
-  // exactly one tile skims at a time, so there is exactly one decoder — the
-  // objection that killed this idea earlier ("a decoder per grid tile is not a
-  // thing") never applies. With this in place the sprite sheet has no remaining
-  // consumer except clips the decoder can't take.
-  let tileEngine = $state.raw<ScrubEngine | null>(null);
-  let tileReady = $state(false);
-  /// NOT `$state` — and that is load-bearing, not an oversight.
-  ///
-  /// The opening effect below both READS this in its guard and WRITES it in its
-  /// body. As reactive state that is self-invalidation: the write re-ran the
-  /// effect, and the re-run fired the previous run's cleanup, which cleared the
-  /// `setTimeout` that was about to open the decoder. The timer therefore never
-  /// fired and the grid tile decoder NEVER opened — the whole "live scrub does
-  /// nothing in the grid" report. Loupe's equivalent flag is a plain `let` for
-  /// exactly this reason; this one drifted.
-  let tilePending = false;
-  let tileCanvas = $state<HTMLCanvasElement | null>(null);
-  let tilePainted = $state(false);
+  // NOTE (2026-08-03): the grid tile no longer runs a WebCodecs decoder.
+  // v1.2.0 added a per-armed-tile `ScrubEngine` + `<canvas>` here ("grid skim on
+  // the decoder"), against the architecture DECIDED in
+  // docs/design/video-player-migration.md §10 ("Sprites stay for grid tiles — a
+  // decoder per tile is not a thing"). It shipped without a fast-scroll test and
+  // is the v1.2.0 scroll-freeze regression: a live `<canvas>` is its own
+  // WebView2 GPU layer and `VideoDecoder.configure()` pins D3D11/Media-Foundation
+  // resources, so arming/hovering tiles while scrolling or keyboard-navigating
+  // churned GPU layers + kernel handles until the compositor stalled (GPU idle,
+  // +16k handles — a pipeline stall). Focus view keeps its own decoder in
+  // Loupe.svelte, untouched — that is where live scrubbing was proven and wanted.
+  // Grid skim falls back to the sprite path, opt-in via Live Scrub, exactly as
+  // v1.1.0 did when fast scroll was smooth.
 
   let isVideo = $derived(item.kind === "video");
   // A primitive load identity prevents parent virtualization updates from
@@ -140,6 +132,11 @@
     strip = null;
     scrub = null;
     building = false;
+    // A recycled slot inherits the DOM element (and thus any live pointer that is
+    // still over it), but it is now a DIFFERENT item. Clearing `hovering` here
+    // stops a stale hover from auto-arming skim/scrub work for the new item the
+    // instant it is repointed during a scroll.
+    hovering = false;
     if (it.kind === "other") return;
     // Off-screen: no poster extraction, no cached-strip probes, nothing. See
     // the IntersectionObserver above for why this matters so much in Edit mode.
@@ -180,7 +177,6 @@
       }
       if (scrubTimer) clearTimeout(scrubTimer);
       scrubTimer = null;
-      closeTileEngine();
     };
   });
 
@@ -206,7 +202,6 @@
         scrubTimer = null;
       }
       if (isVideo && !strip) cancelVideoFilmstrip(item.path);
-      closeTileEngine();
     }
   });
 
@@ -219,67 +214,11 @@
   // bar appears but the frames never change" bug. Keying off (armed && hovering)
   // as *state* makes arming-under-the-cursor and hovering-an-armed-tile the
   // same thing, whichever order they happen in.
-  // Preferred path: open the decoder for the armed tile. Same delay as the
-  // sprite build so a pointer merely passing over an armed tile doesn't start
-  // disk work. Falls through to the sprite effect below if the clip is
-  // unsupported.
+  // Grid skim uses the pre-built sprite sheet, and only when the user opted into
+  // Live Scrub. (The WebCodecs decoder that briefly lived here in v1.2.0 is gone
+  // — see the note at the top of this component.)
   $effect(() => {
     if (!isVideo || !armed || !hovering) return;
-    // Gated on the DECODER setting only — deliberately not on `liveScrub`.
-    // `liveScrub` is the opt-in for building sprite sheets, which cost minutes
-    // of ffmpeg and disk. Decoding needs none of that, so making it wait for a
-    // pre-caching toggle (default OFF, and described in the UI as a pre-build)
-    // meant the feature was invisible unless you found and enabled a setting
-    // for the thing it replaced.
-    if (!settings.s.liveDecodeScrub) return;
-    if (tileEngine || tilePending) return;
-    const path = item.path;
-    tilePending = true;
-    const timer = setTimeout(() => {
-      ScrubEngine.open(path, () => item.path !== path)
-        .then((e) => {
-          if (item.path !== path) {
-            e.close();
-            return;
-          }
-          tileEngine = e;
-          tileReady = true;
-          tilePending = false;
-        })
-        .catch(() => {
-          // Unsupported clip — release the sprite path we were holding back.
-          if (item.path === path) tilePending = false;
-        });
-    }, SCRUB_BUILD_DELAY_MS);
-    return () => clearTimeout(timer);
-  });
-
-  /** Decode + paint the frame at `frac` through the clip into the tile. */
-  function paintTile(frac: number) {
-    const e = tileEngine;
-    if (!e) return;
-    const d = e.index.durationS;
-    if (d <= 0) return;
-    e.request(frac * d, false, (f) => {
-      if (!tileCanvas) return;
-      paintFrame(tileCanvas, f, scrubBox.w, scrubBox.h, e.index.rotation);
-      tilePainted = true;
-    });
-  }
-
-  function closeTileEngine() {
-    tileEngine?.close();
-    tileEngine = null;
-    tileReady = false;
-    tilePending = false;
-    tilePainted = false;
-  }
-
-  $effect(() => {
-    if (!isVideo || !armed || !hovering) return;
-    // The decoder supersedes the sprite entirely; only build one while it is
-    // still opening-or-unavailable, exactly as Focus does.
-    if (tileReady || tilePending) return;
     if (!settings.s.liveScrub || strip || scrubTimer) return;
     const path = item.path;
     building = true;
@@ -307,17 +246,15 @@
   // oversensitive: a 9:16 clip only paints ~30% of a landscape cell's width, so
   // the full timeline was crammed into that sliver while the pillarboxed
   // remainder was dead travel. The cell is what the hand actually aims at.
-  /// Skimming is available when EITHER path can serve it: the decoder (no
-  /// pre-build, the default) or a sprite sheet (only if the user opted into
-  /// building them).
-  let canSkim = $derived(settings.s.liveDecodeScrub || settings.s.liveScrub);
+  /// Grid skimming is available only when the user opted into building sprite
+  /// sheets (Live Scrub). Focus view scrubs live via WebCodecs; the grid does not.
+  let canSkim = $derived(settings.s.liveScrub);
 
   function updateScrub(e: PointerEvent) {
     if (!isVideo || !armed || !canSkim) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const w = Math.max(1, rect.width);
     scrub = Math.max(0, Math.min(0.999, (e.clientX - rect.left) / w));
-    if (tileReady) paintTile(scrub);
   }
 
   function enterThumb(e: PointerEvent) {
@@ -329,9 +266,6 @@
     hovering = false;
     scrub = null;
     building = false;
-    // The decoder holds GPU frames and a file handle; it exists only for the
-    // duration of a skim.
-    closeTileEngine();
     if (scrubTimer) {
       clearTimeout(scrubTimer);
       scrubTimer = null;
@@ -349,7 +283,6 @@
   // Live build feedback while the hover strip is being extracted: the backend
   // streams per-frame progress through the activity store.
   let scrubJob = $derived.by(() => {
-    if (tileReady || tilePending) return null; // decoder path builds nothing
     if (!isVideo || strip || (!building && scrub == null)) return null;
     const j = activity.jobs[`strip:${item.path}`];
     return j && j.state === "running" ? j : null;
@@ -376,12 +309,7 @@
       decoding="async"
       onload={mediaLoaded}
     />
-    <!-- Decoded skim frame. Always mounted while the decoder is up (so there is
-         a canvas to paint into) and revealed only once it holds pixels. -->
-    {#if isVideo && tileReady}
-      <canvas class="scrubLayer live" class:shown={tilePainted && scrub != null} bind:this={tileCanvas}></canvas>
-    {/if}
-    {#if isVideo && !tileReady && strip && scrub != null}
+    {#if isVideo && strip && scrub != null}
       {@const cell = framePos(scrub)}
       <div
         class="scrubLayer"
@@ -390,7 +318,7 @@
     {/if}
     {#if isVideo && canSkim && scrub != null}
       <span class="scrubRail"><span style="width:{scrub * 100}%"></span></span>
-      {#if !strip && !tileReady}<span class="scrubHint" style="left:{scrub * 100}%"></span>{/if}
+      {#if !strip}<span class="scrubHint" style="left:{scrub * 100}%"></span>{/if}
     {/if}
     {#if isVideo && settings.s.liveScrub && (scrubJob || (building && !strip))}
       <span class="scrubBuild">
@@ -472,17 +400,6 @@
     transform: translate(-50%, -50%);
     background-repeat: no-repeat;
     background-color: #050505;
-  }
-  /* Decoded skim frame — opacity, not {#if}, so the canvas exists before the
-     first frame arrives and never flashes empty over the poster. */
-  .scrubLayer.live {
-    display: block;
-    opacity: 0;
-    visibility: hidden;
-  }
-  .scrubLayer.live.shown {
-    opacity: 1;
-    visibility: visible;
   }
   .scrubRail {
     position: absolute;
