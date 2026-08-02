@@ -1,5 +1,6 @@
 <script lang="ts" generics="T">
   import type { Snippet } from "svelte";
+  import { untrack } from "svelte";
   import { api } from "$lib/api";
 
   let {
@@ -34,21 +35,40 @@
     Math.min(rowCount - 1, Math.ceil((scrollTop + vpHeight) / rowH) + overscanRows),
   );
 
-  // Keep each-block context primitive and stable. Rebuilding wrapper objects on
-  // every scroll frame made Svelte re-send every visible `item` prop even when
-  // the item had not changed, restarting Thumb's image state and causing the
-  // entire loaded viewport to blink.
-  let visibleIndices = $derived.by(() => {
-    const out: number[] = [];
-    if (!items.length) return out;
-    for (let r = firstRow; r <= lastRow; r++) {
-      for (let c = 0; c < cols; c++) {
-        const i = r * cols + c;
-        if (i >= items.length) break;
-        out.push(i);
-      }
-    }
-    return out;
+  // ── Cell recycling ─────────────────────────────────────────────────────────
+  // This is the fix for the fast-scroll freeze. The old design keyed the {#each}
+  // by item index, so every window shift DESTROYED and RECREATED all ~108 visible
+  // cells — each a full Thumb (image fetch + ResizeObserver + live-decode). A fast
+  // scroll produced a burst of teardowns/rebuilds that choked WebView2's
+  // compositor: ALL painting stalled for 10+ seconds while handles piled up ~18k
+  // (GPU idle throughout — a pipeline stall, not a GPU one). Placeholder-gating
+  // that burst (nightly.8/.9) only relocated it and added a blank/reload flicker;
+  // it did not stop the freeze.
+  //
+  // Recycling removes the burst entirely. We keep a stable, grow-only pool of cell
+  // slots and map each visible item to slot `index % poolSize`. Because the pool
+  // is larger than the visible window, at most one visible item maps to a slot, so
+  // item `i` always lives in slot `i % poolSize`. Scrolling changes WHICH item a
+  // slot shows (Svelte updates the existing Thumb's `item` prop in place), never
+  // how many slots exist — nothing mounts or unmounts mid-scroll, so there is no
+  // burst to choke on, and tiles that stay visible keep their pixels (no flicker).
+  let poolSize = $state(0);
+  $effect(() => {
+    const rowsInView = vpHeight > 0 && rowH > 0 ? Math.ceil(vpHeight / rowH) : 0;
+    const need = (rowsInView + overscanRows * 2 + 2) * cols;
+    // Grow-only; untrack the read so this effect doesn't depend on its own write.
+    if (need > untrack(() => poolSize)) poolSize = need;
+  });
+
+  // slot -> global item index it should render (or -1 when this slot has no
+  // visible item — only ever at the very top/bottom edges).
+  let slotItem = $derived.by(() => {
+    const map: number[] = new Array(poolSize).fill(-1);
+    if (!items.length || poolSize <= 0) return map;
+    const lo = firstRow * cols;
+    const hi = Math.min(items.length - 1, (lastRow + 1) * cols - 1);
+    for (let i = lo; i <= hi; i++) map[i % poolSize] = i;
+    return map;
   });
 
   // Measure the viewport (and react to window/pane resizes).
@@ -68,54 +88,19 @@
   // Correctness cannot depend on requestAnimationFrame here. WebView2 can keep
   // compositor scrolling while pausing an outstanding rAF; the stale scrollTop
   // then leaves every virtual cell positioned outside the actual viewport.
-  // Reading the native scroll event directly is cheap (only two row bounds
-  // change) and always catches the final position after a fast wheel gesture.
-  //
-  // Fast-scroll blanking guard (measured, 2026-08-02). A fast scroll makes
-  // WebView2's compositor choke on the burst of tile mount/unmount + image work:
-  // ALL painting stalls for 10+ seconds (rAF stops firing), WebView2's handle
-  // count spikes ~18k as frames pile up behind the stalled compositor, RAM jumps
-  // ~900 MB, then it drains — while the GPU stays idle (it is a pipeline stall,
-  // not a GPU/TDR one) and the process stays responsive. Sometimes it doesn't
-  // drain and the app must be relaunched. While motion is fast we render
-  // image-free placeholder cells so NO per-tile image fetch, decode or observer
-  // is created mid-scroll, then mount the real tiles once motion settles.
-  //
-  // The trigger keys on how far the viewport moves, because that is what
-  // distinguishes a fling/held-key from a gentle scan: a big single jump (one
-  // large wheel step or a keyboard page) OR fast cumulative motion (a held arrow
-  // key) blanks the tiles; a gentle single notch (well under a row) never does,
-  // so ordinary monitoring scroll stays fully live. (The previous heuristic keyed
-  // on rapid event *bursts* and never fired on real flings, which arrive as one
-  // big jump — that is why nightly.8 did nothing.) Positioning is untouched, so
-  // this never depends on rAF for correctness.
-  let isScrolling = $state(false);
-  let lastScrollAt = 0;
-  let lastTop = 0;
-  let recentMove = 0;
+  // Reading the native scroll event directly is cheap and always catches the
+  // final position after a fast wheel gesture. With recycling there is no per-
+  // event churn cost, so no throttle/placeholder gate is needed.
   let scrollSettleTimer: ReturnType<typeof setTimeout> | undefined;
   function onScroll() {
     const el = viewport;
     if (!el) return;
-    const top = el.scrollTop;
-    const now = performance.now();
-    const delta = Math.abs(top - lastTop);
-    recentMove = now - lastScrollAt < 120 ? recentMove + delta : delta;
-    lastScrollAt = now;
-    lastTop = top;
-    scrollTop = top;
-    const fast = delta > rowH * 1.5 || recentMove > rowH * 2.5;
-    if (fast && !isScrolling)
-      void api.logNote(`grid-gate ON delta=${Math.round(delta)} recent=${Math.round(recentMove)} rowH=${Math.round(rowH)}`);
-    if (fast) isScrolling = true;
+    scrollTop = el.scrollTop;
     clearTimeout(scrollSettleTimer);
     scrollSettleTimer = setTimeout(() => {
-      // Timer fallback catches a missed/throttled final compositor scroll event.
       if (viewport && scrollTop !== viewport.scrollTop) scrollTop = viewport.scrollTop;
-      isScrolling = false;
-      recentMove = 0;
       void api.logNote(
-        `grid-scroll top=${Math.round(viewport?.scrollTop ?? 0)} first=${firstRow} last=${lastRow} mounted=${visibleIndices.length}`,
+        `grid-scroll top=${Math.round(viewport?.scrollTop ?? 0)} first=${firstRow} last=${lastRow} pool=${poolSize}`,
       );
     }, 160);
   }
@@ -144,20 +129,18 @@
 
 <div class="vp" bind:this={viewport} onscroll={onScroll}>
   <div class="canvas" style="height:{totalH}px">
-    {#each visibleIndices as i (i)}
-      {@const row = Math.floor(i / cols)}
-      {@const col = i % cols}
-      <div
-        class="cellpos"
-        class:active={i === activeIndex}
-        style="left:{col * (cellW + gap)}px; top:{row * rowH}px; width:{cellW}px; height:{cellW}px"
-      >
-        {#if isScrolling}
-          <div class="cellskeleton"></div>
-        {:else}
-          {@render cell(items[i], i)}
-        {/if}
-      </div>
+    {#each slotItem as idx, s (s)}
+      {#if idx >= 0}
+        {@const row = Math.floor(idx / cols)}
+        {@const col = idx % cols}
+        <div
+          class="cellpos"
+          class:active={idx === activeIndex}
+          style="left:{col * (cellW + gap)}px; top:{row * rowH}px; width:{cellW}px; height:{cellW}px"
+        >
+          {@render cell(items[idx], idx)}
+        </div>
+      {/if}
     {/each}
   </div>
 </div>
@@ -177,14 +160,5 @@
     position: absolute;
     /* Keep media tiles out of individual GPU layers. Transform positioning plus
        will-change can black out WebView2's surface during rapid scroll churn. */
-  }
-  /* Shown in place of a real tile only while a fast scroll is in flight. Matches
-     Thumb's idle background so swapping the real tile back in never colour-pops.
-     Deliberately image-free: this is what keeps the GPU texture churn off the
-     compositor during a fling. */
-  .cellskeleton {
-    width: 100%;
-    height: 100%;
-    background: color-mix(in srgb, var(--text-faint) 12%, var(--viewport-bg));
   }
 </style>
