@@ -69,6 +69,11 @@ export function setScrolling(v: boolean) {
     jobReport(); // and refresh the progress chip we held quiet during the fling
   }
 }
+/** Whether a fast scroll is currently in flight. Read by grid tiles so heavy
+ *  per-tile work (the WebCodecs skim decoder) never spins up mid-fling. */
+export function isScrolling(): boolean {
+  return scrolling;
+}
 
 function pump() {
   if (scrolling) return; // defer every fetch until the fling settles

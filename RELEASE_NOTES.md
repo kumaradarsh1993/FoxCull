@@ -1,49 +1,28 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
-## The scroll freeze — traced to the video overhaul and removed at the source
+## Grid scrubbing is back — and the freeze hunt continues honestly
 
-Thank you for bisecting this against the old stables — that was the key. It
-confirmed the freeze **did not exist in v1.0.1 or v1.1.0** and **began in v1.2.0**,
-the video-playback overhaul. That pointed straight at what changed.
+The previous nightly removed the grid's live-frame skimming on a theory that it
+was causing the freeze. Testing proved that theory **wrong** — the freeze still
+happened with it gone — so this build **restores grid scrubbing in full**: select
+a clip, hover it, and seek through it live at full resolution, no sprite
+pre-building, exactly as you had it.
 
-In v1.2.0 the new live-frame scrubbing engine — which is excellent in Focus view —
-was also wired into the **grid tiles**, so a selected clip you hovered decoded
-video frames into its own little canvas right there in the grid. That was never
-part of the original plan (the design note is explicit: the live decoder belongs
-to Focus view, *not* to grid tiles), and it shipped without a hard fast-scroll
-test. It is the freeze:
+Two small guards were added around it, per your suggestion, so it can never be a
+problem: the skim decoder now only spins up after a short deliberate **dwell** on
+a clip, and **never while you're actively scrolling or holding an arrow**. Landing
+on a clip to skim it works as before; fast navigation simply never starts it.
 
-- Each of those grid canvases is a separate GPU layer, and each decoder holds
-  real graphics-card resources.
-- Fast scrolling, and especially holding the ↓ arrow (every step moves the
-  selection to a new tile), spun those decoders and canvases up and down faster
-  than Windows could release them — until the display compositor ran out of room
-  and blacked out the whole window. That exactly matches what the monitoring
-  showed: graphics card **idle**, handle count spiking, picture frozen.
+**The freeze itself is not yet fixed** — this is an honest checkpoint, not a
+declared win. What we now know for certain: it is **not** the grid decoder, it is
+**not** the GPU (it sits idle), and DOM recycling alone didn't cure it. The
+remaining lead is the virtualized scroll/loading path (the "scroll into a blank
+zone where tiles vanish and the loader sticks" behavior). That is where the next
+session picks up — see `docs/design/FREEZE-HANDOVER-2026-08-03.md` for the full
+history of what was tried.
 
-**This build removes the live decoder from grid tiles entirely.** The grid goes
-back to the way v1.1.0 worked when fast scrolling was smooth: a poster frame per
-clip, and optional hover-skim only if you've turned on **Live Scrub** (the
-pre-built sprite option).
-
-**Focus-view scrubbing is completely unchanged** — dragging the timeline on a 4K60
-clip still decodes real frames live, full resolution. That is the part of the
-overhaul that worked, and none of it was touched.
-
-Also in this build: the "Loading thumbnails" chip no longer flickers or counts
-backwards while you fling — it stays quiet during a fast scroll and updates the
-moment you stop.
-
-### Please test this way
-
-It would help to confirm the fix cleanly:
-
-1. A **video** folder — fast wheel-fling the grid, then hold the ↓ arrow through it.
-2. A **photo** folder — same two motions.
-
-If either still freezes, `foxcull.log` now captures the detail; the video-vs-photo
-result tells us exactly where to look next.
+Focus-view scrubbing (dragging the timeline on a 4K clip) is unchanged throughout.
 
 ---
 
