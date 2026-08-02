@@ -1039,7 +1039,7 @@
         ? `heapMB=${Math.round(mem.usedJSHeapSize / 1048576)}/${Math.round(mem.jsHeapSizeLimit / 1048576)}`
         : "heap=n/a";
       api.logEvent(
-        `MEM ${tag} ${heap} memo=${s.memo} loupe=${s.loupe} pending=${s.pending} queue=${s.queue} inflight=${s.inflight} raf=${rafFrames}`,
+        `MEM ${tag} ${heap} memo=${s.memo} loupe=${s.loupe} pending=${s.pending} queue=${s.queue}/${s.queueStorage} inflight=${s.inflight}/${s.heavyInflight} raf=${rafFrames}`,
       );
     } catch {
       /* diagnostics only — never throw */

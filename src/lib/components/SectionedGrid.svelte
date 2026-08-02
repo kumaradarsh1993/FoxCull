@@ -104,8 +104,9 @@
   // ── Cell recycling ─────────────────────────────────────────────────────────
   // Same technique as VirtualGrid: a grow-only pool of slots, cell `gi` rendered
   // in slot `gi % poolSize`. A window shift updates the existing Thumb's `item`
-  // prop in place instead of destroying/recreating cells, so a fast scroll never
-  // bursts the WebView2 compositor. Headers render outside the pool.
+  // prop in place instead of destroying/recreating cells. This reduces routine
+  // churn; loader pacing is the main-thread freeze fix. Headers render outside
+  // the pool.
   let poolSize = $state(0);
   $effect(() => {
     const need = visibleCells.length + cols * 2 + 2;

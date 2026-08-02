@@ -1,5 +1,28 @@
 # Agent Handover: FoxCull
 
+## 2026-08-03: scroll freeze resolved in source — frame-paced loader
+
+The consolidated debug chain is `docs/design/FREEZE-HANDOVER-2026-08-03.md`;
+read §R first. The corrected owner symptoms proved a blocked JS main thread, not
+a compositor/GPU stall. The surviving v1.2 hot-path delta was per-tile reactive
+activity reporting; the later fling gate then batched up to 240 memo hits and its
+recursive settle pump released them in one turn.
+
+`thumbnail-loader.ts` now uses a keyed live queue (O(1) cancellation; all dropped
+waiters settle), a compacted LIFO priority log, and a requestAnimationFrame pump
+that releases at most 12 cached assignments per paint. Backend concurrency stays
+6 total / 2 heavy. On-demand progress is indeterminate and writes the activity
+store only on start/end. The existing fast-fling gate and 240-live cap remain;
+grid + Focus live decode remain untouched.
+
+**Native evidence on the real 6,825-item F: library:** an 800-step, three-row,
+4-ms-cadence stress traversal produced no `PAINT-RESUME` gap; loader peak after
+the traversal was 43 queued + 6 in flight and drained to zero; JS heap settled
+92→47 MB; FoxCull WebView2 settled at ~332 MB private / ~3,270 handles; activity
+cleared; tiles populated; Right-arrow immediately moved selection 312→313. The
+dev-only stress hook was removed afterward. `npm run check` passed 0/0; remaining
+gates and release status are recorded in the change ledger.
+
 ## 2026-08-02: v1.4.0-nightly.3 — audit safe-batch + full audit backlog
 
 Two read-only audits (perf/architecture + correctness) ran under the owner's

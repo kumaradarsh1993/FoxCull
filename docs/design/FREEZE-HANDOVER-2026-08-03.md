@@ -6,8 +6,9 @@ result, the RCAs (including the wrong ones), what is ruled out, and the live lea
 Supersedes the running narrative in `FREEZE-INVESTIGATION-2026-08-02.md` (still
 useful for the Mode-B occlusion fix and the measurement tooling).
 
-**Status: OPEN.** The freeze is NOT fixed. The grid live-decode feature was
-wrongly removed and has been restored (nightly.5). Do not remove it again.
+**Status: RESOLVED IN SOURCE (v1.4.0-nightly.7 candidate).** The grid
+live-decode feature was wrongly removed and remains restored. Do not remove it
+again. The fix and native stress evidence are in §R below.
 
 > ## ⚠ READ §0 FIRST — the RCA was inverted on 2026-08-03 (late)
 >
@@ -15,6 +16,47 @@ wrongly removed and has been restored (nightly.5). Do not remove it again.
 > is **WRONG** and is kept only as investigation history. Detailed owner symptom
 > reporting on nightly.4/.5 proves the opposite: **the JS main thread is blocked;
 > the renderer is healthy.** Start at §0.
+
+---
+
+## R. Resolution — bound the loader's main-thread work (2026-08-03)
+
+The bisection and corrected symptoms converge on the thumbnail loader, not the
+decoder or compositor:
+
+1. `v1.1.0` was clean.
+2. `dabfb9a` in the v1.2 line added on-demand thumbnail progress. Once visible,
+   `jobReport()` wrote the reactive activity store on every enqueue, cancel and
+   completion. A fast traversal made the app re-render a progress value hundreds
+   of times for a denominator that changed under it — the reported backwards
+   percentage.
+3. The later fling gate reduced mid-scroll work but accumulated it. On settle,
+   the old recursive `pump()` synchronously resolved every memo hit in the queue
+   (up to 240), causing one turn to contain the activity writes, promise
+   continuations and `<img src>` assignments together. That is the long JS task;
+   the handle/RAM spike is its downstream resource burst.
+4. Cancellation also searched/spliced the array per tile, and removed queued
+   work without settling its promise. Those were amplifiers and correctness
+   hazards even when they were not the original regression.
+
+The replacement has hard structural bounds:
+
+- live queued work is indexed by key, so cancellation is O(1) and always settles
+  the waiter;
+- the priority array is a compacted tombstone log, capped at 240 live requests;
+- dispatch is frame-paced: at most 12 cached assignments (one grid row) per
+  paint, never a recursive settle burst;
+- real backend work stays capped at 6 total / 2 heavy;
+- "Loading thumbnails" is indeterminate and writes the reactive store only on
+  start/end transitions, never per tile.
+
+**Native verification on the real 6,825-item F: library:** a temporary dev-only
+probe drove 800 three-row jumps at a 4 ms cadence, then was removed. There was no
+`PAINT-RESUME` gap. Peak logged loader state after the traversal was 43 queued +
+6 in flight; it drained to zero. JS heap fell 92 → 47 MB after drain. The FoxCull
+WebView2 tree settled at ~332 MB private / ~3,270 handles (not the previous +1 GB
+/ +16k spike), the activity indicator cleared, every tile populated, and a real
+Right-arrow action immediately moved selection from item 312 to 313.
 
 ---
 
@@ -174,6 +216,7 @@ Numbers are the `v1.3.x` / `v1.4.0-nightly.N` line worked during the investigati
 | v1.4.0-nightly.3 | Audit safe-batch: P8 gated the per-tile `videoFilmstripCached` probe behind `liveScrub`; video trim/concat/trash fixes | Scroll freeze **persisted**, incl. on keyboard nav. |
 | v1.4.0-nightly.4 | **Removed the grid WebCodecs decoder + `<canvas>` entirely** (kept Focus). Hypothesis: decoder/canvas GPU-layer + handle churn was the freeze | **DISPROVED IT.** Freeze STILL happened (black zone, then recovered enough to scrub). Also the blank-zone/stuck-tiles symptom present. → **The grid decoder is NOT the cause.** |
 | v1.4.0-nightly.5 | **Restored** grid scrubbing (owner relies on it) + guards: `DECODER_DWELL_MS=320`, refuse to open while `isScrolling()`. Kept loader activity-chip quieting during flings | current build; freeze still open |
+| v1.4.0-nightly.7 candidate | O(1) cancellable live queue; frame-paced settle (12 assignments/paint); activity writes only on start/end | **Native 6,825-item stress passed**; §R. |
 
 ---
 
@@ -240,7 +283,7 @@ does.
 
 ---
 
-## 7. Live leads / where to go next (ranked)
+## 7. Historical leads (superseded by §R; use only if the issue recurs)
 
 1. **The virtualization scroll→range sync is the prime suspect now** (the
    blank-zone/stuck-tiles symptom). In `VirtualGrid.svelte`, `scrollTop` is a
@@ -277,8 +320,9 @@ does.
   bytes / **handle & thread counts** + `nvidia-smi` ~every 1.2 s to a CSV. Launch
   `run_in_background` before reproducing.
 - **App paint heartbeat:** `+page.svelte` runs a rAF loop → `raf=N` on the 20 s
-  `MEM tick` line, and logs `PAINT-RESUME gap=Nms` after a >1.5 s stall.
-  **`raf` frozen while `MEM tick` keeps printing = compositor dead, JS alive.**
+  `MEM tick` line, and logs `PAINT-RESUME gap=Nms` after a >1.5 s stall. A gap
+  measures a blocked main thread. A later `MEM tick` proves only that the thread
+  eventually resumed; it never proved that JS ran during the gap.
 - **Log:** `%APPDATA%\com.foxcull.app\foxcull.log` (robust to relaunch races;
   append + per-pid fallback, see `log.rs`). Grid scrolls log
   `grid-scroll top=… first=… last=… pool=…` from `VirtualGrid.onScroll` — watch

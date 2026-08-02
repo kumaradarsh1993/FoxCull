@@ -34,7 +34,7 @@
   // Same technique as VirtualGrid (1-D here): a grow-only pool of slots, item `i`
   // in slot `i % poolSize`. Scrolling repoints existing cells in place instead of
   // destroying/recreating them, so a hard fling of the filmstrip never bursts the
-  // WebView2 compositor. Replaces the previous blank-placeholder gate.
+  // mount churn and flicker. Loader pacing handles main-thread backpressure.
   let poolSize = $state(0);
   $effect(() => {
     const inView = vpMain > 0 && step > 0 ? Math.ceil(vpMain / step) : 0;

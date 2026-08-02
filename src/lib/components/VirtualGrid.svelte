@@ -37,22 +37,19 @@
   );
 
   // ── Cell recycling ─────────────────────────────────────────────────────────
-  // This is the fix for the fast-scroll freeze. The old design keyed the {#each}
-  // by item index, so every window shift DESTROYED and RECREATED all ~108 visible
-  // cells — each a full Thumb (image fetch + ResizeObserver + live-decode). A fast
-  // scroll produced a burst of teardowns/rebuilds that choked WebView2's
-  // compositor: ALL painting stalled for 10+ seconds while handles piled up ~18k
-  // (GPU idle throughout — a pipeline stall, not a GPU one). Placeholder-gating
-  // that burst (nightly.8/.9) only relocated it and added a blank/reload flicker;
-  // it did not stop the freeze.
+  // Cell recycling was retained because it reduces ordinary mount/unmount work
+  // and flicker, but on-device testing proved it was not the freeze fix: the
+  // stall survived after recycling landed. The corrected RCA is a blocked JS
+  // main thread in the loader path; see thumbnail-loader.ts and the 2026-08-03
+  // freeze handover.
   //
   // Recycling removes the burst entirely. We keep a stable, grow-only pool of cell
   // slots and map each visible item to slot `index % poolSize`. Because the pool
   // is larger than the visible window, at most one visible item maps to a slot, so
   // item `i` always lives in slot `i % poolSize`. Scrolling changes WHICH item a
   // slot shows (Svelte updates the existing Thumb's `item` prop in place), never
-  // how many slots exist — nothing mounts or unmounts mid-scroll, so there is no
-  // burst to choke on, and tiles that stay visible keep their pixels (no flicker).
+  // how many slots exist — nothing mounts or unmounts mid-scroll, and tiles that
+  // stay visible keep their pixels (no flicker).
   let poolSize = $state(0);
   $effect(() => {
     const rowsInView = vpHeight > 0 && rowH > 0 ? Math.ceil(vpHeight / rowH) : 0;
@@ -107,7 +104,7 @@
     lastTop = top;
     scrollTop = top;
     // Fast fling (a big single jump OR fast cumulative motion) → defer image
-    // fetches until settle so the fetch/decode burst can't choke the compositor.
+    // fetches until settle so pass-through items do no image/decode work.
     // A gentle monitoring scroll never trips this and stays fully live; recycling
     // keeps already-loaded tiles painted throughout either way.
     if (delta > rowH * 1.5 || recentMove > rowH * 2.5) setScrolling(true);

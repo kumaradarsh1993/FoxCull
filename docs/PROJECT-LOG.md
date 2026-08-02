@@ -512,3 +512,32 @@ compositor layers. Those transforms never animated and did not need promotion.
 Grid, grouped Grid and filmstrip tiles now use normal absolute coordinates.
 Virtualization still limits DOM work and thumbnail loading remains asynchronous,
 but WebView2 no longer has to churn a GPU layer per visible media item.
+
+---
+
+## 2026-08-03 - the freeze was JavaScript backpressure, not the GPU
+
+The owner supplied the observation that finally separated the layers. During a
+freeze, native scrolling, CSS hover highlights and tooltips still worked, while
+clicks, selection movement, tile population and the loading chip did not. Those
+first behaviors do not require JavaScript; the second group does. The main
+thread was blocked and the compositor was healthy. That also reinterpreted the
+rAF gap correctly: both rAF and timers stop during a long JavaScript task, then
+resume later.
+
+The v1.2 loader had started publishing reactive progress for every thumbnail
+entering, leaving or finishing the queue. Later attempts to protect fast scroll
+deferred those requests, but the settle path recursively released every cached
+hit in one turn. The result was a compound burst of progress re-renders, promise
+callbacks and image assignments — plus the downstream memory/handle spike that
+had been mistaken for the cause.
+
+The loader is now paced like a renderer. It cancels by key in constant time,
+settles every dropped request, caps live work, and releases at most one grid row
+of cached assignments per paint. The loading chip is an indeterminate start/end
+signal instead of a percentage whose denominator changes while scrolling.
+
+On the real 6,825-item library, 800 rapid three-row jumps produced no paint gap;
+the queue remained bounded, drained to zero, tiles populated, the activity chip
+cleared, and selection responded immediately. Grid and Focus live scrubbing
+were preserved throughout.

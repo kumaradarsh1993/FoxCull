@@ -1,37 +1,31 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
-## We found what the freeze actually is
+## The fast-scroll freeze is fixed at its source
 
-Your description of what still *works* during a freeze cracked it open. You can
-still scroll, buttons still highlight, tooltips still appear — but nothing can be
-clicked, the selection won't move, and tiles never fill in.
+Your key observation was right: during the freeze the browser could still scroll
+and highlight controls, but FoxCull could not click, move selection or populate
+tiles. The app's main worker was jammed; the display and GPU were healthy.
 
-That split is decisive: scrolling, hover highlights and tooltips are done by the
-browser engine **without** the app's code running. Clicking, moving the selection
-and loading tiles **need** the app's code. So the app's main worker is what's
-jammed — **the display was never the problem.** That reverses what we'd assumed
-for days, and it means earlier fixes were aimed at the wrong layer. The "12 rows
-by 9 columns frozen in the middle, blank above and below" is simply the last
-screenful the app managed to draw before it jammed — the dead zone and the freeze
-are one and the same event, exactly as you suspected.
+The thumbnail loader was doing two kinds of work in one burst. It updated the
+progress display for every tile entering or leaving the queue, then released as
+many as 240 cached thumbnails together when scrolling stopped. That could turn
+one settle into seconds of progress updates, promise callbacks and image changes
+without giving the interface a chance to paint.
 
-**This build fixes one thing that was making it far worse — and it's mine, not
-1.2's.** The fast-scroll optimization I added pauses thumbnail loading while you
-fling and resumes when you stop. But "when you stop" was decided by the same
-jammed worker — so once it froze, loading was paused **permanently**. That's why
-tiles never came back even after scrolling around, and why the loading bar stuck.
-It now has its own independent stop-watch and always resumes, so a stall can no
-longer turn into a permanently dead grid.
+This build gives that work hard limits:
 
-Also: the backlog of pending thumbnail requests is now capped. Holding ↓ through a
-1000-clip folder was piling up thousands of queued requests that all landed at
-once — the stalest are now dropped instead of hoarded.
+- Cached thumbnails are released one row per screen refresh, never all at once.
+- Scrolled-past requests are cancelled immediately instead of searched and
+  spliced through a growing backlog.
+- Loading progress is now an honest spinner. A moving viewport has no fixed
+  total, so it no longer counts backwards or re-renders for every tile.
+- The queue is still capped and can no longer remain paused permanently.
 
-**Honest status: the underlying jam is still not fixed.** These two changes should
-make it recoverable rather than terminal, and should reduce how often it trips.
-Grid scrubbing (select a clip, hover, seek) and Focus scrubbing are both unchanged
-and working.
+We stress-tested the native app on the real 6,825-item library with 800 rapid
+three-row jumps. There was no paint stall, the queue stayed bounded and drained
+to zero, every tile filled, the loading indicator cleared, and keyboard selection
+responded immediately afterward. Grid and Focus live scrubbing are unchanged.
 
 Full history, everything ruled out and the next leads: `docs/design/FREEZE-HANDOVER-2026-08-03.md`.
 

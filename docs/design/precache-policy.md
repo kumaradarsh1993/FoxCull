@@ -1,7 +1,7 @@
 # Cache & pre-cache policy
 
-**Status:** authoritative · **Last verified against code:** 2026-07-21
-(nightly.7 work) · **Owner ask:** keep this in sync with the code, and keep it
+**Status:** authoritative · **Last verified against code:** 2026-08-03
+(frame-paced loader fix) · **Owner ask:** keep this in sync with the code, and keep it
 readable by both a human and a model, so either can audit the two apart.
 
 This is the single record of *what FoxCull caches, where, keyed by what, and
@@ -245,7 +245,8 @@ Consequences for anyone optimising this next:
 | Warm pool threads | `(cores / 4).clamp(1, 2)` | `commands.rs::warm_threads` | shallow read queue on HDD, still uses both heads of an SSD; never monopolizes cores the foreground needs |
 | Warm batch cap | `WARM_CAP` = 600 | `commands.rs` | a folder-open warm can't become an unbounded job |
 | Frontend decode slots | `MAX_INFLIGHT` = 6 | `thumbnail-loader.ts` | enough to fill a viewport, gentle on a USB SSD |
-| Frontend queue order | **LIFO** | `thumbnail-loader.ts::pump` | the most recently requested cell is the one on screen now |
+| Frontend queue order | **LIFO**, O(1) cancellation, 240 live max | `thumbnail-loader.ts` | the most recently requested cell is the one on screen now; stale priority entries are tombstones and compacted |
+| Frontend dispatch pace | max 12 starts / animation frame | `thumbnail-loader.ts::schedulePump` | cached hits also assign `<img src>`; pacing prevents a settle from becoming one long JS task |
 | Sprite builds | 1 at a time process-wide | `video.rs::SPRITE_BUILD_LOCK` | a second hover queues instead of racing for the disk |
 | Frames per sprite build | `sprite_parallel()` = `(cores/3).clamp(2,4)` | `video.rs` | measured, see §5.1 — this work is CPU-bound, not I/O-bound |
 | Proxy transcodes | 1 at a time | `video.rs::PROXY_LOCK` | two would thrash the disk and halve both |
@@ -258,6 +259,13 @@ folder switch (`resetThumbs` → `cancelAllSprites`), entering Focus
 (`cancelWarm`), disposing files (`cancelAllSprites` + `cancelWarm`, then a
 350 ms drain so no ffmpeg still holds a handle), and a newer warm generation
 superseding an older one.
+
+**Fast-scroll contract (changed 2026-08-03).** A fast fling defers new tile
+dispatch; pass-through items do no image/decode work. Cancellation removes old
+viewport requests in O(1) and resolves their waiters. On settle the current
+viewport drains over multiple paints, at most 12 cached assignments per frame.
+The activity chip is indeterminate because a moving viewport has no honest fixed
+denominator; it updates the reactive store only when loading starts or ends.
 
 **Memory doctrine, stated once:** decoded grid bitmaps are *not* held in JS.
 Virtualization keeps ~2 screens of `<img>` alive and the browser evicts as it
@@ -358,7 +366,10 @@ limits:
   warm_threads: "(cores/4).clamp(1,2)"
   warm_cap: 600
   frontend_inflight: 6
-  frontend_queue: LIFO
+  frontend_queue: "LIFO; O(1) cancellation; max 240 live"
+  frontend_dispatch_per_frame: 12
+  fast_scroll: "defer pass-through work; frame-paced drain on settle"
+  on_demand_activity: "indeterminate; reactive writes on start/end only"
   sprite_builds_concurrent: 1
   sprite_frames_concurrent: "(cores/3).clamp(2,4)"
   proxy_concurrent: 1

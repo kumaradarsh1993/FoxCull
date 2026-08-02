@@ -1,14 +1,14 @@
 // Viewport-prioritized, cancellable, MEMORY-DISCIPLINED thumbnail loader.
 //
-// Design notes (after auditing the "progressively worse / not responding" bug):
+// Design notes (after resolving the "progressively worse / not responding" bug):
 //
-// The freeze was NOT decode speed — folder scans are 0-3 ms and thumbnail files
-// are generated once and disk-cached. It was MEMORY: an earlier version held a
-// large LRU of decoded <img> bitmaps "warm" (up to 700 grid thumbs + a dozen
-// 1920px previews ≈ 350 MB). Scrolling a big folder accumulated that fast and the
-// WebView process ballooned until it thrashed. Holding decoded bitmaps in JS
-// fights the browser's own image-cache eviction — exactly the wrong move for a
-// virtualized grid of hundreds of images.
+// The freeze was main-thread backpressure: reactive activity writes on every
+// queue mutation plus an unpaced settle burst of cached promise resolutions and
+// <img src> assignments. The scheduler below bounds that work per paint.
+// Separately, an older implementation held a large LRU of decoded <img> bitmaps
+// warm. We retain the memory discipline that removed that pressure: JS memoizes
+// asset URLs, not decoded grid pixels, and lets the browser manage image-cache
+// eviction.
 //
 // The disciplined approach:
 //  - hold (almost) NO decoded grid bitmaps. Virtualization keeps only the visible
@@ -38,8 +38,16 @@ const memo = new Map<string, string>(); // key -> asset url (LRU, bounded)
 const pending = new Map<string, Promise<string | null>>(); // key -> in-flight promise
 const stripMemo = new Map<string, FilmstripInfo>(); // key -> filmstrip geometry + asset url
 const stripPending = new Map<string, Promise<FilmstripInfo | null>>();
-type QItem = { key: string; heavy: boolean; run: () => void; drop: () => void };
-let queue: QItem[] = []; // served LIFO (newest request = current viewport first)
+type QItem = {
+  key: string;
+  heavy: boolean;
+  run: () => void;
+  drop: () => void;
+  revision: number;
+};
+type QEntry = { item: QItem; revision: number };
+let queue: QEntry[] = []; // priority log; `queued` is the authoritative live set
+const queued = new Map<string, QItem>();
 // Hard ceiling on deferred work. Holding ↓ through a 1000-clip folder repoints
 // ~9 tiles per row at key-repeat rate; with dispatch deferred during the fling
 // nothing drains, so the queue (and its closures + `pending` entries) grew
@@ -48,23 +56,86 @@ let queue: QItem[] = []; // served LIFO (newest request = current viewport first
 // the OLDEST entries are the stalest and are the right ones to shed. Dropping
 // resolves the waiter with null rather than orphaning its promise.
 const MAX_QUEUE = 240;
+const MAX_QUEUE_STORAGE = MAX_QUEUE * 2;
+
+function compactQueue() {
+  queue = queue.filter(
+    ({ item, revision }) => queued.get(item.key) === item && item.revision === revision,
+  );
+}
+
 function trimQueue() {
-  while (queue.length > MAX_QUEUE) {
-    const stale = queue.shift();
-    stale?.drop();
+  if (queue.length > MAX_QUEUE_STORAGE) compactQueue();
+  if (queued.size <= MAX_QUEUE) return;
+  for (let i = 0; i < queue.length && queued.size > MAX_QUEUE; i++) {
+    const { item, revision } = queue[i];
+    if (queued.get(item.key) !== item || item.revision !== revision) continue;
+    queued.delete(item.key);
+    item.revision++;
+    item.drop();
   }
+  if (queue.length > MAX_QUEUE_STORAGE) compactQueue();
 }
 let inflight = 0;
 let heavyInflight = 0;
 let generation = 0;
 
+// A cached hit still resolves a promise and changes an <img src>, so it counts
+// as main-thread work. The old recursive pump released every deferred memo hit
+// in one turn (up to 240 after a fling). Pace dispatch to at most one grid row
+// per paint; backend work remains bounded by the inflight caps below.
+const MAX_DISPATCH_PER_FRAME = 12;
+let pumpScheduled = false;
+
+function scheduleFrame(fn: () => void) {
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => fn());
+  else setTimeout(fn, 0);
+}
+
+function takeRunnable(): QItem | null {
+  for (let i = queue.length - 1; i >= 0; i--) {
+    const { item, revision } = queue[i];
+    if (queued.get(item.key) !== item || item.revision !== revision) {
+      queue.splice(i, 1);
+      continue;
+    }
+    if (item.heavy && heavyInflight >= MAX_HEAVY_INFLIGHT) continue;
+    queue.splice(i, 1);
+    queued.delete(item.key);
+    return item;
+  }
+  return null;
+}
+
+function schedulePump() {
+  if (scrolling || pumpScheduled || inflight >= MAX_INFLIGHT || queued.size === 0) return;
+  pumpScheduled = true;
+  scheduleFrame(() => {
+    pumpScheduled = false;
+    if (scrolling) return;
+    let dispatched = 0;
+    while (dispatched < MAX_DISPATCH_PER_FRAME && inflight < MAX_INFLIGHT && queued.size > 0) {
+      const next = takeRunnable();
+      if (!next) {
+        // The remaining work is heavy and already at its own concurrency cap.
+        // Its completion callback will wake the pump; do not scan again every
+        // animation frame while video posters or filmstrips are still decoding.
+        return;
+      }
+      dispatched++;
+      next.run();
+    }
+    if (queued.size > 0 && inflight < MAX_INFLIGHT) schedulePump();
+  });
+}
+
 // ── Fast-scroll fetch suppression ────────────────────────────────────────────
-// Measured root cause of the scroll freeze (2026-08-02): a fast fling makes the
-// recycled tiles repoint their <img src> in quick succession; each src change is
-// an asset-protocol fetch + Chromium decode, and the burst spikes WebView2's
-// handle count ~+16k and RAM ~+1 GB until the compositor stalls for 8-12 s (GPU
-// idle throughout — a pipeline stall, not a GPU one). DOM recycling removed the
-// node churn but not this FETCH churn.
+// Corrected RCA (2026-08-03): native scrolling and CSS hover continued during a
+// freeze while clicks, selection, rAF and tile population stopped. The JS main
+// thread was blocked; the compositor was healthy. A fast fling creates loader
+// churn, and the old settle path amplified it by resolving every deferred memo
+// hit recursively in one turn. The +16k handles / +1 GB were fallout from that
+// unpaced resource burst, not evidence of a GPU stall.
 //
 // While a fast scroll is in flight we hold ALL dispatch — including memoized
 // (already-resolved) URLs, which are exactly what churn fastest through a
@@ -72,20 +143,16 @@ let generation = 0;
 // keep their item keep their pixels (their Thumb effect never re-ran); tiles that
 // recycled to a new item stay neutral until motion settles, then resolve (memo
 // hits resolve instantly, so the grid fills the moment you stop). This is the
-// standard windowed-list "isScrolling → defer loads" contract, applied at the
-// loader so it needs no Thumb changes and cannot touch live-scrub.
+// standard windowed-list "isScrolling → defer loads" contract. On settle, the
+// frame-paced scheduler releases at most one row per paint.
 let scrolling = false;
 // ── the gate must NOT be able to latch ───────────────────────────────────────
 // `scrolling` is raised here and lowered by VirtualGrid's 160 ms settle timer.
-// That timer is a `setTimeout` on the MAIN THREAD — and the freeze we are
-// chasing IS a blocked main thread (see docs/design/FREEZE-HANDOVER-2026-08-03
-// §0). So exactly when the gate matters most, the thing that clears it cannot
-// run: the gate sticks ON forever, no thumbnail ever loads again, and the
-// activity chip freezes mid-count. That is the "tiles never populate again,
-// loader stuck" state reported on nightly.4/.5.
-//
-// A deferral is an optimization, never a correctness requirement, so it gets an
-// absolute ceiling of its own. Whatever happens to the caller, dispatch resumes.
+// That timer is a `setTimeout` on the main thread, so it cannot interrupt a long
+// task. The frame-paced scheduler prevents that task now; this ceiling is the
+// secondary guarantee that a missed caller-side settle cannot leave the gate on
+// after the event loop is available again. Deferral is an optimization, never a
+// correctness requirement.
 const MAX_DEFER_MS = 700;
 let deferGuard: ReturnType<typeof setTimeout> | undefined;
 export function setScrolling(v: boolean) {
@@ -100,31 +167,18 @@ export function setScrolling(v: boolean) {
       deferGuard = undefined;
       if (!scrolling) return;
       scrolling = false;
-      pump();
-      jobReport();
+      schedulePump();
+      jobStateChanged();
     }, MAX_DEFER_MS);
   } else if (was) {
-    pump(); // settled — drain the deferred viewport now
-    jobReport(); // and refresh the progress chip we held quiet during the fling
+    schedulePump(); // settled: drain over multiple frames, never one long task
+    jobStateChanged();
   }
 }
 /** Whether a fast scroll is currently in flight. Read by grid tiles so heavy
  *  per-tile work (the WebCodecs skim decoder) never spins up mid-fling. */
 export function isScrolling(): boolean {
   return scrolling;
-}
-
-function pump() {
-  if (scrolling) return; // defer every fetch until the fling settles
-  while (inflight < MAX_INFLIGHT && queue.length) {
-    // LIFO among runnable work: the current viewport wins, but a wall of
-    // uncached videos cannot occupy every slot while image thumbs wait.
-    let i = queue.length - 1;
-    while (i >= 0 && queue[i].heavy && heavyInflight >= MAX_HEAVY_INFLIGHT) i--;
-    if (i < 0) return;
-    const [next] = queue.splice(i, 1);
-    next.run();
-  }
 }
 
 function memoGet(key: string): string | undefined {
@@ -176,54 +230,34 @@ function stripMemoSet(key: string, info: FilmstripInfo) {
 const JOB_ID = "thumbs";
 const JOB_LABEL = "Loading thumbnails";
 const ANNOUNCE_AFTER_MS = 700;
-let jobDone = 0; // completions since this batch began
 let jobShown = false;
 let jobTimer: ReturnType<typeof setTimeout> | undefined;
 
-/** Outstanding = queued but not started, plus running. Reported as part of the
- *  total so the denominator is honest while a scroll keeps adding work. */
-function jobReport() {
-  // Stay silent during a fast fling. Enqueue/cancel churn calls this ~2× per
-  // recycled tile, and each emission is a reactive `activity` store write that
-  // re-renders the chip — hundreds per second mid-scroll, for a number nobody
-  // reads while flinging (and it was the "36% → 28% going backwards" whipsaw).
-  // `setScrolling(false)` calls jobReport() again on settle, so the chip catches
-  // up the moment motion stops.
+/** On-demand work has no stable denominator: scrolling discovers new tiles and
+ * cancels old ones. Report state transitions only, never every queue mutation. */
+function jobStateChanged() {
   if (scrolling) return;
-  const outstanding = queue.length + inflight;
+  const outstanding = queued.size + inflight;
   if (outstanding === 0) {
-    // Drained. Close the job out (if it was ever shown) and reset the batch.
     clearTimeout(jobTimer);
     jobTimer = undefined;
-    if (jobShown) {
-      // A fast scroll can cancel every queued request before any starts. That is
-      // still a completed batch; previously jobDone===0 left the visible
-      // "Loading thumbnails" activity stuck in its running state forever even
-      // though queue, pending and inflight were all zero.
-      if (jobDone > 0) activity.local(JOB_ID, JOB_LABEL, jobDone, jobDone);
-      else activity.end(JOB_ID);
-    }
+    if (jobShown) activity.end(JOB_ID);
     jobShown = false;
-    jobDone = 0;
     return;
   }
-  if (jobShown) activity.local(JOB_ID, JOB_LABEL, jobDone, jobDone + outstanding);
-  else if (!jobTimer) {
+  if (!jobShown && !jobTimer) {
     jobTimer = setTimeout(() => {
       jobTimer = undefined;
-      // Still busy after the grace period — this one is worth showing.
-      if (queue.length + inflight > 0) {
+      if (!scrolling && queued.size + inflight > 0) {
         jobShown = true;
-        jobReport();
+        activity.local(JOB_ID, JOB_LABEL, 0, 0);
       }
     }, ANNOUNCE_AFTER_MS);
   }
 }
 
-/** A queued request finished (or failed — either way it stopped being work). */
 function jobFinished() {
-  jobDone++;
-  jobReport();
+  jobStateChanged();
 }
 
 /** Folder switch: whatever was queued is abandoned, so the batch is over. */
@@ -232,14 +266,17 @@ function jobReset() {
   jobTimer = undefined;
   if (jobShown) activity.end(JOB_ID);
   jobShown = false;
-  jobDone = 0;
 }
 
 /** Abandon queued (not-yet-started) work — call when the folder changes. */
 export function resetThumbs() {
   generation++;
   scrolling = false; // a folder switch is never a "still flinging" state
+  clearTimeout(deferGuard);
+  deferGuard = undefined;
   jobReset();
+  for (const item of queued.values()) item.drop();
+  queued.clear();
   queue = [];
   pending.clear();
   stripPending.clear();
@@ -256,18 +293,12 @@ export function resetThumbs() {
 /** Drop a single not-yet-started request (a grid/strip cell scrolled out of
  *  view before its decode began). In-flight requests are cheap to let finish. */
 function cancel(key: string) {
-  if (pending.has(key) || stripPending.has(key)) {
-    const i = queue.findIndex((q) => q.key === key);
-    if (i >= 0) {
-      queue.splice(i, 1);
-      pending.delete(key);
-      stripPending.delete(key);
-      // The batch just got smaller without anything completing — re-report, or
-      // a job whose whole remainder scrolled away would sit at its last
-      // percentage forever.
-      jobReport();
-    }
-  }
+  const item = queued.get(key);
+  if (!item) return;
+  queued.delete(key);
+  item.revision++;
+  item.drop();
+  jobStateChanged();
 }
 
 /** Lightweight stats for the diagnostic memory log. */
@@ -277,7 +308,8 @@ export function loaderStats() {
     loupe: loupeDecoded.size,
     pending: pending.size,
     stripPending: stripPending.size,
-    queue: queue.length,
+    queue: queued.size,
+    queueStorage: queue.length,
     inflight,
     heavyInflight,
   };
@@ -324,40 +356,45 @@ export function prefetchLoupe(path: string): void {
  *  the backend produced; we convert it to an asset URL and memoize it. */
 function enqueue(key: string, fetchFsPath: () => Promise<string>, heavy = false): Promise<string | null> {
   // A memo hit normally resolves instantly — but NOT during a fast scroll, where
-  // instant resolution is exactly the src churn that chokes the compositor. When
-  // scrolling, fall through to the queue so it's held until settle (its run()
-  // resolves the memo without a fetch, so it's still instant the moment we stop).
+  // instant resolution can still create an unbounded main-thread src/decode
+  // burst. When scrolling, fall through to the queue so it is held until settle;
+  // its run() resolves the memo without a fetch.
   const cached = memoGet(key);
   if (cached && !scrolling) return Promise.resolve(cached);
 
   const existing = pending.get(key);
   if (existing) {
-    // Already queued/in-flight — bump it to the front (it's wanted again, now).
-    const i = queue.findIndex((q) => q.key === key);
-    if (i >= 0) {
-      const [it] = queue.splice(i, 1);
-      queue.push(it);
+    const item = queued.get(key);
+    if (item) {
+      item.revision++;
+      queue.push({ item, revision: item.revision });
+      if (queue.length > MAX_QUEUE_STORAGE) compactQueue();
     }
     return existing;
   }
 
   const myGen = generation;
-  const promise = new Promise<string | null>((resolve) => {
-    const run = () => {
+  let resolvePromise!: (value: string | null) => void;
+  const promise = new Promise<string | null>((resolve) => (resolvePromise = resolve));
+  pending.set(key, promise);
+  const item: QItem = {
+    key,
+    heavy,
+    revision: 0,
+    run: () => {
       if (myGen !== generation) {
-        pending.delete(key);
-        resolve(null);
-        pump();
+        if (pending.get(key) === promise) pending.delete(key);
+        resolvePromise(null);
         jobFinished();
+        schedulePump();
         return;
       }
-      // Deferred memo hit (queued during a fling): resolve instantly, no fetch.
       const c = memoGet(key);
       if (c) {
-        pending.delete(key);
-        resolve(c);
-        pump();
+        if (pending.get(key) === promise) pending.delete(key);
+        resolvePromise(c);
         jobFinished();
+        schedulePump();
         return;
       }
       inflight++;
@@ -366,28 +403,27 @@ function enqueue(key: string, fetchFsPath: () => Promise<string>, heavy = false)
         .then((fsPath) => {
           const url = api.fileSrc(fsPath);
           memoSet(key, url);
-          resolve(myGen === generation ? url : null);
+          resolvePromise(myGen === generation ? url : null);
         })
-        .catch(() => resolve(null))
+        .catch(() => resolvePromise(null))
         .finally(() => {
           inflight--;
           if (heavy) heavyInflight--;
-          pending.delete(key);
-          pump();
+          if (pending.get(key) === promise) pending.delete(key);
           jobFinished();
+          schedulePump();
         });
-    };
-    const drop = () => {
-      pending.delete(key);
-      resolve(null);
-    };
-    queue.push({ key, heavy, run, drop });
-    trimQueue();
-    pump();
-    jobReport();
-  });
-
-  pending.set(key, promise);
+    },
+    drop: () => {
+      if (pending.get(key) === promise) pending.delete(key);
+      resolvePromise(null);
+    },
+  };
+  queued.set(key, item);
+  queue.push({ item, revision: item.revision });
+  trimQueue();
+  schedulePump();
+  jobStateChanged();
   return promise;
 }
 
@@ -397,22 +433,29 @@ function enqueueStrip(key: string, fetchInfo: () => Promise<FilmstripInfo>): Pro
 
   const existing = stripPending.get(key);
   if (existing) {
-    const i = queue.findIndex((q) => q.key === key);
-    if (i >= 0) {
-      const [it] = queue.splice(i, 1);
-      queue.push(it);
+    const item = queued.get(key);
+    if (item) {
+      item.revision++;
+      queue.push({ item, revision: item.revision });
+      if (queue.length > MAX_QUEUE_STORAGE) compactQueue();
     }
     return existing;
   }
 
   const myGen = generation;
-  const promise = new Promise<FilmstripInfo | null>((resolve) => {
-    const run = () => {
+  let resolvePromise!: (value: FilmstripInfo | null) => void;
+  const promise = new Promise<FilmstripInfo | null>((resolve) => (resolvePromise = resolve));
+  stripPending.set(key, promise);
+  const item: QItem = {
+    key,
+    heavy: true,
+    revision: 0,
+    run: () => {
       if (myGen !== generation) {
-        stripPending.delete(key);
-        resolve(null);
-        pump();
+        if (stripPending.get(key) === promise) stripPending.delete(key);
+        resolvePromise(null);
         jobFinished();
+        schedulePump();
         return;
       }
       inflight++;
@@ -421,30 +464,27 @@ function enqueueStrip(key: string, fetchInfo: () => Promise<FilmstripInfo>): Pro
         .then((info) => {
           const hydrated = { ...info, src: api.fileSrc(info.src) };
           stripMemoSet(key, hydrated);
-          resolve(myGen === generation ? hydrated : null);
+          resolvePromise(myGen === generation ? hydrated : null);
         })
-        .catch(() => resolve(null))
+        .catch(() => resolvePromise(null))
         .finally(() => {
           inflight--;
           heavyInflight--;
-          // Only clear our own registration — a cancelled build's promise may
-          // outlive it while a FRESH request for the same clip is registered.
           if (stripPending.get(key) === promise) stripPending.delete(key);
-          pump();
           jobFinished();
+          schedulePump();
         });
-    };
-    const drop = () => {
+    },
+    drop: () => {
       if (stripPending.get(key) === promise) stripPending.delete(key);
-      resolve(null);
-    };
-    queue.push({ key, heavy: true, run, drop });
-    trimQueue();
-    pump();
-    jobReport();
-  });
-
-  stripPending.set(key, promise);
+      resolvePromise(null);
+    },
+  };
+  queued.set(key, item);
+  queue.push({ item, revision: item.revision });
+  trimQueue();
+  schedulePump();
+  jobStateChanged();
   return promise;
 }
 
@@ -480,7 +520,7 @@ export function loadVideoFilmstrip(path: string): Promise<FilmstripInfo | null> 
 /** Cancel a Focus/grid filmstrip request (see `cancelVideoScrubstrip`). */
 export function cancelVideoFilmstrip(path: string): void {
   const key = `film:${path}`;
-  const wasQueued = queue.some((q) => q.key === key);
+  const wasQueued = queued.has(key);
   cancel(key);
   if (!wasQueued && stripPending.has(key)) {
     stripPending.delete(key);
@@ -498,7 +538,7 @@ export function loadVideoScrubstrip(path: string): Promise<FilmstripInfo | null>
  *  re-hover starts a fresh request instead of latching onto the cancelled one. */
 export function cancelVideoScrubstrip(path: string): void {
   const key = `scrub:${path}`;
-  const wasQueued = queue.some((q) => q.key === key);
+  const wasQueued = queued.has(key);
   cancel(key);
   if (!wasQueued && stripPending.has(key)) {
     stripPending.delete(key);
