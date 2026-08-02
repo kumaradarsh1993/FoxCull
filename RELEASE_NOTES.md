@@ -1,6 +1,26 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
+## Freeze fixes — two root causes, now measured
+
+A live debugging session with detailed cross-process monitoring pinned down two
+*separate* causes behind the freezes, and this build addresses both:
+
+- **Frozen on launch / while idle** (the window opens or sits there dead, but the
+  app is actually running and has to be relaunched): this was Windows' WebView2
+  wrongly deciding the window was hidden and switching its display off. It's now
+  turned off, so the view keeps painting.
+- **Frozen after a fast scroll**: a hard fling flooded the display engine faster
+  than it could keep up, and it stalled for many seconds (sometimes for good).
+  Fast scrolling now shows light placeholders while you're flinging and snaps the
+  real thumbnails in the moment you settle — so the display engine is never
+  overwhelmed. Gentle, normal scrolling is unchanged and stays fully live. This
+  now also covers the bottom filmstrip in Focus, not just the main grid.
+
+This build also records much more detail to `foxcull.log` and can no longer lose
+its log when the app is relaunched quickly — so if anything still slips through,
+the cause is captured.
+
 ## The fast-scroll freeze
 
 If you flung the Grid down quickly — a hard mouse-wheel throw or a held ↓ arrow —

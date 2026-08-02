@@ -13,14 +13,32 @@ use parking_lot::Mutex;
 static LOGFILE: OnceLock<Mutex<Option<File>>> = OnceLock::new();
 
 pub fn init(path: PathBuf) {
-    let file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&path)
-        .ok();
+    // Robust open. Truncating on every launch is nice for keeping the log small,
+    // BUT combined with the single-instance relaunch race it silently disabled
+    // logging for whole sessions: a fresh instance starting while a stuck one
+    // still held the handle failed the truncate-open, `.ok()` swallowed it, and
+    // we went blind on exactly the crashed/frozen sessions we needed to see.
+    // So: truncate only when the file has grown large; otherwise APPEND (which
+    // can't lose a session to a race), and if even that fails, fall back to a
+    // per-process file so a session is never lost.
+    let big = std::fs::metadata(&path).map(|m| m.len() > 5_000_000).unwrap_or(false);
+    let mut opts = OpenOptions::new();
+    opts.create(true).write(true);
+    if big {
+        opts.truncate(true);
+    } else {
+        opts.append(true);
+    }
+    let file = opts.open(&path).ok().or_else(|| {
+        let alt = path.with_file_name(format!("foxcull-{}.log", std::process::id()));
+        OpenOptions::new().create(true).append(true).open(alt).ok()
+    });
     let _ = LOGFILE.set(Mutex::new(file));
-    line(&format!("=== FoxCull session start; log at {} ===", path.display()));
+    line(&format!(
+        "=== FoxCull session start pid={} ; log at {} ===",
+        std::process::id(),
+        path.display()
+    ));
 }
 
 fn now_ms() -> u128 {

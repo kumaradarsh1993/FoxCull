@@ -40,6 +40,24 @@ fn resolve_data_root(app: &tauri::App) -> std::io::Result<PathBuf> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebView2 (Chromium) native-window-occlusion detection can decide the
+    // window is hidden and STOP presenting frames entirely — the process stays
+    // alive and responsive, resources stay flat, but the view is frozen until
+    // relaunch. Measured on this project's Windows machine as the "stuck on
+    // launch / while idle" freeze (normal handles/memory, GPU idle, dead paint).
+    // Disabling the feature is the standard remedy and is safe for a
+    // single-window desktop app. Must be set before the webview is created.
+    #[cfg(target_os = "windows")]
+    {
+        const KEY: &str = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
+        const FLAG: &str = "--disable-features=CalculateNativeWinOcclusion";
+        match std::env::var(KEY) {
+            Ok(v) if v.contains("CalculateNativeWinOcclusion") => {}
+            Ok(v) => std::env::set_var(KEY, format!("{v} {FLAG}")),
+            Err(_) => std::env::set_var(KEY, FLAG),
+        }
+    }
+
     let mut builder = tauri::Builder::default();
 
     // Keep a single FoxCull window per machine; focus the existing one if the

@@ -71,43 +71,49 @@
   // Reading the native scroll event directly is cheap (only two row bounds
   // change) and always catches the final position after a fast wheel gesture.
   //
-  // Fast-scroll blanking guard: a wheel fling or a held arrow key fires scroll
-  // events in rapid succession. Mounting/tearing the image tiles on every one of
-  // those floods WebView2's GPU process with texture uploads and frees; past a
-  // certain rate the compositor process wedges and the whole webview freezes
-  // black (input dead, permanent until relaunch) even though the JS thread, the
-  // DOM and the scroll math all stay correct. While a sustained gesture is in
-  // progress we render cheap placeholder cells — no <img>, no decode, no texture
-  // — and swap the real tiles back once motion settles. Positioning is
-  // untouched, so this never depends on rAF for correctness.
+  // Fast-scroll blanking guard (measured, 2026-08-02). A fast scroll makes
+  // WebView2's compositor choke on the burst of tile mount/unmount + image work:
+  // ALL painting stalls for 10+ seconds (rAF stops firing), WebView2's handle
+  // count spikes ~18k as frames pile up behind the stalled compositor, RAM jumps
+  // ~900 MB, then it drains — while the GPU stays idle (it is a pipeline stall,
+  // not a GPU/TDR one) and the process stays responsive. Sometimes it doesn't
+  // drain and the app must be relaunched. While motion is fast we render
+  // image-free placeholder cells so NO per-tile image fetch, decode or observer
+  // is created mid-scroll, then mount the real tiles once motion settles.
+  //
+  // The trigger keys on how far the viewport moves, because that is what
+  // distinguishes a fling/held-key from a gentle scan: a big single jump (one
+  // large wheel step or a keyboard page) OR fast cumulative motion (a held arrow
+  // key) blanks the tiles; a gentle single notch (well under a row) never does,
+  // so ordinary monitoring scroll stays fully live. (The previous heuristic keyed
+  // on rapid event *bursts* and never fired on real flings, which arrive as one
+  // big jump — that is why nightly.8 did nothing.) Positioning is untouched, so
+  // this never depends on rAF for correctness.
   let isScrolling = $state(false);
   let lastScrollAt = 0;
-  let burstFromTop = 0;
-  let burstDistance = 0;
+  let lastTop = 0;
+  let recentMove = 0;
   let scrollSettleTimer: ReturnType<typeof setTimeout> | undefined;
   function onScroll() {
     const el = viewport;
     if (!el) return;
     const top = el.scrollTop;
     const now = performance.now();
-    // Accumulate distance travelled within one CONTINUOUS motion (events chained
-    // <90 ms apart). We blank the tiles only once that motion has covered more
-    // than a few rows — a fling or a held arrow key — never a gentle
-    // monitoring scroll, where a wheel notch (even one Windows animates as a
-    // handful of sub-events) totals well under a row. Keying on distance, not
-    // event count, is what keeps ordinary culling scroll fully live.
-    if (now - lastScrollAt < 90) burstDistance += Math.abs(top - burstFromTop);
-    else burstDistance = 0;
+    const delta = Math.abs(top - lastTop);
+    recentMove = now - lastScrollAt < 120 ? recentMove + delta : delta;
     lastScrollAt = now;
-    burstFromTop = top;
+    lastTop = top;
     scrollTop = top;
-    if (burstDistance > rowH * 3) isScrolling = true;
+    const fast = delta > rowH * 1.5 || recentMove > rowH * 2.5;
+    if (fast && !isScrolling)
+      void api.logNote(`grid-gate ON delta=${Math.round(delta)} recent=${Math.round(recentMove)} rowH=${Math.round(rowH)}`);
+    if (fast) isScrolling = true;
     clearTimeout(scrollSettleTimer);
     scrollSettleTimer = setTimeout(() => {
       // Timer fallback catches a missed/throttled final compositor scroll event.
       if (viewport && scrollTop !== viewport.scrollTop) scrollTop = viewport.scrollTop;
       isScrolling = false;
-      burstDistance = 0;
+      recentMove = 0;
       void api.logNote(
         `grid-scroll top=${Math.round(viewport?.scrollTop ?? 0)} first=${firstRow} last=${lastRow} mounted=${visibleIndices.length}`,
       );

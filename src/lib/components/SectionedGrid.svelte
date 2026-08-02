@@ -99,34 +99,36 @@
   // An rAF gate can remain pending in WebView2 after a fast scroll, permanently
   // stranding the rendered rows above or below the visible viewport.
   //
-  // Fast-scroll blanking guard (see VirtualGrid for the full reasoning): while a
-  // sustained gesture is in progress we render image-free placeholder cells so
-  // the flood of texture uploads/frees never reaches the point where WebView2's
-  // GPU/compositor process wedges the whole webview black. Section headers stay
-  // live — they carry no textures.
+  // Fast-scroll blanking guard (see VirtualGrid for the measured reasoning):
+  // while a fast motion is in progress we render image-free placeholder cells so
+  // the burst of tile mount/unmount + image work never chokes WebView2's
+  // compositor (the 10s+ paint stall with an ~18k handle spike). Triggers on a
+  // big single jump or fast cumulative motion, never a gentle scan. Section
+  // headers stay live — they carry no images.
   let isScrolling = $state(false);
   let lastScrollAt = 0;
-  let burstFromTop = 0;
-  let burstDistance = 0;
+  let lastTop = 0;
+  let recentMove = 0;
   let scrollSettleTimer: ReturnType<typeof setTimeout> | undefined;
   function onScroll() {
     const el = viewport;
     if (!el) return;
     const top = el.scrollTop;
     const now = performance.now();
-    // Blank tiles only for a fling/held-key — see VirtualGrid for why this keys
-    // on distance travelled in one continuous motion, not on event count.
-    if (now - lastScrollAt < 90) burstDistance += Math.abs(top - burstFromTop);
-    else burstDistance = 0;
+    const delta = Math.abs(top - lastTop);
+    recentMove = now - lastScrollAt < 120 ? recentMove + delta : delta;
     lastScrollAt = now;
-    burstFromTop = top;
+    lastTop = top;
     scrollTop = top;
-    if (burstDistance > rowH * 3) isScrolling = true;
+    const fast = delta > rowH * 1.5 || recentMove > rowH * 2.5;
+    if (fast && !isScrolling)
+      void api.logNote(`sectioned-gate ON delta=${Math.round(delta)} recent=${Math.round(recentMove)} rowH=${Math.round(rowH)}`);
+    if (fast) isScrolling = true;
     clearTimeout(scrollSettleTimer);
     scrollSettleTimer = setTimeout(() => {
       if (viewport && scrollTop !== viewport.scrollTop) scrollTop = viewport.scrollTop;
       isScrolling = false;
-      burstDistance = 0;
+      recentMove = 0;
       void api.logNote(
         `sectioned-grid-scroll top=${Math.round(viewport?.scrollTop ?? 0)} visibleRows=${visible.length}`,
       );

@@ -1,5 +1,43 @@
 # Agent Handover: FoxCull
 
+## 2026-08-02: nightly.9 — freezes split into TWO measured causes, both fixed
+
+A live session with the owner + a background process monitor
+(`scratchpad/foxmon.ps1`: samples `foxcull`/`msedgewebview2` memory, handles,
+threads and `nvidia-smi` every ~1.2 s) cross-referenced with the app's `raf=`
+paint heartbeat produced two clean captures and settled the whole investigation.
+**The GPU-process/TDR theory from nightly.7/.8 was wrong** — the GPU is idle
+throughout. Full detail: `docs/changes/2026-08-02-freeze-two-modes.md`.
+
+- **Mode A — fast-scroll compositor stall.** A fast scroll → `PAINT-RESUME
+  gap=12474ms` (rAF/paint dead 12.5 s) while WebView2 **handles spike 26k→38k**
+  and RAM +900 MB (backpressure behind a choked compositor), then drain — GPU at
+  4–7 % the whole time, process responsive. Reproduced on photos AND videos.
+  Usually drains in ~10 s; sometimes doesn't → relaunch needed (the "permanent
+  freeze"). Fix: the nightly.8 placeholder idea with a **corrected trigger** —
+  it now engages on a big single jump (`delta > rowH*1.5`) or fast cumulative
+  motion, which is how real flings actually arrive (nightly.8 keyed on <90 ms
+  event bursts and never fired — that's why it "did nothing"). Applied to
+  VirtualGrid, SectionedGrid AND VirtualStrip (the filmstrip chokes too), and it
+  logs `grid-gate ON …` so you can confirm it fires.
+- **Mode B — idle / on-launch paint stall.** App frozen while completely idle:
+  normal handles (~20k, no spike), flat RAM, idle GPU, `Responding=True` — the
+  WebView2 **native-window-occlusion** misfire. Fix: `lib.rs` sets
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--disable-features=CalculateNativeWinOcclusion`
+  before the webview is created. **Confirmed live** — booted unstuck with the
+  flag.
+- **Logging bug that kept blinding us.** `log::init` truncated every launch and
+  swallowed open failures; with single-instance, a relaunch racing a stuck
+  instance silently killed logging for that whole session. Now append-based,
+  pid-stamped, per-pid fallback — no launch can lose its log again.
+
+Diagnostic aid left in place for the base machine: `scratchpad/foxmon.ps1` (not
+in the repo; it's in the session scratchpad) and the app's `raf=`/`grid-gate`
+log lines. Gates: `npm run check` 0/0, `cargo check` passed. **Mode A fix is
+device-QA pending on nightly.9** (only reproduces on real WebView2); if it
+recurs, the log now shows whether `grid-gate` fired plus the `raf=` gap, which
+decides whether to escalate to true cell recycling.
+
 ## 2026-08-02: nightly.8 — fast-scroll freeze reframed as a GPU-process stall; churn gate + paint probe
 
 The owner reported that the fast-scroll Grid freeze **persists in installed

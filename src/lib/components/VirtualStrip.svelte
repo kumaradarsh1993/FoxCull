@@ -40,10 +40,33 @@
     return out;
   });
 
+  // Fast-scroll blanking guard, mirroring VirtualGrid — the filmstrip chokes the
+  // WebView2 compositor the same way on a hard fling (measured 2026-08-02, on the
+  // bottom strip in Focus). During fast motion we render image-free placeholders
+  // and mount real tiles on settle; a gentle scan stays fully live.
+  let isScrolling = $state(false);
+  let lastScrollAt = 0;
+  let lastPos = 0;
+  let recentMove = 0;
+  let scrollSettleTimer: ReturnType<typeof setTimeout> | undefined;
   function onscroll() {
     if (!viewport) return;
-    scrollPos = orientation === "h" ? viewport.scrollLeft : viewport.scrollTop;
+    const pos = orientation === "h" ? viewport.scrollLeft : viewport.scrollTop;
+    const now = performance.now();
+    const delta = Math.abs(pos - lastPos);
+    recentMove = now - lastScrollAt < 120 ? recentMove + delta : delta;
+    lastScrollAt = now;
+    lastPos = pos;
+    scrollPos = pos;
+    if (delta > step * 2.5 || recentMove > step * 4) isScrolling = true;
+    clearTimeout(scrollSettleTimer);
+    scrollSettleTimer = setTimeout(() => {
+      isScrolling = false;
+      recentMove = 0;
+    }, 160);
   }
+
+  $effect(() => () => clearTimeout(scrollSettleTimer));
 
   // Measure viewport length along the scroll axis; also wire a non-passive wheel
   // handler so a normal vertical wheel and a Logitech-style thumb wheel both
@@ -127,7 +150,11 @@
           ? `left:${i * step}px; width:var(--cell); height:var(--cell)`
           : `top:${i * step}px; width:var(--cell); height:var(--cell)`}
       >
-        {@render cell(items[i], i)}
+        {#if isScrolling}
+          <div class="cellskeleton"></div>
+        {:else}
+          {@render cell(items[i], i)}
+        {/if}
       </div>
     {/each}
   </div>
@@ -161,6 +188,13 @@
     position: absolute;
     /* Avoid transform-positioned image layers for the same fast-scroll safety
        contract as VirtualGrid. */
+  }
+  /* Image-free stand-in shown only during a fast scroll — see VirtualGrid. */
+  .cellskeleton {
+    width: 100%;
+    height: 100%;
+    background: color-mix(in srgb, var(--text-faint) 12%, var(--bg-panel));
+    border-radius: 4px;
   }
   .strip.h .cellpos {
     top: calc((100% - var(--cell)) / 2);
