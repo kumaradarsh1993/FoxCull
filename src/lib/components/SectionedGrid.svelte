@@ -1,5 +1,6 @@
 <script lang="ts" generics="T">
   import type { Snippet } from "svelte";
+  import { untrack } from "svelte";
   import { api } from "$lib/api";
 
   type GridSection = { label: string; count: number; level?: 1 | 2; cellCount?: number };
@@ -40,6 +41,7 @@
   type Row =
     | { type: "header"; key: string; label: string; count: number; level: 1 | 2; y: number; h: number }
     | { type: "cells"; key: string; idxs: number[]; y: number; h: number };
+  type HeaderRow = Extract<Row, { type: "header" }>;
 
   // Flatten the sections into a list of positioned rows (one header row + N cell
   // rows per group). Recomputed only when layout inputs change, not on scroll.
@@ -82,6 +84,40 @@
     return out;
   });
 
+  // Headers are few, cheap and image-free — render them directly (keyed by their
+  // stable key). Cells are the expensive part and are RECYCLED (see below).
+  let visibleHeaders = $derived(visible.filter((r): r is HeaderRow => r.type === "header"));
+
+  // Flatten the visible cell rows into positioned cells (global index + x/y).
+  let visibleCells = $derived.by(() => {
+    const out: { gi: number; x: number; y: number }[] = [];
+    for (const r of visible) {
+      if (r.type !== "cells") continue;
+      for (let c = 0; c < r.idxs.length; c++) {
+        out.push({ gi: r.idxs[c], x: c * (cellW + gap), y: r.y });
+      }
+    }
+    return out;
+  });
+
+  // ── Cell recycling ─────────────────────────────────────────────────────────
+  // Same technique as VirtualGrid: a grow-only pool of slots, cell `gi` rendered
+  // in slot `gi % poolSize`. A window shift updates the existing Thumb's `item`
+  // prop in place instead of destroying/recreating cells, so a fast scroll never
+  // bursts the WebView2 compositor. Headers render outside the pool.
+  let poolSize = $state(0);
+  $effect(() => {
+    const need = visibleCells.length + cols * 2 + 2;
+    if (need > untrack(() => poolSize)) poolSize = need;
+  });
+
+  let slotCell = $derived.by(() => {
+    const map: ({ gi: number; x: number; y: number } | null)[] = new Array(poolSize).fill(null);
+    if (poolSize <= 0) return map;
+    for (const vc of visibleCells) map[vc.gi % poolSize] = vc;
+    return map;
+  });
+
   $effect(() => {
     const el = viewport;
     if (!el) return;
@@ -95,42 +131,18 @@
     return () => ro.disconnect();
   });
 
-  // Keep the virtual range synchronized with the compositor's real position.
-  // An rAF gate can remain pending in WebView2 after a fast scroll, permanently
-  // stranding the rendered rows above or below the visible viewport.
-  //
-  // Fast-scroll blanking guard (see VirtualGrid for the measured reasoning):
-  // while a fast motion is in progress we render image-free placeholder cells so
-  // the burst of tile mount/unmount + image work never chokes WebView2's
-  // compositor (the 10s+ paint stall with an ~18k handle spike). Triggers on a
-  // big single jump or fast cumulative motion, never a gentle scan. Section
-  // headers stay live — they carry no images.
-  let isScrolling = $state(false);
-  let lastScrollAt = 0;
-  let lastTop = 0;
-  let recentMove = 0;
+  // Read scroll directly (never via rAF — WebView2 can pause an outstanding rAF
+  // mid-gesture and strand the range), with a settle-timer safety net.
   let scrollSettleTimer: ReturnType<typeof setTimeout> | undefined;
   function onScroll() {
     const el = viewport;
     if (!el) return;
-    const top = el.scrollTop;
-    const now = performance.now();
-    const delta = Math.abs(top - lastTop);
-    recentMove = now - lastScrollAt < 120 ? recentMove + delta : delta;
-    lastScrollAt = now;
-    lastTop = top;
-    scrollTop = top;
-    const fast = delta > rowH * 1.5 || recentMove > rowH * 2.5;
-    if (fast && !isScrolling)
-      void api.logNote(`sectioned-gate ON delta=${Math.round(delta)} recent=${Math.round(recentMove)} rowH=${Math.round(rowH)}`);
-    if (fast) isScrolling = true;
+    scrollTop = el.scrollTop;
     clearTimeout(scrollSettleTimer);
     scrollSettleTimer = setTimeout(() => {
       if (viewport && scrollTop !== viewport.scrollTop) scrollTop = viewport.scrollTop;
-      isScrolling = false;
-      recentMove = 0;
       void api.logNote(
-        `sectioned-grid-scroll top=${Math.round(viewport?.scrollTop ?? 0)} visibleRows=${visible.length}`,
+        `sectioned-grid-scroll top=${Math.round(viewport?.scrollTop ?? 0)} cells=${visibleCells.length} pool=${poolSize}`,
       );
     }, 160);
   }
@@ -162,26 +174,21 @@
 
 <div class="vp" bind:this={viewport} onscroll={onScroll}>
   <div class="canvas" style="height:{totalH}px">
-    {#each visible as r (r.key)}
-      {#if r.type === "header"}
-        <div class="hdr level-{r.level}" style="top:{r.y}px; height:{r.h}px">
-          <strong>{r.label}</strong>
-          <span>{r.count}</span>
+    {#each visibleHeaders as r (r.key)}
+      <div class="hdr level-{r.level}" style="top:{r.y}px; height:{r.h}px">
+        <strong>{r.label}</strong>
+        <span>{r.count}</span>
+      </div>
+    {/each}
+    {#each slotCell as sc, s (s)}
+      {#if sc}
+        <div
+          class="cellpos"
+          class:active={sc.gi === activeIndex}
+          style="left:{sc.x}px; top:{sc.y}px; width:{cellW}px; height:{cellW}px"
+        >
+          {@render cell(items[sc.gi], sc.gi)}
         </div>
-      {:else}
-        {#each r.idxs as gi, c (gi)}
-          <div
-            class="cellpos"
-            class:active={gi === activeIndex}
-            style="left:{c * (cellW + gap)}px; top:{r.y}px; width:{cellW}px; height:{cellW}px"
-          >
-            {#if isScrolling}
-              <div class="cellskeleton"></div>
-            {:else}
-              {@render cell(items[gi], gi)}
-            {/if}
-          </div>
-        {/each}
       {/if}
     {/each}
   </div>
@@ -239,11 +246,5 @@
     position: absolute;
     /* Coordinates are deliberate: per-tile transform promotion overwhelmed
        WebView2's compositor during fast Grid traversal. */
-  }
-  /* Image-free stand-in shown only during a fast scroll — see VirtualGrid. */
-  .cellskeleton {
-    width: 100%;
-    height: 100%;
-    background: color-mix(in srgb, var(--text-faint) 12%, var(--viewport-bg));
   }
 </style>

@@ -55,3 +55,22 @@ recreates all ~108 heavy cells at once; the burst chokes WebView2's compositor
 - Device QA is the test: fast-scroll the MAIN GRID on the 6k folder with the
   monitor running; confirm `raf=` no longer gaps and `grid-scroll pool=…` lines
   show a stable pool.
+
+## Addendum — all four surfaces recycled (v1.4.0-nightly.1)
+
+Following the plan in `docs/design/rendering-rework-2026-08.md` and the owner's
+call (work on `main`, bump base to 1.4.0, single build), the recycler was applied
+to the remaining surfaces and the placeholder gate removed everywhere:
+
+- `SectionedGrid.svelte` — cells recycle by `gi % poolSize`; section headers stay
+  rendered directly (few, image-free). `sectioned-grid-scroll … pool=` logging.
+- `VirtualStrip.svelte` — 1-D recycling (both orientations); the blank-placeholder
+  gate is gone; native/smooth wheel + active-cell reveal unchanged.
+- `DetailsView.svelte` — rows recycle by `index % poolSize` and are positioned
+  with `top` instead of a CSS `transform` (dropping a per-row compositor layer).
+
+All keep the same public APIs, so `+page.svelte`, `Thumb.svelte`, the loader and
+folder-switch cancellation are untouched. `npm run check` 0/0. Base version bumped
+to **1.4.0**; shipped as `v1.4.0-nightly.1` for full-device QA per the checklist in
+the design doc (fast grid, slow multi-screen, filmstrip fling, grouped grid,
+details, live-scrub, folder switch, small/RAW/HEIC folders).

@@ -1,5 +1,6 @@
 <script lang="ts" generics="T">
   import type { Snippet } from "svelte";
+  import { untrack } from "svelte";
 
   let {
     items,
@@ -28,45 +29,31 @@
   let first = $derived(Math.max(0, Math.floor(scrollPos / step) - overscan));
   let last = $derived(Math.min(items.length - 1, Math.ceil((scrollPos + vpMain) / step) + overscan));
 
-  // Primitive indices keep retained cells stable during the many small scroll
-  // events emitted by eased wheel motion. Fresh wrapper objects made every
-  // Thumb receive a redundant prop update on every animation frame.
-  let visibleIndices = $derived.by(() => {
-    const out: number[] = [];
-    for (let i = first; i <= last; i++) {
-      if (i < 0 || i >= items.length) continue;
-      out.push(i);
-    }
-    return out;
+  // ── Cell recycling ─────────────────────────────────────────────────────────
+  // Same technique as VirtualGrid (1-D here): a grow-only pool of slots, item `i`
+  // in slot `i % poolSize`. Scrolling repoints existing cells in place instead of
+  // destroying/recreating them, so a hard fling of the filmstrip never bursts the
+  // WebView2 compositor. Replaces the previous blank-placeholder gate.
+  let poolSize = $state(0);
+  $effect(() => {
+    const inView = vpMain > 0 && step > 0 ? Math.ceil(vpMain / step) : 0;
+    const need = inView + overscan * 2 + 2;
+    if (need > untrack(() => poolSize)) poolSize = need;
   });
 
-  // Fast-scroll blanking guard, mirroring VirtualGrid — the filmstrip chokes the
-  // WebView2 compositor the same way on a hard fling (measured 2026-08-02, on the
-  // bottom strip in Focus). During fast motion we render image-free placeholders
-  // and mount real tiles on settle; a gentle scan stays fully live.
-  let isScrolling = $state(false);
-  let lastScrollAt = 0;
-  let lastPos = 0;
-  let recentMove = 0;
-  let scrollSettleTimer: ReturnType<typeof setTimeout> | undefined;
+  let slotItem = $derived.by(() => {
+    const map: number[] = new Array(poolSize).fill(-1);
+    if (!items.length || poolSize <= 0) return map;
+    for (let i = first; i <= last; i++) {
+      if (i >= 0 && i < items.length) map[i % poolSize] = i;
+    }
+    return map;
+  });
+
   function onscroll() {
     if (!viewport) return;
-    const pos = orientation === "h" ? viewport.scrollLeft : viewport.scrollTop;
-    const now = performance.now();
-    const delta = Math.abs(pos - lastPos);
-    recentMove = now - lastScrollAt < 120 ? recentMove + delta : delta;
-    lastScrollAt = now;
-    lastPos = pos;
-    scrollPos = pos;
-    if (delta > step * 2.5 || recentMove > step * 4) isScrolling = true;
-    clearTimeout(scrollSettleTimer);
-    scrollSettleTimer = setTimeout(() => {
-      isScrolling = false;
-      recentMove = 0;
-    }, 160);
+    scrollPos = orientation === "h" ? viewport.scrollLeft : viewport.scrollTop;
   }
-
-  $effect(() => () => clearTimeout(scrollSettleTimer));
 
   // Measure viewport length along the scroll axis; also wire a non-passive wheel
   // handler so a normal vertical wheel and a Logitech-style thumb wheel both
@@ -143,19 +130,17 @@
 
 <div class="strip {orientation}" bind:this={viewport} {onscroll} style="--cell:{cellSize}px">
   <div class="canvas" style={orientation === "h" ? `width:${total}px` : `height:${total}px`}>
-    {#each visibleIndices as i (i)}
-      <div
-        class="cellpos"
-        style={orientation === "h"
-          ? `left:${i * step}px; width:var(--cell); height:var(--cell)`
-          : `top:${i * step}px; width:var(--cell); height:var(--cell)`}
-      >
-        {#if isScrolling}
-          <div class="cellskeleton"></div>
-        {:else}
-          {@render cell(items[i], i)}
-        {/if}
-      </div>
+    {#each slotItem as idx, s (s)}
+      {#if idx >= 0}
+        <div
+          class="cellpos"
+          style={orientation === "h"
+            ? `left:${idx * step}px; width:var(--cell); height:var(--cell)`
+            : `top:${idx * step}px; width:var(--cell); height:var(--cell)`}
+        >
+          {@render cell(items[idx], idx)}
+        </div>
+      {/if}
     {/each}
   </div>
 </div>
@@ -188,13 +173,6 @@
     position: absolute;
     /* Avoid transform-positioned image layers for the same fast-scroll safety
        contract as VirtualGrid. */
-  }
-  /* Image-free stand-in shown only during a fast scroll — see VirtualGrid. */
-  .cellskeleton {
-    width: 100%;
-    height: 100%;
-    background: color-mix(in srgb, var(--text-faint) 12%, var(--bg-panel));
-    border-radius: 4px;
   }
   .strip.h .cellpos {
     top: calc((100% - var(--cell)) / 2);

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { api } from "$lib/api";
   import Thumb from "./Thumb.svelte";
   import { LABELS, LABEL_VAR, type MediaItem, type MediaProbe } from "$lib/types";
@@ -78,13 +79,33 @@
   let first = $derived(Math.max(0, Math.floor(scrollTop / ROW) - OVERSCAN));
   let last = $derived(Math.min(items.length - 1, Math.ceil((scrollTop + vpHeight) / ROW) + OVERSCAN));
 
+  type VRow = { item: MediaItem; index: number; y: number };
   let visible = $derived.by(() => {
-    const out: { item: MediaItem; index: number; y: number }[] = [];
+    const out: VRow[] = [];
     for (let i = first; i <= last; i++) {
       if (i < 0 || i >= items.length) continue;
       out.push({ item: items[i], index: i, y: i * ROW });
     }
     return out;
+  });
+
+  // ── Row recycling ──────────────────────────────────────────────────────────
+  // Same technique as VirtualGrid: a grow-only slot pool, row `index` rendered in
+  // slot `index % poolSize`, keyed by slot so scrolling repoints existing rows
+  // (and their Thumb) in place instead of destroying/recreating them. Rows are
+  // positioned with `top` (not a CSS transform, which promoted a compositor layer
+  // per row).
+  let poolSize = $state(0);
+  $effect(() => {
+    const inView = vpHeight > 0 ? Math.ceil(vpHeight / ROW) : 0;
+    const need = inView + OVERSCAN * 2 + 2;
+    if (need > untrack(() => poolSize)) poolSize = need;
+  });
+  let slotRow = $derived.by(() => {
+    const map: (VRow | null)[] = new Array(poolSize).fill(null);
+    if (poolSize <= 0) return map;
+    for (const v of visible) map[v.index % poolSize] = v;
+    return map;
   });
 
   $effect(() => {
@@ -243,36 +264,38 @@
     }}
   >
     <div class="canvas" style="height:{total}px; min-width:{tableWidth}px">
-      {#each visible as v (v.index)}
-        <button
-          class="row"
-          class:active={v.index === activeIndex}
-          class:selected={selected.has(v.item.path)}
-          class:reject={v.item.flag === "reject"}
-          style="transform:translateY({v.y}px); grid-template-columns:{gridTemplate}"
-          onclick={(e) => onrowclick(e, v.index)}
-          ondblclick={() => onrowdblclick(v.index)}
-          oncontextmenu={(e) => onrowcontext?.(e, v.item, v.index)}
-          draggable={!!onrowdragstart}
-          ondragstart={(e) => onrowdragstart?.(e, v.item, v.index)}
-          ondragend={() => onrowdragend?.()}
-          title={v.item.path}
-        >
-          {#each visibleColumns as col}
-            {#if col.id === "thumb"}
-              <span class="c-thumb"><Thumb item={v.item} size={320} /></span>
-            {:else if col.id === "marks"}
-              <span class="c-marks">
-                {#if v.item.rating > 0}<span class="stars">{"★".repeat(v.item.rating)}</span>{/if}
-                {#if v.item.label}<span class="dot" style="background:var({labelColor(v.item.label)})"></span>{/if}
-                {#if v.item.flag === "pick"}<span class="fl pick">Pick</span>{/if}
-                {#if v.item.flag === "reject"}<span class="fl rej">Reject</span>{/if}
-              </span>
-            {:else}
-              <span class="txt" class:ar={col.align === "right"}>{value(v.item, col.id)}</span>
-            {/if}
-          {/each}
-        </button>
+      {#each slotRow as r, s (s)}
+        {#if r}
+          <button
+            class="row"
+            class:active={r.index === activeIndex}
+            class:selected={selected.has(r.item.path)}
+            class:reject={r.item.flag === "reject"}
+            style="top:{r.y}px; grid-template-columns:{gridTemplate}"
+            onclick={(e) => onrowclick(e, r.index)}
+            ondblclick={() => onrowdblclick(r.index)}
+            oncontextmenu={(e) => onrowcontext?.(e, r.item, r.index)}
+            draggable={!!onrowdragstart}
+            ondragstart={(e) => onrowdragstart?.(e, r.item, r.index)}
+            ondragend={() => onrowdragend?.()}
+            title={r.item.path}
+          >
+            {#each visibleColumns as col}
+              {#if col.id === "thumb"}
+                <span class="c-thumb"><Thumb item={r.item} size={320} /></span>
+              {:else if col.id === "marks"}
+                <span class="c-marks">
+                  {#if r.item.rating > 0}<span class="stars">{"★".repeat(r.item.rating)}</span>{/if}
+                  {#if r.item.label}<span class="dot" style="background:var({labelColor(r.item.label)})"></span>{/if}
+                  {#if r.item.flag === "pick"}<span class="fl pick">Pick</span>{/if}
+                  {#if r.item.flag === "reject"}<span class="fl rej">Reject</span>{/if}
+                </span>
+              {:else}
+                <span class="txt" class:ar={col.align === "right"}>{value(r.item, col.id)}</span>
+              {/if}
+            {/each}
+          </button>
+        {/if}
       {/each}
     </div>
   </div>

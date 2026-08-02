@@ -1,5 +1,37 @@
 # Agent Handover: FoxCull
 
+## 2026-08-02: v1.4.0-nightly.1 — grid engine rebuilt on cell recycling (root fix)
+
+nightly.9's data settled it: with the placeholder gate firing, a fast scroll STILL
+stalled paint 7.5 s (`PAINT-RESUME gap=7544ms`, GPU idle) — the gate was the wrong
+layer and its skeleton↔real swap was itself the "blank then reload" flicker the
+owner saw. Owner (Aamir) called for a root fix at 2026-08 industry standard, no
+refresh bloat, work on `main`, base bumped to **1.4.0**.
+
+Researched + adversarially-checked plan: `docs/design/rendering-rework-2026-08.md`
+(DOM-node recycling is the standard — AG Grid / TanStack Virtual / react-virtuoso;
+`content-visibility` considered and deliberately not added — no change without
+data). In-house recycler chosen over a library for no-deps + tight `Thumb`/live-
+scrub integration.
+
+**What changed:** all four virtual surfaces — `VirtualGrid`, `SectionedGrid`,
+`VirtualStrip`, `DetailsView` — now RECYCLE cells instead of destroy/recreate. A
+grow-only slot pool renders item `i` in slot `i % poolSize`, keyed by slot number,
+so a re-window (small scroll or big jump alike) updates the existing Thumb's `item`
+prop in place; only ~2·cols edge slots ever toggle (modulo arithmetic bounds the
+churn regardless of jump distance). The nightly.8/.9 `isScrolling` placeholder gate
+is **removed everywhere** (recycling makes it unnecessary and deletes the flicker).
+Details also dropped its per-row CSS `transform` for `top`. Public APIs, `Thumb`,
+the loader, folder-switch cancellation, disk cache, RAW/HEIC, and live-scrub are
+all untouched. `npm run check` 0/0.
+
+**Status: device-QA pending.** The mechanism is sound and logged (`grid-scroll …
+pool=`), but "freeze gone" is only true once the owner confirms no `raf` gap on a
+hard fling. Falsifier if it recurs: the burst wasn't the sole cause → look at the
+Tauri asset-protocol fetch path / decode volume (next suspects named in the design
+doc). Diagnostic aids remain: `scratchpad/foxmon.ps1` process monitor + the `raf=`
+heartbeat. An earlier grid-only test build exists as tag `v1.3.0-recycler.1`.
+
 ## 2026-08-02: nightly.9 — freezes split into TWO measured causes, both fixed
 
 A live session with the owner + a background process monitor

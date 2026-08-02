@@ -1,6 +1,30 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
+## Rebuilt the grid engine — the scroll freeze is fixed at the root
+
+The freeze was never a patch-able glitch — it was how the grid was built. Every
+time you scrolled, the app **threw away and rebuilt every visible tile**, and a
+fast scroll rebuilt hundreds of them in a burst that overwhelmed the Windows
+display engine until it locked up (seconds of black screen, sometimes needing a
+relaunch). Earlier builds tried to soften that burst; this one removes it.
+
+The grid, the grouped grid, the Focus filmstrip and the Details list now all use
+the same modern **cell-recycling** engine — the standard technique behind
+professional data grids. A fixed set of tiles is *reused and repointed* as you
+scroll instead of being destroyed and recreated. Nothing is rebuilt in bulk, so:
+
+- **Fast scrolling no longer freezes** — flick as hard as you like, in the grid
+  or the filmstrip.
+- **No more blank-and-reload flash.** Tiles that stay on screen keep their
+  picture; only genuinely new tiles fill in. The placeholder/refresh behavior from
+  the last build is gone.
+- It's simpler and lighter under the hood — less work per scroll, not more.
+
+Everything you rely on is unchanged: the on-disk thumbnail cache, RAW/HEIC
+handling, the click-to-arm hover scrubbing on videos, and folder-switch
+cancellation. The idle/on-launch freeze fix from the previous build is included.
+
 ## Freeze fixes — two root causes, now measured
 
 A live debugging session with detailed cross-process monitoring pinned down two
