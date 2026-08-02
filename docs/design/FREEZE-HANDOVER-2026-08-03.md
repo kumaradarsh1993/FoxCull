@@ -9,6 +9,108 @@ useful for the Mode-B occlusion fix and the measurement tooling).
 **Status: OPEN.** The freeze is NOT fixed. The grid live-decode feature was
 wrongly removed and has been restored (nightly.5). Do not remove it again.
 
+> ## ⚠ READ §0 FIRST — the RCA was inverted on 2026-08-03 (late)
+>
+> Everything below §0 that says *"the compositor stalled while JS kept running"*
+> is **WRONG** and is kept only as investigation history. Detailed owner symptom
+> reporting on nightly.4/.5 proves the opposite: **the JS main thread is blocked;
+> the renderer is healthy.** Start at §0.
+
+---
+
+## 0. The corrected model — the JS main thread is BLOCKED (2026-08-03, late)
+
+### The observation that settles it
+
+During a freeze the owner reports he CAN still:
+
+- **scroll** the grid with the wheel, and with ↑/↓ (the view really moves),
+- get **hover highlights** on toolbar buttons, folder-tree rows, thumbnails,
+- get **native tooltips** on hover.
+
+…and CANNOT:
+
+- **click anything** (buttons highlight, tooltips appear, click does nothing —
+  Edit, Clear, Reject, folder tree right-click, filmstrip: all dead),
+- **move the blue selection** (the outline stays on one tile while arrow keys
+  are pressed),
+- **populate tiles** (they never fill in, even after motion stops),
+- **advance the loading chip** (it sticks, and had been counting backwards).
+
+**The split is exactly "needs JavaScript" vs "does not".** Native scrolling of an
+`overflow-y:auto` div, CSS `:hover`, and `title` tooltips are all done by the
+browser **without the main thread**. Clicks, Svelte state→DOM updates, tile
+loading and the activity chip **all require the main thread**.
+
+**Conclusion: the JS main thread is blocked/saturated. The compositor and the GPU
+are FINE.** The renderer keeps compositing the last DOM it was given, which is why
+the frozen picture is still interactive-looking.
+
+### This also re-reads the older "proof" correctly
+
+The earlier signature — rAF stops 7–12 s (`PAINT-RESUME gap=…`) while 20 s
+`MEM tick` lines keep appearing — was read as "compositor dead, JS alive." That
+was wrong: **a blocked main thread stops rAF *and* `setInterval` alike**; a 20 s
+interval simply resumes afterwards and prints, so its survival proves nothing.
+The rAF gap is a direct measure of **main-thread block duration**. GPU idle
+(1–14%) fits this perfectly — nothing is wrong with the GPU because nothing is
+being asked of it.
+
+### The 12 rows × 9 columns constant
+
+Consistently exactly **12 rows × 9 cols** of tiles remain, "stuck in the middle,"
+blank above and below; this number appeared in the ORIGINAL bug report too (i.e.
+it predates the v1.4.0 recycler). That is simply **the last virtual window JS
+managed to render**: 8 visible rows + 2 overscan rows top and bottom = 12. Cells
+are absolutely positioned inside a tall canvas, so once JS stops updating them,
+native scrolling reveals empty canvas everywhere else. It is a **symptom of the
+main-thread block, not a virtualization bug** — and it explains why the "dead
+zone" and the "freeze" are the *same event*, as the owner suspected.
+
+### Consequences for where to look
+
+Stop looking for GPU-layer / compositor-resource explanations (that is what sent
+nightly.4 after the grid decoder — which the on-device test then disproved). Look
+for **what saturates or blocks the main thread during rapid scroll**, e.g.:
+
+- an unbounded/very large synchronous burst of work per scroll event,
+- unbounded queue/map growth with O(n) scans per tile repoint,
+- a burst of hundreds of `<img>` src changes resolving at once (decode +
+  `onload` handlers + layout on the main thread),
+- reactive-store write storms (one `$state` write per queued/cancelled fetch)
+  driving derived recomputation and re-render on every event,
+- memory pressure (+1 GB observed) pushing the renderer into GC thrash.
+
+The **+16k handle** spike is then a *consequence* of the fetch/decode burst, not
+the mechanism of the freeze.
+
+### A gate that can latch (introduced by this investigation — fix it)
+
+`thumbnail-loader.ts`'s fast-fling gate (`setScrolling`) holds ALL dispatch while
+`scrolling === true`, and is cleared only by `VirtualGrid.onScroll`'s 160 ms
+settle `setTimeout`. **If the main thread is blocked, that timer never runs, so
+the gate latches ON permanently** — after which no thumbnail ever loads again for
+the rest of the session, and the activity chip sticks. That precisely matches
+"tiles don't populate any more, loader stuck" persisting after the freeze. This
+is a v1.4.0 (this investigation's) amplifier, not the v1.2.0 root cause, but it
+converts a recoverable stall into a permanent dead grid and must be made
+un-latchable (absolute max defer, cleared on any settle path).
+
+### Owner's product constraint restated (drives the fix)
+
+Scrolling must **never** change the selected tile (only click / arrow keys do) —
+already true in `VirtualGrid` (scroll updates `scrollTop` only). And heavy
+per-tile work must wait for a **deliberate dwell**, so fast pass-through mounts
+nothing. He also asks the bigger question: Windows Explorer lazy-loads the same
+1000+ clip folder with free fast scrolling and no visible caching — so the whole
+thumbnail/caching model is open to being simplified toward that.
+
+### Reported alongside (unconfirmed, likely same cause)
+
+A clicked selection appearing "retained"/stale. Consistent with the frozen DOM
+(the `class:active` outline is whatever JS last painted). Owner mentioned
+screenshots; **none arrived in the session** — re-request if needed.
+
 ---
 
 ## 1. The bug, in the owner's words

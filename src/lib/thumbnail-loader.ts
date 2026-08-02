@@ -38,8 +38,22 @@ const memo = new Map<string, string>(); // key -> asset url (LRU, bounded)
 const pending = new Map<string, Promise<string | null>>(); // key -> in-flight promise
 const stripMemo = new Map<string, FilmstripInfo>(); // key -> filmstrip geometry + asset url
 const stripPending = new Map<string, Promise<FilmstripInfo | null>>();
-type QItem = { key: string; heavy: boolean; run: () => void };
+type QItem = { key: string; heavy: boolean; run: () => void; drop: () => void };
 let queue: QItem[] = []; // served LIFO (newest request = current viewport first)
+// Hard ceiling on deferred work. Holding ↓ through a 1000-clip folder repoints
+// ~9 tiles per row at key-repeat rate; with dispatch deferred during the fling
+// nothing drains, so the queue (and its closures + `pending` entries) grew
+// without limit, and every per-tile cancel does an O(n) scan over it. Since the
+// queue is served LIFO — newest first, because that IS the current viewport —
+// the OLDEST entries are the stalest and are the right ones to shed. Dropping
+// resolves the waiter with null rather than orphaning its promise.
+const MAX_QUEUE = 240;
+function trimQueue() {
+  while (queue.length > MAX_QUEUE) {
+    const stale = queue.shift();
+    stale?.drop();
+  }
+}
 let inflight = 0;
 let heavyInflight = 0;
 let generation = 0;
@@ -61,10 +75,35 @@ let generation = 0;
 // standard windowed-list "isScrolling → defer loads" contract, applied at the
 // loader so it needs no Thumb changes and cannot touch live-scrub.
 let scrolling = false;
+// ── the gate must NOT be able to latch ───────────────────────────────────────
+// `scrolling` is raised here and lowered by VirtualGrid's 160 ms settle timer.
+// That timer is a `setTimeout` on the MAIN THREAD — and the freeze we are
+// chasing IS a blocked main thread (see docs/design/FREEZE-HANDOVER-2026-08-03
+// §0). So exactly when the gate matters most, the thing that clears it cannot
+// run: the gate sticks ON forever, no thumbnail ever loads again, and the
+// activity chip freezes mid-count. That is the "tiles never populate again,
+// loader stuck" state reported on nightly.4/.5.
+//
+// A deferral is an optimization, never a correctness requirement, so it gets an
+// absolute ceiling of its own. Whatever happens to the caller, dispatch resumes.
+const MAX_DEFER_MS = 700;
+let deferGuard: ReturnType<typeof setTimeout> | undefined;
 export function setScrolling(v: boolean) {
   const was = scrolling;
   scrolling = v;
-  if (was && !v) {
+  clearTimeout(deferGuard);
+  deferGuard = undefined;
+  if (v) {
+    // Re-armed on every fast-scroll event, so a continuous fling keeps deferring;
+    // it only fires if nothing lowers the gate within the ceiling.
+    deferGuard = setTimeout(() => {
+      deferGuard = undefined;
+      if (!scrolling) return;
+      scrolling = false;
+      pump();
+      jobReport();
+    }, MAX_DEFER_MS);
+  } else if (was) {
     pump(); // settled — drain the deferred viewport now
     jobReport(); // and refresh the progress chip we held quiet during the fling
   }
@@ -338,7 +377,12 @@ function enqueue(key: string, fetchFsPath: () => Promise<string>, heavy = false)
           jobFinished();
         });
     };
-    queue.push({ key, heavy, run });
+    const drop = () => {
+      pending.delete(key);
+      resolve(null);
+    };
+    queue.push({ key, heavy, run, drop });
+    trimQueue();
     pump();
     jobReport();
   });
@@ -390,7 +434,12 @@ function enqueueStrip(key: string, fetchInfo: () => Promise<FilmstripInfo>): Pro
           jobFinished();
         });
     };
-    queue.push({ key, heavy: true, run });
+    const drop = () => {
+      if (stripPending.get(key) === promise) stripPending.delete(key);
+      resolve(null);
+    };
+    queue.push({ key, heavy: true, run, drop });
+    trimQueue();
     pump();
     jobReport();
   });
