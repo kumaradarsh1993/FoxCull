@@ -1,6 +1,24 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
+## The fast-scroll freeze
+
+If you flung the Grid down quickly — a hard mouse-wheel throw or a held ↓ arrow —
+the viewport could go black and the whole app stop responding until you relaunched
+it. Gentle scrolling was always fine; only fast motion tripped it. This build
+targets that directly.
+
+- While a genuinely fast scroll is in flight, the Grid now shows lightweight
+  placeholders and paints the real thumbnails the instant you stop. That keeps
+  the burst of image work from overwhelming the display engine, which is what was
+  wedging the window. Ordinary monitoring scroll is unchanged — it stays fully
+  live, images and all.
+- This is the same for both the plain Grid and the month/type-grouped Grid.
+- This build also writes extra diagnostics to `foxcull.log` so that, if any freeze
+  still slips through, the log now shows conclusively whether the display engine
+  stalled while the app itself kept running. If you can reproduce a freeze on this
+  build, that log is exactly what pins the remaining cause.
+
 ## Interface recovery and smoother browsing
 
 - Fast Grid and filmstrip scrolling no longer promotes every mounted media tile

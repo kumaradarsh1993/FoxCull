@@ -1,5 +1,51 @@
 # Agent Handover: FoxCull
 
+## 2026-08-02: nightly.8 — fast-scroll freeze reframed as a GPU-process stall; churn gate + paint probe
+
+The owner reported that the fast-scroll Grid freeze **persists in installed
+nightly.7**, and — decisively — that he reproduces the *same* freeze in `v1.2.1`
+stable (`e951f74`), which predates the entire visual refit and all three prior
+grid fixes. That reframes the whole investigation: **it is not a regression, and
+it is not in the JS/DOM layer.** Symptoms: a hard wheel-fling or a held ↓ blacks
+out the viewport and wedges the window (even native cursor feedback dies, input
+dead, permanent until relaunch); gentle scrolling is always fine.
+
+Prior telemetry already isolated it: at freeze the JS heartbeat keeps firing,
+heap is flat, the loader is idle, VirtualGrid reports the correct mounted range —
+yet the screen is dead and the WebView2 **GPU** subprocess holds ~227 MB. That
+profile is a **WebView2 compositor/GPU-process wedge downstream of a correct
+DOM**, which is why nightly .5/.6/.7 (double-transform, rAF→direct scroll sync,
+removing `will-change`) each looked reasonable and none landed it.
+
+Leading mechanism (**inference, not yet measured** — labelled as such per this
+project's cardinal rule): the rate of image-tile mount/unmount. `onScroll`
+commits `scrollTop` unthrottled and `{#each … (i)}` is keyed by absolute index,
+so a fling destroys+rebuilds all ~117 tiles per step — a torrent of GPU texture
+alloc/free that plausibly tips the process into an unrecoverable context loss.
+
+This nightly ships **both a fix and the probe that confirms the mechanism**, per
+the owner's call:
+
+- **Churn gate (the fix).** VirtualGrid and SectionedGrid now accumulate distance
+  travelled within one continuous motion; once it exceeds ~3 rows (a fling or
+  held key, never a gentle scan) they render image-free placeholder cells and
+  swap the real tiles back on the existing 160 ms settle. No `<img>`, no decode,
+  no texture during the fling. Scroll-position handling is untouched — the gate
+  never depends on rAF for correctness (preserving the documented WebView2
+  stale-rAF trap). Keys on *distance*, not event count, because Windows
+  smooth-scroll emits several events per gentle notch.
+- **Paint-liveness probe (the proof).** A new rAF loop in `+page.svelte` advances
+  `rafFrames`; the 20 s MEM heartbeat prints `raf=N`. Two consecutive ticks with
+  an unchanged `raf` = the compositor was dead while the renderer lived — the
+  decisive separation the old `setInterval`-only heartbeat could not make.
+
+Gates: `npm run check` 0/0; `cargo check` passed (no Rust changed). The freeze
+only reproduces on real WebView2/GPU, so **device QA is the actual test**: fling
+the 6,000-item folder on the Alienware; if it still freezes, the `raf=`
+divergence in `foxcull.log` pins the remaining cause and the next lever is
+WebView2 browser args or true cell recycling. Ledger:
+`docs/changes/2026-08-02-fast-scroll-freeze.md`.
+
 ## 2026-08-02: nightly.7 removes fast-scroll GPU layer churn
 
 The owner confirmed that installed nightly.6 worked under slow scrolling but

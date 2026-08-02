@@ -98,14 +98,35 @@
   // Keep the virtual range synchronized with the compositor's real position.
   // An rAF gate can remain pending in WebView2 after a fast scroll, permanently
   // stranding the rendered rows above or below the visible viewport.
+  //
+  // Fast-scroll blanking guard (see VirtualGrid for the full reasoning): while a
+  // sustained gesture is in progress we render image-free placeholder cells so
+  // the flood of texture uploads/frees never reaches the point where WebView2's
+  // GPU/compositor process wedges the whole webview black. Section headers stay
+  // live — they carry no textures.
+  let isScrolling = $state(false);
+  let lastScrollAt = 0;
+  let burstFromTop = 0;
+  let burstDistance = 0;
   let scrollSettleTimer: ReturnType<typeof setTimeout> | undefined;
   function onScroll() {
     const el = viewport;
     if (!el) return;
-    scrollTop = el.scrollTop;
+    const top = el.scrollTop;
+    const now = performance.now();
+    // Blank tiles only for a fling/held-key — see VirtualGrid for why this keys
+    // on distance travelled in one continuous motion, not on event count.
+    if (now - lastScrollAt < 90) burstDistance += Math.abs(top - burstFromTop);
+    else burstDistance = 0;
+    lastScrollAt = now;
+    burstFromTop = top;
+    scrollTop = top;
+    if (burstDistance > rowH * 3) isScrolling = true;
     clearTimeout(scrollSettleTimer);
     scrollSettleTimer = setTimeout(() => {
       if (viewport && scrollTop !== viewport.scrollTop) scrollTop = viewport.scrollTop;
+      isScrolling = false;
+      burstDistance = 0;
       void api.logNote(
         `sectioned-grid-scroll top=${Math.round(viewport?.scrollTop ?? 0)} visibleRows=${visible.length}`,
       );
@@ -152,7 +173,11 @@
             class:active={gi === activeIndex}
             style="left:{c * (cellW + gap)}px; top:{r.y}px; width:{cellW}px; height:{cellW}px"
           >
-            {@render cell(items[gi], gi)}
+            {#if isScrolling}
+              <div class="cellskeleton"></div>
+            {:else}
+              {@render cell(items[gi], gi)}
+            {/if}
           </div>
         {/each}
       {/if}
@@ -212,5 +237,11 @@
     position: absolute;
     /* Coordinates are deliberate: per-tile transform promotion overwhelmed
        WebView2's compositor during fast Grid traversal. */
+  }
+  /* Image-free stand-in shown only during a fast scroll — see VirtualGrid. */
+  .cellskeleton {
+    width: 100%;
+    height: 100%;
+    background: color-mix(in srgb, var(--text-faint) 12%, var(--viewport-bg));
   }
 </style>

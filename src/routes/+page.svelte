@@ -1000,6 +1000,33 @@
     return () => clearInterval(beat);
   });
 
+  // ── Compositor (paint) liveness ────────────────────────────────────────────
+  // The heartbeat above is a setInterval — it proves only that the JS TIMER
+  // queue still runs, NOT that WebView2 is still presenting frames. Those two
+  // diverge in exactly the failure we are chasing: a fast scroll can wedge the
+  // GPU/compositor process, leaving the screen frozen black and input dead while
+  // setInterval keeps firing. This rAF loop advances `rafFrames`, which the MEM
+  // tick prints as `raf=N`. If two consecutive ticks show the SAME raf count,
+  // the compositor was dead for that whole 20 s window while the renderer lived
+  // — the decisive signal separating a compositor stall from a wedged renderer
+  // (both ticks stop) or a pure present-path failure (both keep advancing). A
+  // resume after a long gap is logged too, for the case where it recovers.
+  let rafFrames = 0;
+  $effect(() => {
+    let handle = 0;
+    let last = performance.now();
+    const tick = () => {
+      rafFrames++;
+      const now = performance.now();
+      const gap = now - last;
+      if (gap > 1500) void api.logNote(`PAINT-RESUME gap=${Math.round(gap)}ms frames=${rafFrames}`);
+      last = now;
+      handle = requestAnimationFrame(tick);
+    };
+    handle = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(handle);
+  });
+
   function rootForDir(dir: string): string {
     const d = drives.find((dr) => dir.toLowerCase().startsWith(dr.path.toLowerCase()));
     if (d) return d.path;
@@ -1029,7 +1056,7 @@
         ? `heapMB=${Math.round(mem.usedJSHeapSize / 1048576)}/${Math.round(mem.jsHeapSizeLimit / 1048576)}`
         : "heap=n/a";
       api.logEvent(
-        `MEM ${tag} ${heap} memo=${s.memo} loupe=${s.loupe} pending=${s.pending} queue=${s.queue} inflight=${s.inflight}`,
+        `MEM ${tag} ${heap} memo=${s.memo} loupe=${s.loupe} pending=${s.pending} queue=${s.queue} inflight=${s.inflight} raf=${rafFrames}`,
       );
     } catch {
       /* diagnostics only — never throw */
