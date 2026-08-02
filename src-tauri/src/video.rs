@@ -159,8 +159,13 @@ pub fn trim(
             &format!("{dur:.3}"),
             "-c",
             "copy",
+            // Copy video + audio-if-present only. `-map 0` also copied data/timecode
+            // streams (DJI/GoPro/phone MOV carry GPMD/tmcd tracks), which can make a
+            // stream-copy remux fail with an opaque error. `0:a?` = optional audio.
             "-map",
-            "0",
+            "0:v",
+            "-map",
+            "0:a?",
             "-avoid_negative_ts",
             "make_zero",
             "-y",
@@ -168,18 +173,27 @@ pub fn trim(
         .arg(dest)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        // Capture stderr so a failure carries a real reason instead of the old
+        // constant "ffmpeg trim failed" — trims are a sore point; opaque failures
+        // are especially costly here.
+        .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let status = cmd.status().map_err(|e| e.to_string())?;
-    if status.success() && dest.exists() {
+    let out = cmd.output().map_err(|e| e.to_string())?;
+    if out.status.success() && dest.exists() {
         Ok(())
     } else {
-        Err("ffmpeg trim failed".into())
+        let err = String::from_utf8_lossy(&out.stderr);
+        let last = err
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("ffmpeg trim failed");
+        Err(format!("ffmpeg trim failed: {}", last.trim()))
     }
 }
 

@@ -2418,7 +2418,17 @@ fn export_lossless_concat(
     dest: &Path,
     watch: Option<&ExportWatch>,
 ) -> Result<(), String> {
-    let list_path = std::env::temp_dir().join(format!("foxcull-concat-{}.txt", now()));
+    // Unique per run: keying only on whole-second `now()` let two overlapping
+    // exports (or a rapid cancel-then-restart) share one concat list and clobber
+    // each other. Add pid + a process-wide sequence.
+    static CONCAT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = CONCAT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let list_path = std::env::temp_dir().join(format!(
+        "foxcull-concat-{}-{}-{}.txt",
+        std::process::id(),
+        now(),
+        seq
+    ));
     let mut f = std::fs::File::create(&list_path).map_err(|e| e.to_string())?;
     for clip in &req.clips {
         clip_duration(clip)?;
@@ -3700,8 +3710,21 @@ pub fn restore_trash(
                 continue;
             }
         };
-        let ok = std::fs::rename(&from, &to).is_ok()
-            || (std::fs::copy(&from, &to).is_ok() && std::fs::remove_file(&from).is_ok());
+        let ok = if std::fs::rename(&from, &to).is_ok() {
+            true
+        } else if std::fs::copy(&from, &to).is_ok() {
+            // Cross-volume fallback: only a removed source counts as restored. If
+            // the source can't be removed, delete the copy so the file isn't left
+            // duplicated (a later retry would otherwise uniquify a 2nd restore).
+            if std::fs::remove_file(&from).is_ok() {
+                true
+            } else {
+                let _ = std::fs::remove_file(&to);
+                false
+            }
+        } else {
+            false
+        };
         if ok {
             restored += 1;
             done.push(s.clone());

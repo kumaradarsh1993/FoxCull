@@ -595,23 +595,6 @@
     return stems.size === 1 && exts.size > 1;
   }
 
-  function relatedScore(e: RelatedEntry, entries: RelatedEntry[]): number {
-    const it = e.item;
-    let score = 0;
-    if (it.flag === "pick") score += 1000;
-    if (it.flag === "reject") score -= 800;
-    score += it.rating * 80;
-    if (it.label) score += 10;
-    if (e.stem.relation === "original") score += 35;
-    if (it.kind === "image") score += 24;
-    else if (it.kind === "raw") score += hasRawJpeg(entries) ? 18 : 22;
-    else if (it.kind === "video") score += 14;
-    if (e.stem.relation === "subclip") score -= 12;
-    if (e.stem.relation === "edit") score -= 8;
-    score -= e.order / 100000;
-    return score;
-  }
-
   function makeRelatedGroup(id: string, entries: RelatedEntry[], extraBadges: RelatedBadge[] = []): RelatedGroup {
     const inputOrder = [...entries].sort((a, b) => a.order - b.order);
     const badges = groupBadges(inputOrder, extraBadges);
@@ -713,9 +696,9 @@
       }
     }
 
-    // Mutate-in-place bucket fill: this index rebuilds on every mark keystroke
-    // (ratings feed the stack scoring), so per-entry array respreads would make
-    // big stacks quadratic.
+    // Mutate-in-place bucket fill: the index rebuilds whenever the folder listing
+    // changes (not on mark edits — the stack ranking does not read ratings), so
+    // per-entry array respreads would make big stacks quadratic.
     const rootBuckets = new Map<string, RelatedEntry[]>();
     for (const e of entries) {
       const key = relatedKey(e.stem);
@@ -1138,7 +1121,10 @@
     // visible cells have had a head start — the on-screen lazy loads grab the
     // disk first, then the warmer trickles the rest in. Guard against a folder
     // switch landing during the delay.
-    const order = baseView.map((i) => i.path);
+    // Folder-open warming is images-only and capped at 600 on the backend, so
+    // send only the first 600 image paths — not thousands of paths (mostly
+    // videos it discards) serialized over IPC on every folder open.
+    const order = baseView.filter((i) => i.kind === "image").slice(0, 600).map((i) => i.path);
     const tier = gridThumbTier;
     setTimeout(() => {
       if (currentDir === dir) api.warmThumbnails(order, tier);

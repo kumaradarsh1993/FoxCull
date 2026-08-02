@@ -1,5 +1,25 @@
 # Agent Handover: FoxCull
 
+## 2026-08-02: v1.4.0-nightly.3 — audit safe-batch + full audit backlog
+
+Two read-only audits (perf/architecture + correctness) ran under the owner's
+"solve everything" mandate. Full ranked backlog with status:
+`docs/design/AUDIT-2026-08-02.md`. **The perf audit independently corroborated the
+freeze RCA** (P2: asset-protocol per-request cost + uncapped off-heap WebView2
+image memory) and recommends the localhost `tiny_http` thumbnail server as the
+more complete fix — flagged as the top follow-up, to be measured, not assumed.
+
+Landed here (contained, verified): trim now returns real ffmpeg errors + `-map
+0:v -map 0:a?` (video.rs); unique concat temp name + restore_trash no-duplicate
+(commands.rs); per-tile sprite probes gated behind Live Scrub (Thumb.svelte);
+warm sends only 600 image paths + dead `relatedScore` removed (+page.svelte).
+Ledger: `docs/changes/2026-08-02-audit-safe-batch.md`.
+
+**Top pending (need owner steer / device measurement):** P2 localhost thumbnail
+server (likely the more complete freeze fix), P1 O(N²) stack re-rooting on flat
+folders, C1 surface swallowed mark-write errors, P3 virtualize the Edit source
+pane. See the audit doc.
+
 ## 2026-08-02: v1.4.0-nightly.2 — defer thumbnail fetches during a fast fling
 
 The recycler (nightly.1) removed DOM churn but a fast scroll STILL froze 8.5 s with

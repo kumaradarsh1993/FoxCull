@@ -154,12 +154,17 @@
     // Free instant skim for anything already extracted — never builds. Reads the
     // legacy light `s` strip too, so folders Prepared before the sprites were
     // unified keep skimming without a re-extraction.
-    if (it.kind === "video") {
-      const take = (s: FilmstripInfo | null) => {
-        if (alive && s && !strip) strip = { ...s, src: api.fileSrc(s.src) };
-      };
-      api.videoFilmstripCached(it.path).then(take).catch(() => {});
-      api.videoScrubstripCached(it.path).then(take).catch(() => {});
+    // Cached sprite skim is only consumed in Live-Scrub (sprite) mode; the default
+    // live-decode path needs no sprite. Gating on the setting avoids two per-tile
+    // IPC probes (a .json read + stat each) on EVERY video tile and every recycle
+    // while scrolling a video folder — pure churn when it can't be used. The dense
+    // `f` strip is the only one still built, so the legacy `s` probe is dropped.
+    if (it.kind === "video" && settings.s.liveScrub) {
+      api.videoFilmstripCached(it.path)
+        .then((s) => {
+          if (alive && s && !strip) strip = { ...s, src: api.fileSrc(s.src) };
+        })
+        .catch(() => {});
     }
     return () => {
       alive = false;
