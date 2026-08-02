@@ -1,0 +1,214 @@
+# Scroll-freeze — consolidated handover (2026-08-03)
+
+**Read this first if you are picking up the FoxCull scroll-freeze.** It is
+self-contained: the full issue evolution, every nightly tried and its on-device
+result, the RCAs (including the wrong ones), what is ruled out, and the live leads.
+Supersedes the running narrative in `FREEZE-INVESTIGATION-2026-08-02.md` (still
+useful for the Mode-B occlusion fix and the measurement tooling).
+
+**Status: OPEN.** The freeze is NOT fixed. The grid live-decode feature was
+wrongly removed and has been restored (nightly.5). Do not remove it again.
+
+---
+
+## 1. The bug, in the owner's words
+
+Two distinct symptoms, both on a **video** folder and (at least in current builds)
+photo folders, triggered by **fast wheel-scroll** or **holding the ↓ arrow**:
+
+1. **Freeze.** Viewport goes black/blank, the whole app + the mouse cursor lock
+   up; sometimes needs a relaunch. Slow/gentle scrolling is fine.
+2. **Blank/dead zone + stuck tiles** (the sharpest, newest clue — 2026-08-03).
+   Scrolling into fresh territory, all tiles **vanish** (just the theme
+   background). Scroll back up and you see ~8×9 tiles again; scroll further and
+   it's blank again — "the tiles get stuck in the middle." The left-side loading
+   bar sticks, and thumbnails don't refresh with images even after settling.
+
+**Bisection (owner installed the actual stable builds and tested):**
+- **v1.0.1 — CLEAN.** Fast scroll and fast arrow-key nav both lazy-load smoothly,
+  no freeze, no blank zone.
+- **v1.1.0 — CLEAN.** Same.
+- **v1.2.0 — BROKEN.** The freeze begins here. v1.2.0 = the video-playback
+  overhaul.
+
+So it is a genuine **regression introduced in v1.2.0**, and v1.1.0 is the known-good
+reference for how grid scrolling should behave.
+
+---
+
+## 2. What v1.2.0 changed (the suspect surface)
+
+v1.2.0 replaced the pre-built **sprite-sheet** scrub system with a **WebCodecs
+live-decode** engine (`docs/design/video-player-migration.md`, Architecture C).
+The `git diff v1.1.0..v1.2.0` hot-path changes:
+
+| Area | Change | Notes |
+|---|---|---|
+| `scrub-engine.ts` (new) | WebCodecs `VideoDecoder` scrub engine | Focus + grid |
+| `Loupe.svelte` | Focus view scrubs live (its own engine) | **The feature the owner loves — do not touch.** |
+| `Thumb.svelte` | Armed+hovered **grid** tile opens its own decoder + `<canvas>` | Intentional extension (see §5) |
+| `Thumb.svelte` | per-tile `IntersectionObserver` (`onScreen` gate) | later gated off for the grid via `deferUntilVisible=false` |
+| `Thumb.svelte` | per-video-tile `videoFilmstripCached` IPC probe | later gated behind `liveScrub` (P8) |
+| `thumbnail-loader.ts` | `activity` progress reporting per enqueue/cancel/finish | reactive-store churn on the hot path |
+| `settings.svelte.ts` | `liveDecodeScrub` default **true** | governs Focus + (formerly) grid |
+| backend `commands.rs` | `read_file_range` (binary IPC) | scrub-engine I/O |
+| backend `video.rs` | poster `at_s` param; Prepare no longer builds filmstrips | less work |
+
+The owner's own recollection of the whole caching evolution: images needed
+thumbnail caching → then video sprites → sprites were slow/"shitty" overhead → the
+1.2 overhaul moved to live decode and **removed the sprite build entirely**, which
+"worked magically." He now questions whether ANY of the caching is needed (see §6).
+
+---
+
+## 3. Nightlies tried, and their on-device results
+
+Numbers are the `v1.3.x` / `v1.4.0-nightly.N` line worked during the investigation.
+
+| Build | What it tried | On-device result |
+|---|---|---|
+| v1.3.0-nightly.9 | **Mode B fix:** `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--disable-features=CalculateNativeWinOcclusion` (`lib.rs`) for the idle/on-launch paint stall | **FIXED** the idle/launch freeze. Confirmed. (Separate from the scroll freeze.) |
+| v1.4.0-nightly.1/.2 | DOM **cell recycling** across grid/grouped-grid/strip/details; loader **`setScrolling` fetch-deferral** gate (hold image fetches during a fling) | Scroll freeze **persisted**. |
+| v1.4.0-nightly.3 | Audit safe-batch: P8 gated the per-tile `videoFilmstripCached` probe behind `liveScrub`; video trim/concat/trash fixes | Scroll freeze **persisted**, incl. on keyboard nav. |
+| v1.4.0-nightly.4 | **Removed the grid WebCodecs decoder + `<canvas>` entirely** (kept Focus). Hypothesis: decoder/canvas GPU-layer + handle churn was the freeze | **DISPROVED IT.** Freeze STILL happened (black zone, then recovered enough to scrub). Also the blank-zone/stuck-tiles symptom present. → **The grid decoder is NOT the cause.** |
+| v1.4.0-nightly.5 | **Restored** grid scrubbing (owner relies on it) + guards: `DECODER_DWELL_MS=320`, refuse to open while `isScrolling()`. Kept loader activity-chip quieting during flings | current build; freeze still open |
+
+---
+
+## 4. RCAs — including the wrong ones (keep, so nobody re-runs them)
+
+- **WRONG #1 — "not a regression" (early).** Concluded from "reproduces on v1.2.1
+  too." True but mis-scoped: v1.2.1 is *after* the overhaul. The clean line is
+  v1.1.0, which wasn't tested until the owner bisected. It **is** a regression.
+- **WRONG #2 — GPU/TDR.** The live monitor showed the GPU **idle (1–14%)** during
+  the freeze. Not a TDR / GPU-compute stall. Abandoned `--disable-gpu`.
+- **WRONG #3 — DOM destroy/recreate churn.** Recycling removed all mount/unmount
+  churn; freeze persisted with the same handle spike. So it is not DOM node churn.
+- **WRONG #4 — the grid WebCodecs decoder + canvas.** The strongest-looking
+  theory (a live `<canvas>` is its own WebView2 GPU layer; `VideoDecoder.configure`
+  pins D3D11/MF handles; navigation churns them). **nightly.4 removed it and the
+  freeze remained** → disproved on device. Feature restored.
+
+**Measured signature (still the best evidence):** on a fast scroll the app's rAF
+paint heartbeat stops for **7–12 s** (`PAINT-RESUME gap=…ms`) while the JS thread's
+`MEM tick` lines keep coming — i.e. **the compositor died while JS lived**.
+WebView2/`foxcull` **handle count spikes ~+16k** and RAM ~+1 GB during the stall;
+GPU idle throughout. Usually drains and recovers; sometimes needs a relaunch.
+
+---
+
+## 5. The grid live-decode feature — scope it correctly, do NOT remove it
+
+**This was intentional and is valued.** Sequence per the owner: the overhaul first
+solved Focus-view fast seeking; he then asked to extend the **same** live-decode
+mechanism to the **grid** so the slow, overhead-heavy sprite pre-caching could be
+dropped entirely. It was, and "it worked magically" — full-res grid skimming, no
+sprites. (The original `video-player-migration.md` §2/§10 says "decoder per grid
+tile is not a thing" — that doc is **stale**; the decision was later changed and the
+doc never updated. Don't anchor on it.)
+
+**The exact UX policy the owner wants (confirmed 2026-08-03):**
+- There is always one **selected** tile (like any file browser). Selection moves
+  **only** on click or arrow key — **never on scroll**.
+- Scrub (Final-Cut-style live seek) is available **only on the selected tile**,
+  **when hovered**. Explicitly NOT "scrub wherever the mouse goes." The code
+  already implements this (`armed && hovering`); it is correct, not mis-built.
+
+**Guards now in place (nightly.5):** decoder opens only after a 320 ms dwell and
+only when `!isScrolling()`. Rationale: fast scroll / held-arrow sweep the armed
+tile past the pointer well under the dwell, so the effect re-runs and clears the
+timer before it fires — navigation never spins a decoder up, deliberate skimming
+does.
+
+---
+
+## 6. Owner product direction (design constraints for the fix)
+
+1. **Scroll must not change the selected tile.** Confirmed already true at the
+   `VirtualGrid` level (scroll only updates `scrollTop`, not `activeIndex`).
+   Double-check `+page.svelte` has no scroll→active coupling and keep it that way.
+2. **Dwell/timeout before any heavy per-tile mount** (his suggestion, now applied
+   to the decoder). Generalize this if other per-tile work is found on the hot
+   path: fast pass-through should mount nothing.
+3. **Bigger open question — do we need caching at all?** He points out Windows
+   Explorer lazy-loads the SAME video (and photo) folder with free fast scroll,
+   no freeze, no visible caching. He is open to rethinking the whole
+   thumbnail/loader model toward "just lazy-load like the OS does." Not a now-task,
+   but the direction he'd endorse if the current model is the root problem.
+
+---
+
+## 7. Live leads / where to go next (ranked)
+
+1. **The virtualization scroll→range sync is the prime suspect now** (the
+   blank-zone/stuck-tiles symptom). In `VirtualGrid.svelte`, `scrollTop` is a
+   `$state` updated only in `onScroll`. Hypotheses to test:
+   - During/after a fast fling the `onScroll` events stop being processed (the
+     compositor stall itself blocks the event loop), so `scrollTop` goes **stale**
+     → the rendered window freezes at an old position = "tiles stuck in the
+     middle," blank elsewhere. Freeze and blank-zone may be the SAME event.
+   - Recycling range math (`slotItem`, `poolSize`, `firstRow/lastRow`) may under-
+     cover after a large jump. **Test:** does v1.2.0 **stable** (destroy/recreate,
+     no recycling) show the blank-zone? If NO, the blank-zone is a recycling bug I
+     introduced in v1.4.0 and is separate from the v1.2.0 freeze. If YES, it's the
+     v1.2.0 regression. This one experiment splits the two.
+2. **Image-decode memory / asset-protocol pressure (audit P2).** Uncapped WebView2
+   off-heap decoded-image memory; every tile via `convertFileSrc` →
+   `http://asset.localhost`. Consistent with +1 GB spikes. Consider a localhost
+   `tiny_http` range server for the cache dir (reuse `cast.rs`), `Cache-Control`/
+   `ETag`, capped concurrency; keep the JS heap out of it (no data-URLs). Instrument
+   handle-count-per-fetch first.
+3. **Diff v1.1.0 vs the current loader/virtualizer behavior directly.** v1.1.0's
+   grid (destroy/recreate + sprites) scrolled smoothly. Rather than more theory,
+   compare what v1.1.0 did on scroll that the current build doesn't. The owner
+   endorses returning to a simpler model if that's what's robust.
+4. **Compare against Windows Explorer** as the owner suggests — it lazy-loads the
+   same folder with no freeze. What is it doing that we aren't (thumbnail request
+   throttling, no synchronous per-item work, OS thumbnail cache)?
+
+---
+
+## 8. How to measure (reuse these — the whole investigation lived on them)
+
+- **Cross-process monitor:** `scratchpad/foxmon.ps1` (session scratchpad, ~30 lines
+  PS; recreate if gone). Samples `foxcull` + `msedgewebview2` working-set / private
+  bytes / **handle & thread counts** + `nvidia-smi` ~every 1.2 s to a CSV. Launch
+  `run_in_background` before reproducing.
+- **App paint heartbeat:** `+page.svelte` runs a rAF loop → `raf=N` on the 20 s
+  `MEM tick` line, and logs `PAINT-RESUME gap=Nms` after a >1.5 s stall.
+  **`raf` frozen while `MEM tick` keeps printing = compositor dead, JS alive.**
+- **Log:** `%APPDATA%\com.foxcull.app\foxcull.log` (robust to relaunch races;
+  append + per-pid fallback, see `log.rs`). Grid scrolls log
+  `grid-scroll top=… first=… last=… pool=…` from `VirtualGrid.onScroll` — watch
+  whether `top`/`first`/`last` keep updating through a freeze (if they stop, the
+  scroll handler stalled → confirms lead #1).
+
+---
+
+## 9. Key files
+
+- `src/lib/components/VirtualGrid.svelte` — recycling grid + scroll→range sync
+  (**prime suspect**). Also `VirtualStrip.svelte`, `SectionedGrid.svelte`,
+  `DetailsView.svelte` (same recycling pattern).
+- `src/lib/components/Thumb.svelte` — per-tile: image/poster load, sprite scrub,
+  grid live-decode (restored + guarded). Reads `isScrolling()`.
+- `src/lib/thumbnail-loader.ts` — the throttled loader: LIFO queue, `MAX_INFLIGHT=6`
+  / `MAX_HEAVY_INFLIGHT=2`, memo LRU, generation-token cancellation, the
+  `setScrolling`/`isScrolling` fling gate, and the `activity` progress job.
+- `src/lib/components/Loupe.svelte` — Focus view + its own `ScrubEngine`. **Working;
+  leave alone.**
+- `src/lib/scrub-engine.ts` — WebCodecs engine (well-built; frame lifecycle careful).
+- `src-tauri/src/lib.rs` — the occlusion flag (Mode B fix). `log.rs`, `commands.rs`
+  (`read_file_range`, `warm_thumbnails`), `video.rs`, `thumbs.rs`, `media.rs`.
+
+## 10. Constraints (workspace + repo rules)
+
+- **Ships via tags:** commit to `main` (push ships nothing), then tag
+  `v1.4.0-nightly.N` → GitHub Actions builds installers → draft prerelease.
+  Stable promotion only on the owner's explicit "ship it".
+- **No heavy local builds** (RAM/LTO). Local gates: `npm run check` (0/0) and
+  `cargo check`. `cargo test` is CI-only (GNU 65k export limit).
+- Commit author `kumar.adarsh.cse12@itbhu.ac.in`; trailer
+  `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
+- Single-writer per repo: `git fetch`/reconcile before work; commit code+docs and
+  push at session end. Per-push change ledger in `docs/changes/`.
