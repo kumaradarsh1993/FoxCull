@@ -2,6 +2,7 @@
   import type { Snippet } from "svelte";
   import { untrack } from "svelte";
   import { api } from "$lib/api";
+  import { setScrolling } from "$lib/thumbnail-loader";
 
   type GridSection = { label: string; count: number; level?: 1 | 2; cellCount?: number };
 
@@ -133,21 +134,37 @@
 
   // Read scroll directly (never via rAF — WebView2 can pause an outstanding rAF
   // mid-gesture and strand the range), with a settle-timer safety net.
+  let lastTop = 0;
+  let lastScrollAt = 0;
+  let recentMove = 0;
   let scrollSettleTimer: ReturnType<typeof setTimeout> | undefined;
   function onScroll() {
     const el = viewport;
     if (!el) return;
-    scrollTop = el.scrollTop;
+    const top = el.scrollTop;
+    const now = performance.now();
+    const delta = Math.abs(top - lastTop);
+    recentMove = now - lastScrollAt < 120 ? recentMove + delta : delta;
+    lastScrollAt = now;
+    lastTop = top;
+    scrollTop = top;
+    // Defer image fetches during a fast fling — see VirtualGrid.
+    if (delta > rowH * 1.5 || recentMove > rowH * 2.5) setScrolling(true);
     clearTimeout(scrollSettleTimer);
     scrollSettleTimer = setTimeout(() => {
       if (viewport && scrollTop !== viewport.scrollTop) scrollTop = viewport.scrollTop;
+      setScrolling(false);
+      recentMove = 0;
       void api.logNote(
         `sectioned-grid-scroll top=${Math.round(viewport?.scrollTop ?? 0)} cells=${visibleCells.length} pool=${poolSize}`,
       );
     }, 160);
   }
 
-  $effect(() => () => clearTimeout(scrollSettleTimer));
+  $effect(() => () => {
+    clearTimeout(scrollSettleTimer);
+    setScrolling(false); // never leave the loader paused if we unmount mid-fling
+  });
 
   /** Bring a global item index into view (used by keyboard navigation). With
    *  `center`, place it mid-viewport (restores position on return from Focus). */

@@ -1,5 +1,30 @@
 # Agent Handover: FoxCull
 
+## 2026-08-02: v1.4.0-nightly.2 — defer thumbnail fetches during a fast fling
+
+The recycler (nightly.1) removed DOM churn but a fast scroll STILL froze 8.5 s with
+the identical +16k WebView2 handle / +1.1 GB spike (GPU idle) — proving the cause
+was never the DOM. Owner spotted the correlation with the "Loading thumbnails"
+activity (its % even runs backwards under scroll). Root cause: a fast fling
+rapidly repoints recycled tiles' `<img src>` — each an asset-protocol fetch +
+decode, memo/cached URLs churning fastest — and that burst spikes handles and
+stalls the compositor.
+
+Fix (`thumbnail-loader.ts` + the three virtualizers): a `scrolling` flag gates the
+loader — `pump()` no-ops and even memo hits are queued (not resolved) while a fast
+fling is in flight; on the 160 ms settle it drains (cached hits resolve instantly).
+Virtualizers set the flag on velocity (`delta > rowH*1.5` or fast `recentMove`),
+clear it on settle, and clear it on unmount + `resetThumbs`. **No Thumb changes →
+live-scrub untouched.** `npm run check` 0/0.
+
+**Status: device-QA pending.** Expected: hard fling → no `raf` gap, WebView2
+handles stay ~20k (not ~36k). Falsifier if it still spikes: the churn is from
+something other than the poster `<img>` fetches — next suspect is the un-gated
+per-tile `api.videoFilmstripCached`/`videoScrubstripCached` IPC probes in
+`Thumb.svelte`'s main effect (fire per recycle), or the asset-protocol per-request
+cost itself (→ serve thumbs via a localhost `tiny_http` server like `cast.rs`, or
+data-URLs). Full reasoning + ranked options: `docs/design/FREEZE-INVESTIGATION-2026-08-02.md`.
+
 ## 2026-08-02: v1.4.0-nightly.1 — grid engine rebuilt on cell recycling (root fix)
 
 nightly.9's data settled it: with the placeholder gate firing, a fast scroll STILL

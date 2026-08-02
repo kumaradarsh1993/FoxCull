@@ -1,6 +1,7 @@
 <script lang="ts" generics="T">
   import type { Snippet } from "svelte";
   import { untrack } from "svelte";
+  import { setScrolling } from "$lib/thumbnail-loader";
 
   let {
     items,
@@ -50,10 +51,32 @@
     return map;
   });
 
+  let lastPos = 0;
+  let lastScrollAt = 0;
+  let recentMove = 0;
+  let scrollSettleTimer: ReturnType<typeof setTimeout> | undefined;
   function onscroll() {
     if (!viewport) return;
-    scrollPos = orientation === "h" ? viewport.scrollLeft : viewport.scrollTop;
+    const pos = orientation === "h" ? viewport.scrollLeft : viewport.scrollTop;
+    const now = performance.now();
+    const delta = Math.abs(pos - lastPos);
+    recentMove = now - lastScrollAt < 120 ? recentMove + delta : delta;
+    lastScrollAt = now;
+    lastPos = pos;
+    scrollPos = pos;
+    // Defer image fetches during a fast fling of the filmstrip — see VirtualGrid.
+    if (delta > step * 2.5 || recentMove > step * 4) setScrolling(true);
+    clearTimeout(scrollSettleTimer);
+    scrollSettleTimer = setTimeout(() => {
+      setScrolling(false);
+      recentMove = 0;
+    }, 160);
   }
+
+  $effect(() => () => {
+    clearTimeout(scrollSettleTimer);
+    setScrolling(false); // never leave the loader paused if we unmount mid-fling
+  });
 
   // Measure viewport length along the scroll axis; also wire a non-passive wheel
   // handler so a normal vertical wheel and a Logitech-style thumb wheel both

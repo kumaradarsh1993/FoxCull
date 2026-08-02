@@ -44,6 +44,42 @@ let inflight = 0;
 let heavyInflight = 0;
 let generation = 0;
 
+// ── Fast-scroll fetch suppression ────────────────────────────────────────────
+// Measured root cause of the scroll freeze (2026-08-02): a fast fling makes the
+// recycled tiles repoint their <img src> in quick succession; each src change is
+// an asset-protocol fetch + Chromium decode, and the burst spikes WebView2's
+// handle count ~+16k and RAM ~+1 GB until the compositor stalls for 8-12 s (GPU
+// idle throughout — a pipeline stall, not a GPU one). DOM recycling removed the
+// node churn but not this FETCH churn.
+//
+// While a fast scroll is in flight we hold ALL dispatch — including memoized
+// (already-resolved) URLs, which are exactly what churn fastest through a
+// previously-cached folder — so no new image work reaches the webview. Tiles that
+// keep their item keep their pixels (their Thumb effect never re-ran); tiles that
+// recycled to a new item stay neutral until motion settles, then resolve (memo
+// hits resolve instantly, so the grid fills the moment you stop). This is the
+// standard windowed-list "isScrolling → defer loads" contract, applied at the
+// loader so it needs no Thumb changes and cannot touch live-scrub.
+let scrolling = false;
+export function setScrolling(v: boolean) {
+  const was = scrolling;
+  scrolling = v;
+  if (was && !v) pump(); // settled — drain the deferred viewport now
+}
+
+function pump() {
+  if (scrolling) return; // defer every fetch until the fling settles
+  while (inflight < MAX_INFLIGHT && queue.length) {
+    // LIFO among runnable work: the current viewport wins, but a wall of
+    // uncached videos cannot occupy every slot while image thumbs wait.
+    let i = queue.length - 1;
+    while (i >= 0 && queue[i].heavy && heavyInflight >= MAX_HEAVY_INFLIGHT) i--;
+    if (i < 0) return;
+    const [next] = queue.splice(i, 1);
+    next.run();
+  }
+}
+
 function memoGet(key: string): string | undefined {
   const v = memo.get(key);
   if (v !== undefined) {
@@ -73,18 +109,6 @@ function stripMemoSet(key: string, info: FilmstripInfo) {
   if (stripMemo.size > MEMO_CAP) {
     const oldest = stripMemo.keys().next().value as string;
     stripMemo.delete(oldest);
-  }
-}
-
-function pump() {
-  while (inflight < MAX_INFLIGHT && queue.length) {
-    // LIFO among runnable work: the current viewport wins, but a wall of
-    // uncached videos cannot occupy every slot while image thumbs wait.
-    let i = queue.length - 1;
-    while (i >= 0 && queue[i].heavy && heavyInflight >= MAX_HEAVY_INFLIGHT) i--;
-    if (i < 0) return;
-    const [next] = queue.splice(i, 1);
-    next.run();
   }
 }
 
@@ -160,6 +184,7 @@ function jobReset() {
 /** Abandon queued (not-yet-started) work — call when the folder changes. */
 export function resetThumbs() {
   generation++;
+  scrolling = false; // a folder switch is never a "still flinging" state
   jobReset();
   queue = [];
   pending.clear();
@@ -244,8 +269,12 @@ export function prefetchLoupe(path: string): void {
 /** Shared queue/dedup/cap machinery. `fetchFsPath` resolves to a filesystem path
  *  the backend produced; we convert it to an asset URL and memoize it. */
 function enqueue(key: string, fetchFsPath: () => Promise<string>, heavy = false): Promise<string | null> {
+  // A memo hit normally resolves instantly — but NOT during a fast scroll, where
+  // instant resolution is exactly the src churn that chokes the compositor. When
+  // scrolling, fall through to the queue so it's held until settle (its run()
+  // resolves the memo without a fetch, so it's still instant the moment we stop).
   const cached = memoGet(key);
-  if (cached) return Promise.resolve(cached);
+  if (cached && !scrolling) return Promise.resolve(cached);
 
   const existing = pending.get(key);
   if (existing) {
@@ -264,6 +293,15 @@ function enqueue(key: string, fetchFsPath: () => Promise<string>, heavy = false)
       if (myGen !== generation) {
         pending.delete(key);
         resolve(null);
+        pump();
+        jobFinished();
+        return;
+      }
+      // Deferred memo hit (queued during a fling): resolve instantly, no fetch.
+      const c = memoGet(key);
+      if (c) {
+        pending.delete(key);
+        resolve(c);
         pump();
         jobFinished();
         return;

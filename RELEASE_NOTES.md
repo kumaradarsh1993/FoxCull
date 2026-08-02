@@ -1,6 +1,17 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
+## Fast scrolling no longer floods the loader (the last freeze cause)
+
+Live measurement pinned the remaining freeze to thumbnail *loading*: a hard fling
+fired a burst of image fetches at the display engine — exactly what you saw as the
+"Loading thumbnails" bar racing (and even going backwards) right before it locked
+up. Now, while you're flinging fast, FoxCull **holds new thumbnail loads and runs
+them the instant you stop.** Tiles already on screen keep their picture; new tiles
+fill in the moment you settle (cached ones appear instantly). Gentle, normal
+scrolling is unchanged and loads as you go. This is on top of the recycled grid
+engine and the two earlier freeze fixes.
+
 ## Rebuilt the grid engine — the scroll freeze is fixed at the root
 
 The freeze was never a patch-able glitch — it was how the grid was built. Every

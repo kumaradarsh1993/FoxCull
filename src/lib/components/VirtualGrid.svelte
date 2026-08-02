@@ -2,6 +2,7 @@
   import type { Snippet } from "svelte";
   import { untrack } from "svelte";
   import { api } from "$lib/api";
+  import { setScrolling } from "$lib/thumbnail-loader";
 
   let {
     items,
@@ -91,21 +92,40 @@
   // Reading the native scroll event directly is cheap and always catches the
   // final position after a fast wheel gesture. With recycling there is no per-
   // event churn cost, so no throttle/placeholder gate is needed.
+  let lastTop = 0;
+  let lastScrollAt = 0;
+  let recentMove = 0;
   let scrollSettleTimer: ReturnType<typeof setTimeout> | undefined;
   function onScroll() {
     const el = viewport;
     if (!el) return;
-    scrollTop = el.scrollTop;
+    const top = el.scrollTop;
+    const now = performance.now();
+    const delta = Math.abs(top - lastTop);
+    recentMove = now - lastScrollAt < 120 ? recentMove + delta : delta;
+    lastScrollAt = now;
+    lastTop = top;
+    scrollTop = top;
+    // Fast fling (a big single jump OR fast cumulative motion) → defer image
+    // fetches until settle so the fetch/decode burst can't choke the compositor.
+    // A gentle monitoring scroll never trips this and stays fully live; recycling
+    // keeps already-loaded tiles painted throughout either way.
+    if (delta > rowH * 1.5 || recentMove > rowH * 2.5) setScrolling(true);
     clearTimeout(scrollSettleTimer);
     scrollSettleTimer = setTimeout(() => {
       if (viewport && scrollTop !== viewport.scrollTop) scrollTop = viewport.scrollTop;
+      setScrolling(false);
+      recentMove = 0;
       void api.logNote(
         `grid-scroll top=${Math.round(viewport?.scrollTop ?? 0)} first=${firstRow} last=${lastRow} pool=${poolSize}`,
       );
     }, 160);
   }
 
-  $effect(() => () => clearTimeout(scrollSettleTimer));
+  $effect(() => () => {
+    clearTimeout(scrollSettleTimer);
+    setScrolling(false); // never leave the loader paused if we unmount mid-fling
+  });
 
   /** Keep a given index visible — used by keyboard navigation. With `center`,
    *  place it mid-viewport (used to restore position when returning from Focus). */
