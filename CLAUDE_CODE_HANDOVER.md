@@ -1,5 +1,57 @@
 # Agent Handover: FoxCull
 
+## 2026-08-03: owner confirmation after nightly.7 + next cache-policy question
+
+The owner has now done limited real-work testing of `v1.4.0-nightly.7` and says
+the scroll-freeze issue **appears largely resolved**. Treat this as strong field
+confirmation, not yet an exhaustive all-folders/all-codecs proof. Normal product
+work can resume. If the symptom recurs, capture the exact folder/media mix and
+logs before changing the scheduler; do not return to the disproved GPU,
+compositor, cell-recycling or grid-decoder theories, and do not remove live
+scrubbing again without new evidence.
+
+The owner's next architecture question is photo-preview parity with Explorer /
+Finder: why FoxCull needs a cache at all, and whether its current warming policy
+is more work than a modern file browser needs. Important distinction for the next
+agent:
+
+- **Disk thumbnails are normal, not a FoxCull workaround.** Windows exposes a
+  shared thumbnail cache, checks it before extraction, stores discrete size
+  tiers, and supports cached/fast foreground lookup followed by lower-priority
+  extraction. Apple's Quick Look Thumbnailing likewise exposes icon, cached
+  low-quality and full thumbnail representations asynchronously.
+- FoxCull photos use individual size-tier JPEG thumbnails, **not sprites**.
+  Video sprites are fallback-only; the primary grid/Focus scrub path decodes
+  live. Do not conflate photo thumbnails, video posters and fallback sprites.
+- The legitimate audit target is **automatic eager warming**, especially
+  `folder open -> warm_thumbnails(heavy=false)` for the first 600 images. A clean
+  Explorer-like policy is cache-first and progressively visible-first: show a
+  placeholder/cached lower tier immediately, request only current/near viewport
+  work, cancel scrolled-past work, and extract misses at lower priority. FoxCull
+  now has the scheduling/cancellation half; independently measure whether the
+  600-image warm adds navigation value or merely reads/generates unseen files.
+- Do not delete the persistent artifact cache as an aesthetic simplification.
+  RAW decode, large originals on removable drives, repeat navigation, Focus
+  tiers, cross-platform consistency, and automatic invalidation by
+  `(path, mtime, size, tier)` are valid reasons to retain it. The open question is
+  *when to populate it*, not whether derived thumbnails should ever exist.
+- Audit backlog P2 (a localhost thumbnail server replacing Tauri asset-protocol
+  fetches) is **not a pending freeze fix**. The corrected RCA and native result
+  disproved that framing. Revisit it only if new measurement shows transport
+  overhead after the frame-paced loader; do not assume it is needed.
+- The current Prepare tooltip/activity copy in `+page.svelte` still says videos
+  build "hover scrub strips." The Rust warmer stopped building sprites on
+  2026-07-21 and now builds video posters only. Correct that stale copy when the
+  Prepare/cache UX is next touched; do not infer behavior from the label.
+
+Primary parity references: Microsoft
+[`IThumbnailCache`](https://learn.microsoft.com/en-us/windows/win32/api/thumbcache/nn-thumbcache-ithumbnailcache)
+and [Thumbnail Handlers](https://learn.microsoft.com/en-us/windows/win32/shell/thumbnail-providers)
+documentation (shared cache, discrete tiers, cache-first + lower-priority
+extraction), and Apple's
+[`QLThumbnailGenerator`](https://developer.apple.com/documentation/quicklookthumbnailing/qlthumbnailgenerator)
+documentation (asynchronous icon, cached low-quality and full representations).
+
 ## 2026-08-03: scroll freeze resolved in source — frame-paced loader
 
 The consolidated debug chain is `docs/design/FREEZE-HANDOVER-2026-08-03.md`;
@@ -27,10 +79,10 @@ gates and release status are recorded in the change ledger.
 
 Two read-only audits (perf/architecture + correctness) ran under the owner's
 "solve everything" mandate. Full ranked backlog with status:
-`docs/design/AUDIT-2026-08-02.md`. **The perf audit independently corroborated the
-freeze RCA** (P2: asset-protocol per-request cost + uncapped off-heap WebView2
-image memory) and recommends the localhost `tiny_http` thumbnail server as the
-more complete fix — flagged as the top follow-up, to be measured, not assumed.
+`docs/design/AUDIT-2026-08-02.md`. Historical note: the audit originally treated
+P2 asset-protocol cost and off-heap WebView2 memory as corroborating the freeze
+RCA. Native nightly.7 evidence disproved that framing; localhost transport is a
+separate measure-first optimization, not the missing freeze fix.
 
 Landed here (contained, verified): trim now returns real ffmpeg errors + `-map
 0:v -map 0:a?` (video.rs); unique concat temp name + restore_trash no-duplicate
@@ -38,10 +90,10 @@ Landed here (contained, verified): trim now returns real ffmpeg errors + `-map
 warm sends only 600 image paths + dead `relatedScore` removed (+page.svelte).
 Ledger: `docs/changes/2026-08-02-audit-safe-batch.md`.
 
-**Top pending (need owner steer / device measurement):** P2 localhost thumbnail
-server (likely the more complete freeze fix), P1 O(N²) stack re-rooting on flat
-folders, C1 surface swallowed mark-write errors, P3 virtualize the Edit source
-pane. See the audit doc.
+**Pending:** re-rank P2 behind measured need; independently audit the automatic
+600-image photo warm as described at the top of this handover. Other backlog:
+P1 O(N²) stack re-rooting on flat folders, C1 surface swallowed mark-write
+errors, P3 virtualize the Edit source pane. See the audit doc.
 
 ## 2026-08-02: v1.4.0-nightly.2 — defer thumbnail fetches during a fast fling
 

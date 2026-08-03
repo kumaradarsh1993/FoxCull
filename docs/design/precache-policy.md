@@ -17,16 +17,33 @@ constant or a trigger below, change it **here in the same commit**.
 FoxCull culls off external SSDs and internal HDD partitions holding 4K60 HEVC
 (Osmo Pocket 3) and 24 MP RAW. Two facts drive every decision here:
 
-1. **Decoding is expensive, re-decoding is free.** Every derived artifact is
-   written to disk beside the catalog, so it is generated **once per file, ever**
-   — not once per session, and not once per machine (the cache follows the
-   catalog onto the drive, so a second computer reading that drive inherits it).
+1. **Deriving a preview is expensive; reading a cached derivation is cheap.**
+   Every derived artifact is written to disk beside the catalog, so it is
+   generated **once per file, ever** — not once per session, and not once per
+   machine (the cache follows the catalog onto the drive, so a second computer
+   reading that drive inherits it).
 2. **Background work must never starve the foreground.** A pre-cache pass that
    makes the grid you are looking at stutter is a net loss, however much it
    speeds up the folder you haven't reached. Hence bounded pools, shallow read
    queues, LIFO viewport priority, and cancel-on-navigate everywhere.
 
 Everything below is a consequence of those two.
+
+### 1.1 Owner question: should folder-open warming exist?
+
+Limited owner testing says nightly.7 largely resolves the freeze. The next
+measure-first question is narrower: retain the persistent cache, but test whether
+automatically generating the first 600 ordinary-image thumbnails 500 ms after
+folder open improves real navigation or spends work on unseen files.
+
+Explorer/Finder parity is not "no cache." Windows and macOS both expose cached,
+size-aware thumbnail systems with asynchronous extraction and progressive
+representations. The clean target is cache-first, visible-first and cancellable:
+return cached/low-quality content immediately, prioritize the viewport, extract
+misses at lower priority, and never make scrolling wait. FoxCull now has bounded
+viewport scheduling; an A/B run with automatic warming disabled should decide
+whether `WARM_CAP=600` still earns its cost. Do not remove the artifact cache as
+part of that experiment.
 
 ---
 
@@ -44,7 +61,7 @@ by hand.
 | Image/RAW Focus preview | `<hash>.jpg` at tier 1920 | `thumbs::ensure` | `LOUPE_MAX` = 1920 px | Focus/full-screen picture |
 | Video poster (grid) | `v<hash>.jpg` | `video::ensure_poster` | 480 px box | grid + filmstrip video tiles |
 | Video poster (Focus) | `w<hash>.jpg` | `video::ensure_poster_hires` | 1280 px box | Focus first frame before playback |
-| **Scrub sprite** | `f<hash>.jpg` + `f<hash>.json` | `video::ensure_filmstrip` | 10 cols × 240 px tiles, 16–48 frames | **both** grid-tile skimming and the Focus timeline |
+| **Scrub sprite** | `f<hash>.jpg` + `f<hash>.json` | `video::ensure_filmstrip` | 10 cols × 240 px tiles, 16–48 frames | grid/Focus **fallback only** when live decode cannot take the clip |
 | ~~Hover scrub strip~~ (legacy) | `s<hash>.jpg` + `s<hash>.json` | `video::ensure_scrubstrip` | 8 cols × 160 px tiles, 12–40 frames | read-only: still painted if cached, never built |
 | H.264 proxy | `p<hash>.mp4` | `video::ensure_proxy` | ≤1920 long edge, CRF 22 | clips the webview cannot decode |
 
@@ -61,12 +78,10 @@ The two sprite sheets carry a `.json` sidecar (`Filmstrip`: cols, rows, count,
 tile_w, tile_h, duration) so the frontend can map cursor → frame without
 re-probing the clip.
 
-**Why two posters and two sprite sheets, not one of each.** A 480 px poster
+**Why two poster tiers remain.** A 480 px poster
 blown up to a 4K stage is visibly pixelated; a 1280 px poster in a 176 px grid
-cell is wasted decode and wasted RAM. Same logic for the sprites: the hover
-strip only ever paints inside a grid cell, the Focus filmstrip fills the stage
-during a drag. Separate keys mean opening one clip in Focus never bloats the
-grid's working set.
+cell is wasted decode and wasted RAM. The second `s` sprite is legacy-only; new
+work produces only the `f` fallback sprite.
 
 ---
 
@@ -81,13 +96,12 @@ the "trigger" column as the *complete* list — nothing else builds these.
 | Image thumbnail | folder open → `warm_thumbnails(heavy=false)` | images only, first `WARM_CAP` = 600 |
 | Focus preview | entering Focus on that item | on-demand |
 | Focus preview | Focus prefetch: 3 ahead / 2 behind, biased by travel direction | images + RAW only |
-| Focus preview, RAW thumbnail, video poster, hover scrub strip | **Prepare** (`heavy=true`) | the only unprompted bulk pass |
+| Focus preview, RAW thumbnail, video poster | **Prepare** (`heavy=true`) | explicit user-requested bulk pass; no sprites |
 | Video poster (grid) | a video cell becomes visible | on-demand |
 | Video poster (Focus) | opening a video in Focus | on-demand |
-| Scrub sprite | grid tile is **armed** (clicked/selected) **and** hovered, Live Scrub ON, 140 ms settle | see §4 |
-| Scrub sprite | opening a video in Focus with Live Scrub ON | previously waited for the pointer to reach the seek bar |
-| Scrub sprite | neighbouring clips ±3 while a video is open in Focus — **only if** Live Scrub ON **and** "Pre-build nearby clips" ON, after a 900 ms settle | opt-in, default off |
-| Scrub sprite | cached-only paint on open with Live Scrub OFF | never builds |
+| Scrub sprite | armed grid tile is hovered, live decoder is unavailable, Sprite fallback ON, 140 ms settle | see §4 |
+| Scrub sprite | Focus live decoder rejects the clip and Sprite fallback is ON | per-clip fallback only |
+| Scrub sprite | cached-only paint | never builds; existing artifacts remain usable |
 | H.264 proxy | the `<video>` element fails to decode the original | one at a time, process-wide lock |
 
 ### Video pre-caching is retired everywhere (2026-07-22)
@@ -113,6 +127,10 @@ exactly one decoder, the same as Focus. Consequences:
 
 ### Focus view no longer pre-caches anything (2026-07-21)
 
+This subsection records the intermediate 2026-07-21 migration. The 2026-07-22
+section above is authoritative where they differ: grid tiles also decode live,
+Prepare builds no sprites, and `f` survives only as a per-clip fallback.
+
 **The single biggest change to this policy since it was written.** Focus-view
 scrubbing now decodes the real frame under the cursor on demand (WebCodecs —
 `src/lib/scrub-engine.ts`, setting `liveDecodeScrub`, default ON). It needs no
@@ -125,16 +143,14 @@ Consequences for everything below:
 - **The Focus timeline builds no sprite.** `ensureFilmstrip()` returns early
   while the engine is opening (`enginePending`) or open (`engineReady`), so the
   two paths never both run.
-- **The sprite survives for the GRID only** — a decoder per grid tile is not
-  viable, so tile skimming still uses `f<hash>.jpg`. "Live Scrub" in Settings
-  now means *grid tiles*, and is labelled so.
+- **Grid now uses the same live-decoder strategy.** Only the armed tile opens a
+  decoder, so there is never a decoder per wall tile. `f<hash>.jpg` is fallback.
 - **Fallback is per clip, automatic and silent.** If a clip can't be indexed or
   its codec can't be decoded this way, `ScrubEngine.open()` rejects and the
   sprite path resumes exactly as documented below — including the build that
   was being held back.
-- **The "Focus preview" row of the Prepare table is now grid-only value** for
-  video: preparing a folder still builds posters + sprites, which help the grid,
-  but Focus no longer depends on them.
+- **Prepare builds video posters, not sprites.** Focus does not depend on either
+  sprite tier.
 
 Measured against the sprite path it replaces in Focus: ~1 s per frame to build
 40 low-resolution frames, versus ~40 ms to decode one full-resolution frame on
@@ -142,17 +158,13 @@ demand. Detail and method: `docs/design/video-player-migration.md` §10-11.
 
 ### The Live Scrub contract (grid tiles; also the Focus fallback)
 
-**Live Scrub OFF means no video preview work ever happens.** Opening a clip
-paints whatever sprite sheets already exist and nothing more; the timeline is a
-plain seek bar. (nightly.3 built a filmstrip on every Focus open regardless of
-the toggle — a minute-plus of ffmpeg per clip on an HDD library. That is the
-bug this sentence exists to prevent recurring.)
+**Live decode ON (default) means normal skimming builds nothing.** The armed grid
+tile and Focus view decode the requested frame from the source clip.
 
-**Live Scrub ON means the work happens as early as it is useful.** The Focus
-filmstrip starts on clip open, not on first pointer contact with the seek bar:
-the toggle already answered "do you want this", and making the user discover a
-10-second build *after* reaching for the timeline is the exact friction the
-feature exists to remove.
+**Sprite fallback OFF (default) means no new sprite is built.** Existing cached
+sprites may still paint. With fallback ON, an `f` sprite is built only after the
+live decoder rejects that clip; this can be slow and must never become a bulk or
+neighbour-prefetch path again.
 
 ---
 
@@ -285,8 +297,8 @@ bounded pool, so it is safe to keep culling while it runs.
 - Photos & RAW first (fast, and the common reason to press it), then videos —
   kept as separate phases so the ETA is honest instead of blending a
   0.3 s/photo rate with a 4 s/clip rate into a meaningless average.
-- Videos get poster **and** hover scrub strip. A prepared folder skims with zero
-  on-hover work.
+- Videos get poster frames only. Live skimming needs no prepared artifact;
+  unsupported clips build a fallback sprite only when requested.
 - Scope (the ▾ next to the button): everything in the folder (default),
   selection only, videos only, photos & RAW only.
 - Abandons itself if the folder changes mid-run.
