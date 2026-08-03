@@ -541,3 +541,17 @@ On the real 6,825-item library, 800 rapid three-row jumps produced no paint gap;
 the queue remained bounded, drained to zero, tiles populated, the activity chip
 cleared, and selection responded immediately. Grid and Focus live scrubbing
 were preserved throughout.
+
+---
+
+## 2026-08-03 - one selector across mouse and keyboard
+
+A mouse-clicked media button kept DOM focus after FoxCull moved its active item.
+The first arrow press caused the global keyboard focus outline to appear on that
+old button while the real active border moved, creating two visual highlights
+even though the selection set already contained only the new item.
+
+Arrow navigation now releases stale focus only from grid, filmstrip and Details
+media cells before moving. Native click, Right and Down testing showed a single
+selector following the active item; intentional modifier-based multi-selection
+and ordinary control focus remain unchanged.

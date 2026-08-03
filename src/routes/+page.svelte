@@ -2407,6 +2407,13 @@
     }
     const delta = navDelta(e.key);
     if (delta) {
+      // Grid/detail/filmstrip buttons keep DOM focus after a mouse click. The
+      // first arrow key then turns that OLD button's global :focus-visible ring
+      // on while the real active selector moves, which looks like two selected
+      // photos. This app owns arrow navigation at the window level, so release
+      // only a media-cell focus before moving; ordinary controls retain their
+      // keyboard focus contract.
+      if (t?.matches(".cell, .scell, .row")) t.blur();
       // Shift+←/→ extends the selection in grid/details and for a photo in Focus.
       // For a video in Focus it seeks instead (handled in the block above).
       move(delta, { extend: e.shiftKey });

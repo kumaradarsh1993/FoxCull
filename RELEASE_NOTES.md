@@ -1,6 +1,15 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
+## One selector now follows mouse and arrow navigation
+
+Clicking a photo and then pressing an arrow key could appear to select two
+photos: FoxCull moved its real selector correctly, but the browser drew a new
+keyboard-focus outline around the old mouse-clicked tile. Media cells now hand
+off that stale DOM focus before arrow navigation, leaving exactly one visible
+selector on the current photo. Right/down movement was verified in the native
+app; intentional Ctrl/Shift multi-selection is unchanged.
+
 ## The fast-scroll freeze is fixed at its source
 
 Your key observation was right: during the freeze the browser could still scroll

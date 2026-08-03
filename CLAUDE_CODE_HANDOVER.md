@@ -1,5 +1,21 @@
 # Agent Handover: FoxCull
 
+## 2026-08-03: nightly.8 selector fix — stale focus ring, not two selections
+
+Owner reported that after mouse-clicking a grid photo, the first arrow key moved
+the selector but left the clicked photo highlighted. Native reproduction on
+nightly.7 showed the exact split: `setActiveTo()` already collapsed `selected` to
+the new active path, while the clicked `<button>` retained DOM focus. The first
+keyboard event activated the global `:focus-visible` outline on that old button,
+so an old focus ring and the new `.active` border appeared simultaneously.
+
+The arrow-navigation branch now blurs focus only when the event target is a
+media-cell button (`.cell`, `.scell`, or Details `.row`) before moving. Ordinary
+controls keep their keyboard-focus behavior; Ctrl/Shift selection semantics are
+unchanged. Native mouse-click → Right → Down verification on the real 6,825-item
+library showed one selector moving each time. See the change ledger and
+`v1.4.0-nightly.8` release.
+
 ## 2026-08-03: owner confirmation after nightly.7 + next cache-policy question
 
 The owner has now done limited real-work testing of `v1.4.0-nightly.7` and says
