@@ -1299,7 +1299,7 @@ dependencies = [
 
 [[package]]
 name = "foxcull"
-version = "1.0.1"
+version = "1.4.0"
 dependencies = [
  "filetime",
  "if-addrs",
