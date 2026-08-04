@@ -148,6 +148,9 @@
     scrub = null;
     building = false;
     if (it.kind === "other") return;
+    // A "?" entry has no file behind it — every fetch would be a guaranteed miss
+    // (and a wasted IPC round trip per tile), so it draws its placeholder only.
+    if (it.missing) return;
     // Off-screen: no poster extraction, no cached-strip probes, nothing. See
     // the IntersectionObserver above for why this matters so much in Edit mode.
     if (!visible) return;
@@ -381,7 +384,12 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="thumb" bind:this={thumbEl} onpointerenter={enterThumb} onpointermove={updateScrub} onpointerleave={leaveThumb}>
-  {#if src}
+  {#if item.missing}
+    <div class="ph missing">
+      <span class="qmark">?</span>
+      <span class="mext">{item.ext ? item.ext.toUpperCase() : "FILE"}</span>
+    </div>
+  {:else if src}
     <img
       class="media"
       class:in={loaded}
@@ -455,6 +463,30 @@
     letter-spacing: 0.5px;
   }
   .ph.dim { opacity: 0; }
+  /* Missing file: a deliberately inert, hatched plate. It must read as "the
+     photo is gone, its marks are not" — never as a thumbnail still loading. */
+  .ph.missing {
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+    height: 100%;
+    background: repeating-linear-gradient(
+      -45deg,
+      color-mix(in srgb, var(--text-faint) 10%, transparent) 0 7px,
+      transparent 7px 14px
+    );
+  }
+  .ph.missing .qmark {
+    font-size: 26px;
+    font-weight: 700;
+    line-height: 1;
+    color: color-mix(in srgb, var(--warn, #d9a441) 88%, var(--text-faint));
+  }
+  .ph.missing .mext {
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    color: var(--text-faint);
+  }
   .ph.vid {
     flex-direction: column;
     gap: 5px;

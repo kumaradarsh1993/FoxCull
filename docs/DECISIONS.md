@@ -109,3 +109,73 @@ photos AND videos) and maximum quality — what's the best way, especially for
   as you browse; LOADs are debounced and reuse the live CASTV2 connection.
 - **Fire TV Stick** speaks its own protocols (DIAL/AirPlay-ish), not Google
   Cast — out of scope; the Bravia's Chromecast built-in is the target.
+
+---
+
+## 2026-08-04 · Catalog integrity: flag-and-relink, never delete; verify before you walk
+
+**Question (owner):** the catalog is keyed by path, so moving photos on the drive
+loses their metadata. Make it behave like Lightroom — show a "?" for what can't
+be found, work out folder moves automatically, let me remap the rest. A ten- to
+fifteen-second launch cost is acceptable.
+
+**Decided:**
+
+- **A scan flags; only an explicit action deletes.** `catalog_scan` writes
+  unresolved rel-paths into a `missing` table and touches nothing else. The one
+  path in the app that removes marks for an absent file is `forget_missing`,
+  behind a confirmation. Rationale: metadata is the expensive thing the user
+  created; a file is cheap to find again. Anything that can silently discard the
+  former in response to a filesystem event is the wrong trade, no matter how
+  confident the heuristic looks.
+- **Verify before you walk, and only walk on demand.** Pass one is an existence
+  check over metadata-carrying rel-paths; the library is walked ONLY if something
+  is missing. The owner offered ten seconds; that budget should be spent when
+  there is something to find, not on every launch. Do not collapse this into a
+  single unconditional walk "for simplicity" — the cost model *is* the design.
+- **Cohort matching before filename matching.** Absent entries are grouped by
+  their old folder and a folder is treated as moved when ≥50% of its filenames
+  appear together under one new directory. Only leftovers fall back to an
+  individual match, and only when that match is unique. Filename-first matching
+  is the obvious implementation and is ambiguous exactly where real libraries
+  have duplicates.
+- **A relink never adopts a file that already carries metadata.** Guarded by the
+  `owned` set in `catalog_scan`. Without it, automatic relinking could overwrite
+  photo B's marks in the course of "fixing" photo A — which would make running
+  the scan unattended on launch indefensible.
+- **What counts as "tracked" is narrow on purpose.** Marks, tags, trims, segments
+  and event membership. NOT default-valued decision rows, and not the
+  `captures`/`dir_counts` caches. Merely opening a folder must never manufacture
+  a missing-photo report the owner then has to resolve.
+
+---
+
+## 2026-08-04 · Events are metadata, not folders — and ordering is a rank, not a comparator
+
+**Question (owner):** events ("Monar trip", "Rashi's birthday") sitting at the
+same level as tags, working across folder hierarchies, rendered as a visually
+distinct block with a feature photo.
+
+**Decided:**
+
+- **Stored as `events` + `event_members`, keyed by rel-path like every other
+  mark.** Deliberately not a folder and not a tag-name convention: an event needs
+  a cover, a stable identity across renames, and a count, none of which a string
+  prefix on the tags table gives you cleanly.
+- **Grouping is the primary read; filtering is the secondary one.** The grid
+  already sections by folder/type/date, so an event is just another section key —
+  which is what makes a trip scattered across ten subfolders come out as one
+  block for free. `Filters ▸ Event` covers the "show me only this trip" case.
+- **An item may join several events; the first one it joined is primary** and
+  decides which block it renders in. Emitting an item once per event would
+  duplicate it in the grid's flat index space, where selection is keyed by path —
+  two highlighted copies of one photo. Not worth it for a rare case.
+- **Block order is encoded as a rank, not applied at compare time.** The grouped
+  sort compares section keys directly and never multiplies by `sortDir` (true for
+  every grouping, not just events). So `eventRank` bakes ascending/descending in
+  itself, and `NO_EVENT_KEY = "999999"` parks unassigned shots after every real
+  block under the numeric collator. If you ever make section order direction-aware
+  globally, delete the rank — do not leave both.
+- **Events stay out of the undo stack**, like tags' own add/remove menu entries.
+  The stack's snapshot shape covers marks only, and every event action is one
+  menu click to reverse.

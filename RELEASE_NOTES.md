@@ -1,59 +1,74 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
-**The scroll-freeze release.** Everything proven across the 1.4.0 nightlies is
-now the stable build.
+Two new features on top of stable 1.4.0: your photos' ratings now survive being
+moved around, and Events give a trip its own block in the grid.
 
-## Scrolling a big folder no longer freezes FoxCull
+## Moving photos no longer loses their ratings
 
-This was the headline problem, and it is fixed at the source. Your key
-observation is what cracked it: during a freeze the window could still scroll
-and highlight controls, but FoxCull could not click, move the selection or fill
-in tiles. The app's main worker was jammed — the display and the GPU were
-healthy the whole time.
+FoxCull remembers every star, label, flag, tag and trim by where the file lives
+on the drive. That is what lets a drive carry its own catalog between machines —
+and it is also why moving a photo in Explorer used to quietly orphan everything
+you had marked on it.
 
-The thumbnail loader had been doing two kinds of work in one burst. It updated
-the progress readout for every single tile entering or leaving the queue, and
-then released as many as 240 cached thumbnails together the moment scrolling
-stopped. One settle could become seconds of progress updates, promise callbacks
-and image swaps with no chance to paint in between.
+That is now handled the way Lightroom handles it.
 
-That work now has hard limits:
+**FoxCull checks itself when it opens.** After your folder is on screen it
+verifies that every marked file is still where it expects. This costs nothing
+when nothing has moved — it only searches the drive if something is actually
+missing, so a normal launch is not slower.
 
-- Cached thumbnails are released about one row per screen refresh, never all at
-  once.
-- Scrolled-past requests are cancelled immediately instead of being hunted
-  through a growing backlog.
-- Loading progress is an honest spinner. A moving viewport has no fixed total,
-  so it no longer counts backwards or redraws for every tile.
-- The queue stays capped and can no longer get stuck paused.
+**It works out what moved.** If you moved a whole folder, FoxCull recognises it
+as one move rather than hunting file by file, and reconnects the lot. Single
+files that were renamed or moved somewhere unambiguous are reconnected too. It
+will never adopt a file that already has its own ratings — reconnecting one photo
+must not overwrite another's.
 
-Verified in the real app on the 6,825-item library with 800 rapid three-row
-jumps: no paint stall, the queue stayed bounded and drained to zero, every tile
-filled, the loading indicator cleared, and keyboard selection responded straight
-afterwards. Grid and Focus live scrubbing are unchanged.
+**Nothing is ever deleted behind your back.** Anything it cannot place shows up
+in the grid as a "?" tile that still carries all of its ratings, labels, tags and
+events. Right-click it to:
 
-## One selector, following both mouse and keyboard
+- **Locate this file…** — point FoxCull straight at it
+- **Locate the folder it moved to…** — reconnect everything from that folder at once
+- **Forget** — drop the marks, once you know the file is genuinely gone
 
-Clicking a photo and then pressing an arrow key could look like two photos were
-selected: FoxCull moved its real selector correctly, but the window drew a
-keyboard-focus outline around the old clicked tile as well. Media cells now hand
-off that stale outline before arrow navigation, so exactly one selector is ever
-visible. Intentional Ctrl/Shift multi-selection is unchanged.
+Forget is the only thing in the app that deletes marks for a missing file. A
+check never does.
 
-## Also in this release
+**And the easy way to avoid all of it:** drag a selection from the grid onto any
+folder in the left pane. That moves the files *and* their marks together, which
+has always been the safe path. What was missing was somewhere to drop them — the
+folder pane can now create subfolders, from the ＋ button at the top or by
+right-clicking any folder. Create one while files are staged and they move
+straight in.
 
-- The grid recycles its tiles instead of rebuilding them, so a long fling costs
-  a fraction of the work it used to.
-- A Windows display quirk that could leave the app frozen while completely idle
-  is worked around at startup.
-- Trims report real errors instead of failing quietly, exports no longer collide
-  on temporary filenames, and Restore can't duplicate a file out of the Trash.
-- Logging is append-based and stamped per launch, so a relaunch can never wipe
-  the log of the session you were trying to diagnose.
+You can turn the launch check off, or run it on demand, in Settings.
 
-Full history, everything ruled out along the way and the remaining leads:
-`docs/design/FREEZE-HANDOVER-2026-08-03.md`.
+## Events
+
+An event is a trip or an occasion — "Monar trip", "Rashi's birthday". It sits
+alongside tags rather than being a folder, so your photos stay filed exactly
+where they are and the event still holds them together.
+
+Select some photos, right-click, **New event…**. Add more from the same menu at
+any time, from any folder.
+
+Then **Arrange ▸ Group ▸ Event** turns the grid into event blocks. Because it is
+metadata and not a folder, a trip spread across ten different subfolders still
+comes out as one block. Each one is fronted by a cover band showing the photo,
+the event name, its dates and how many shots are in it — right-click any member
+and choose **Use as cover** to pick the frame.
+
+- **Order by date** ranks blocks by each event's earliest photo instead of
+  alphabetically. The existing ↑↓ button flips ascending and descending either
+  way. Both controls live under Arrange and switch on when you group by event.
+- **Cover art** can be turned off for plain headers.
+- **Filters ▸ Event** isolates a single event across everything in view.
+- Rename, delete or jump to an event from the list under Arrange. Deleting an
+  event only removes the grouping — it never touches a photo.
+
+Events travel with a file when you move it in FoxCull, and when a moved file is
+reconnected.
 
 ---
 

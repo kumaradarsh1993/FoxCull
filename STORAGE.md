@@ -15,8 +15,16 @@ On writable drives, FoxCull creates one library folder at the drive root:
     recycle/
 ```
 
-- `catalog.sqlite` stores ratings, labels, flags, tags, trims, capture dates,
-  and related-file metadata.
+- `catalog.sqlite` stores ratings, labels, flags, tags, events, trims, capture
+  dates, and related-file metadata. Every user-facing row is keyed by the file's
+  path **relative to the drive root**, which is what makes a drive's marks
+  portable between machines — and what the integrity scan exists to protect when
+  files are moved outside FoxCull:
+  - `events` / `event_members` — named virtual collections spanning folders,
+    plus the member chosen as each event's cover.
+  - `missing` — rel-paths whose file was absent at the last scan. A *flag*, never
+    a delete: the marks stay put so the entry can be relinked. Only the explicit
+    "Forget" action removes them.
 - `thumbs/` stores generated thumbnails, Focus previews, video posters, and
   Live Scrub assets.
 - `recycle/` stores files moved to the in-app Trash.

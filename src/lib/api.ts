@@ -17,6 +17,9 @@ import type {
   EditSnapshotRequest,
   VideoSegment,
   SegmentExportOutcome,
+  EventInfo,
+  ScanReport,
+  RelinkOutcome,
 } from "./types";
 
 export const api = {
@@ -113,6 +116,36 @@ export const api = {
     ),
   moveMediaFiles: (paths: string[], dest: string) =>
     invoke<MoveOutcome>("move_media_files", { paths, dest }),
+  /** Create a subfolder inside `parent` and return its absolute path. */
+  createFolder: (parent: string, name: string) =>
+    invoke<string>("create_folder", { parent, name }),
+
+  // ── catalog integrity: moved/renamed files keep their metadata ────────────
+  /** Verify every metadata-carrying entry still resolves to a file, and (with
+   *  `relink`) auto-reconnect what moved. Cheap when nothing is missing — it
+   *  only walks the library once an absence is actually found. */
+  catalogScan: (relink = true) => invoke<ScanReport>("catalog_scan", { relink }),
+  listMissing: () => invoke<string[]>("list_missing"),
+  relinkMissing: (rel: string, path: string) =>
+    invoke<string>("relink_missing", { rel, path }),
+  relinkFolder: (relDir: string, newDir: string) =>
+    invoke<RelinkOutcome>("relink_folder", { relDir, newDir }),
+  /** Drop the marks of entries the user confirms are gone — the only path that
+   *  deletes metadata for a missing file. */
+  forgetMissing: (rels: string[]) => invoke<number>("forget_missing", { rels }),
+
+  // ── events (virtual collections that span folders) ────────────────────────
+  listEvents: () => invoke<EventInfo[]>("list_events"),
+  createEvent: (name: string) => invoke<number>("create_event", { name }),
+  renameEvent: (id: number, name: string) =>
+    invoke<void>("rename_event", { id, name }),
+  deleteEvent: (id: number) => invoke<void>("delete_event", { id }),
+  addToEvent: (id: number, paths: string[]) =>
+    invoke<void>("add_to_event", { id, paths }),
+  removeFromEvent: (id: number, paths: string[]) =>
+    invoke<void>("remove_from_event", { id, paths }),
+  setEventCover: (id: number, path: string | null) =>
+    invoke<void>("set_event_cover", { id, path }),
   getTrim: (path: string) => invoke<[number, number] | null>("get_trim", { path }),
   // NB the argument names. Tauri 2 deserializes command args as camelCase by
   // default (tauri-macros: ArgumentCase::Camel, and no `rename_all` override
@@ -183,6 +216,24 @@ export const api = {
 
   pickFolder: async (): Promise<string | null> => {
     const r = await openDialog({ directory: true, multiple: false });
+    return typeof r === "string" ? r : null;
+  },
+  /** Point-at-the-file picker for relinking a missing catalog entry. */
+  pickMediaFile: async (): Promise<string | null> => {
+    const r = await openDialog({
+      directory: false,
+      multiple: false,
+      filters: [
+        {
+          name: "Photos & video",
+          extensions: [
+            "jpg", "jpeg", "png", "webp", "gif", "bmp", "tif", "tiff", "heic", "heif",
+            "nef", "cr2", "cr3", "arw", "dng", "raf", "orf", "rw2",
+            "mp4", "mov", "m4v", "mkv", "avi", "webm", "mts", "m2ts",
+          ],
+        },
+      ],
+    });
     return typeof r === "string" ? r : null;
   },
   pickAudio: async (): Promise<string | null> => {

@@ -661,6 +661,8 @@
       label: null,
       flag: null,
       tags: [],
+      events: [],
+      missing: false,
     };
     mediaCache.set(item.path, made);
     return made;

@@ -14,6 +14,7 @@
     type TreeDir,
     type LibraryInfo,
     type TrashItem,
+    type EventInfo,
   } from "$lib/types";
   import TreeNode from "$lib/components/TreeNode.svelte";
   import Thumb from "$lib/components/Thumb.svelte";
@@ -80,6 +81,13 @@
   let tagFilter = $state<string | null>(null);
   let allTags = $state<[string, number][]>([]);
   let tagInput = $state("");
+  /** Isolate one event across every folder in view — the "virtual collection"
+   *  read of an event, as opposed to grouping the whole grid by it. */
+  let eventFilter = $state<string | null>(null);
+  let allEvents = $state<EventInfo[]>([]);
+  /** Catalog entries whose files are gone — surfaced as "?" placeholders. */
+  let missingRels = $state<string[]>([]);
+  let scanning = $state(false);
 
   let labelFilterActive = $derived(labelFilters.size > 0 || labelNone);
 
@@ -90,7 +98,8 @@
       (flagFilter !== "all" ? 1 : 0) +
       (minRating > 0 ? 1 : 0) +
       (labelFilterActive ? 1 : 0) +
-      (tagFilter ? 1 : 0),
+      (tagFilter ? 1 : 0) +
+      (eventFilter ? 1 : 0),
   );
 
   function toggleLabelFilter(key: string) {
@@ -111,6 +120,7 @@
     minRating = 0;
     ratingOp = ">=";
     tagFilter = null;
+    eventFilter = null;
     clearLabelFilter();
   }
 
@@ -471,6 +481,94 @@
     return p.length > f.length && p.startsWith(f) && (p[f.length] === "\\" || p[f.length] === "/");
   };
 
+  // ── events ────────────────────────────────────────────────────────────────
+  // An event ("Monar trip", "Rashi's birthday") is a virtual collection stored
+  // as catalog metadata, deliberately NOT a folder: the same event spans any
+  // number of directories, so the block it forms in the grid stays whole no
+  // matter how the shots are filed on disk. An item may belong to several; the
+  // FIRST one it joined is its primary and decides which block it sits in.
+  const NO_EVENT_LABEL = "No event";
+  /** Sort rank parked past any real event so unassigned shots trail the blocks.
+   *  Numeric because the section collator compares numerically. */
+  const NO_EVENT_KEY = "999999";
+
+  const eventOf = (it: MediaItem) => it.events[0] ?? null;
+
+  type EventStat = {
+    count: number;
+    first: number;
+    last: number;
+    /** The member explicitly chosen as cover, if it is in this view. */
+    cover: MediaItem | null;
+    /** Fallback cover: the first real (non-missing) member encountered. */
+    firstShot: MediaItem | null;
+  };
+
+  /** Per-event facts for the block headers, over the whole loaded folder (not
+   *  the filtered view) so an event's cover and date range don't jump around as
+   *  filters are toggled. */
+  let eventStats = $derived.by(() => {
+    const coverRel = new Map(allEvents.map((e) => [e.name, e.cover_rel]));
+    const out = new Map<string, EventStat>();
+    for (const it of items) {
+      for (const name of it.events) {
+        let s = out.get(name);
+        if (!s) {
+          s = { count: 0, first: Infinity, last: -Infinity, cover: null, firstShot: null };
+          out.set(name, s);
+        }
+        s.count++;
+        if (!it.missing) {
+          const t = captureOf(it);
+          if (t < s.first) s.first = t;
+          if (t > s.last) s.last = t;
+          if (coverRel.get(name) === it.rel) s.cover = it;
+          if (!s.firstShot) s.firstShot = it;
+        }
+      }
+    }
+    return out;
+  });
+
+  function eventCoverPath(name: string): string | null {
+    const s = eventStats.get(name);
+    return s?.cover?.path ?? s?.firstShot?.path ?? null;
+  }
+
+  const dayFmt = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+  function eventDateRange(name: string): string {
+    const s = eventStats.get(name);
+    if (!s || !Number.isFinite(s.first)) return "";
+    const a = dayFmt.format(new Date(s.first * 1000));
+    const b = dayFmt.format(new Date(s.last * 1000));
+    return a === b ? a : `${a} – ${b}`;
+  }
+
+  // Blocks are ordered by name or by each event's earliest capture, and unlike
+  // the other groupings that order has to honour ascending/descending — the
+  // grouped sort compares section keys directly (never multiplied by sortDir),
+  // so the direction is baked into a rank here instead.
+  let eventRank = $derived.by(() => {
+    const names = [...eventStats.keys()];
+    const byDate = settings.s.eventOrder === "date";
+    names.sort((a, b) => {
+      if (byDate) {
+        const fa = eventStats.get(a)?.first ?? 0;
+        const fb = eventStats.get(b)?.first ?? 0;
+        const c = (Number.isFinite(fa) ? fa : 0) - (Number.isFinite(fb) ? fb : 0);
+        if (c !== 0) return c;
+      }
+      return collator.compare(a, b);
+    });
+    if (settings.s.sortDir === "desc") names.reverse();
+    const m = new Map<string, string>();
+    names.forEach((n, i) => m.set(n, String(i).padStart(6, "0")));
+    return m;
+  });
+
+  let eventByName = $derived(new Map(allEvents.map((e) => [e.name, e])));
+  let groupingByEvent = $derived(settings.s.groupBy === "event" || settings.s.subgroupBy === "event");
+
   type RelatedBadge = "RAW+JPEG" | "Subclip" | "Crop/Edit" | "Burst" | "Motion";
   type RelatedRole = "mother" | "derivative" | "sidecar" | "burst";
   type StemRelation = "original" | "subclip" | "edit" | "burst";
@@ -787,6 +885,10 @@
   function sectionPartKey(it: MediaItem, g: typeof settings.s.groupBy): string {
     if (g === "folder") return parentOf(it.path);
     if (g === "type") return it.kind;
+    if (g === "event") {
+      const name = eventOf(it);
+      return name ? (eventRank.get(name) ?? NO_EVENT_KEY) : NO_EVENT_KEY;
+    }
     if (g === "none") return "";
     const d = new Date(captureOf(it) * 1000);
     if (g === "year") return `${d.getUTCFullYear()}`;
@@ -797,6 +899,7 @@
   function sectionPartLabel(it: MediaItem, g: typeof settings.s.groupBy): string {
     if (g === "folder") return parentName(it.path);
     if (g === "type") return TYPE_LABEL[it.kind] ?? it.kind;
+    if (g === "event") return eventOf(it) ?? NO_EVENT_LABEL;
     if (g === "none") return "";
     const d = new Date(captureOf(it) * 1000);
     if (g === "year") return `${d.getUTCFullYear()}`;
@@ -832,6 +935,7 @@
     if (labelFilterActive)
       arr = arr.filter((i) => (i.label ? labelFilters.has(i.label) : labelNone));
     if (tagFilter) arr = arr.filter((i) => i.tags.includes(tagFilter!));
+    if (eventFilter) arr = arr.filter((i) => i.events.includes(eventFilter!));
     if (flagFilter === "reject") arr = arr.filter((i) => i.flag === "reject");
     else if (flagFilter === "pick") arr = arr.filter((i) => i.flag === "pick");
     else if (flagFilter === "unflagged") arr = arr.filter((i) => !i.flag);
@@ -880,7 +984,20 @@
   });
   let relatedHiddenCount = $derived(Math.max(0, baseView.length - view.length));
 
-  type GridSection = { label: string; count: number; level?: 1 | 2; cellCount?: number };
+  type GridSection = {
+    label: string;
+    count: number;
+    level?: 1 | 2;
+    cellCount?: number;
+    /** Event blocks get an album-art band: a cover frame and a date range. */
+    kind?: "event";
+    cover?: string | null;
+    sub?: string;
+    h?: number;
+  };
+
+  /** Height of an event's album-art band vs an ordinary text header. */
+  const EVENT_BAND_H = 128;
 
   // Grouped grid sections over the sorted view. Group + subgroup render as true
   // nested headers: the parent carries a total count, the child owns the cells.
@@ -899,7 +1016,18 @@
       const anchor = relatedIndex.groupByPath.get(it.path)?.representative ?? it;
       const pk = sectionPartKey(anchor, primaryBy);
       if (pk !== primaryKey) {
-        primary = { label: sectionPartLabel(anchor, primaryBy) || "All media", count: 0, level: 1, cellCount: 0 };
+        const label = sectionPartLabel(anchor, primaryBy) || "All media";
+        primary = { label, count: 0, level: 1, cellCount: 0 };
+        // An event section is drawn as a cover band, the way an album fronts a
+        // trip — that's what makes a long recursive feed readable.
+        if (primaryBy === "event" && label !== NO_EVENT_LABEL) {
+          primary.kind = "event";
+          primary.sub = eventDateRange(label);
+          if (settings.s.eventCovers) {
+            primary.cover = eventCoverPath(label);
+            primary.h = EVENT_BAND_H;
+          }
+        }
         out.push(primary);
         primaryKey = pk;
         subKey = "";
@@ -933,8 +1061,12 @@
     return active ? [active] : [];
   });
   let allTargetsRejected = $derived(actionTargets.length > 0 && actionTargets.every((i) => i.flag === "reject"));
-  let rejectedCount = $derived(items.filter((i) => i.flag === "reject").length);
-  let pickCount = $derived(items.filter((i) => i.flag === "pick").length);
+  // "?" entries are excluded from the counts that drive the delete sweep — a
+  // rejected mark on a file that is already gone is not something to dispose of.
+  let rejectedCount = $derived(items.filter((i) => i.flag === "reject" && !i.missing).length);
+  let pickCount = $derived(items.filter((i) => i.flag === "pick" && !i.missing).length);
+  /** Catalog entries in this folder view whose file was not found. */
+  let missingInView = $derived(items.filter((i) => i.missing).length);
   let stripCell = $derived(Math.max(64, settings.s.filmstripSize - 24));
   // Thumbnail decode sizes, matched to how big the cells are actually drawn.
   let gridThumbTier = $derived(tierFor(settings.s.gridSize));
@@ -969,8 +1101,14 @@
       // not inside Tauri (tests) — the awaited result still finalises the job
     }
     // Reopen the last folder AND land on the last photo we were looking at.
-    if (settings.s.lastDir)
-      openFolder(settings.s.lastDir, { selectPath: settings.s.lastActivePath });
+    if (settings.s.lastDir) {
+      await openFolder(settings.s.lastDir, { selectPath: settings.s.lastActivePath });
+      // Then verify the catalog still matches the disk. Deliberately AFTER the
+      // folder is on screen — the user should never wait on it to start work,
+      // and the pass is cheap unless something actually moved. Silent when
+      // everything resolves; it only speaks up if files are unaccounted for.
+      if (settings.s.scanOnLaunch) void runCatalogScan();
+    }
   });
 
   // Heartbeat: log heap + loader caches every 20s so the logfile shows whether
@@ -1124,20 +1262,23 @@
     // Folder-open warming is images-only and capped at 600 on the backend, so
     // send only the first 600 image paths — not thousands of paths (mostly
     // videos it discards) serialized over IPC on every folder open.
-    const order = baseView.filter((i) => i.kind === "image").slice(0, 600).map((i) => i.path);
+    const order = baseView.filter((i) => i.kind === "image" && !i.missing).slice(0, 600).map((i) => i.path);
     const tier = gridThumbTier;
     setTimeout(() => {
       if (currentDir === dir) api.warmThumbnails(order, tier);
     }, 500);
     logMem(`open ${basename(dir)} n=${items.length}`);
     refreshTags();
+    refreshEvents();
     // Index real capture dates in the background — only when a date-driven view
     // needs them (sort-by-capture or month grouping). Cached after the first pass.
     maybeFetchCaptures();
   }
 
   /** Whether the current view depends on real capture dates. */
-  let needCaptures = $derived(DATE_GROUPS.has(settings.s.groupBy) || DATE_GROUPS.has(settings.s.subgroupBy) || settings.s.sortBy === "capture" || hasBurstLikeNames(items));
+  // Event blocks ordered by date need real capture times too — an event's rank
+  // is its earliest shot, and mtime would rank a re-copied folder wrongly.
+  let needCaptures = $derived(DATE_GROUPS.has(settings.s.groupBy) || DATE_GROUPS.has(settings.s.subgroupBy) || settings.s.sortBy === "capture" || (groupingByEvent && settings.s.eventOrder === "date") || hasBurstLikeNames(items));
 
   let capturesDir: string | null = null;
   async function fetchCaptures(dir: string, paths: string[]) {
@@ -1200,8 +1341,11 @@
   }
 
   function pathsForDrag(item: MediaItem): string[] {
-    if (selected.size > 1 && selected.has(item.path)) return targetPaths();
-    return [item.path];
+    // Never hand a "?" entry to a move — there is no file to move, and the
+    // catalog row it stands for is resolved by relinking, not by dragging.
+    if (selected.size > 1 && selected.has(item.path))
+      return targets().filter((i) => !i.missing).map((i) => i.path);
+    return item.missing ? [] : [item.path];
   }
 
   function beginMediaDrag(e: DragEvent, item: MediaItem, i: number) {
@@ -1499,10 +1643,12 @@
     { key: "photos", label: "Photos & RAW in this folder" },
   ];
   function prepScopeItems(scope: PrepScope): MediaItem[] {
-    if (scope === "selection") return actionTargets;
-    if (scope === "videos") return baseView.filter((i) => i.kind === "video");
-    if (scope === "photos") return baseView.filter((i) => i.kind === "image" || i.kind === "raw");
-    return baseView;
+    // "?" entries have no file to pre-cache; they'd only add guaranteed misses.
+    const pool = baseView.filter((i) => !i.missing);
+    if (scope === "selection") return actionTargets.filter((i) => !i.missing);
+    if (scope === "videos") return pool.filter((i) => i.kind === "video");
+    if (scope === "photos") return pool.filter((i) => i.kind === "image" || i.kind === "raw");
+    return pool;
   }
   async function prepareFolder(scope: PrepScope = "all") {
     if (!currentDir || preparing) return;
@@ -1599,13 +1745,34 @@
     title: string;
     body: string;
     confirmLabel?: string;
-    onconfirm?: () => void | Promise<void>;
+    /** Present, and the modal becomes a prompt: a single text field whose
+     *  trimmed value is handed to `onconfirm`, and Confirm stays disabled while
+     *  it is blank. Used for folder and event names. */
+    input?: { placeholder?: string; value?: string };
+    onconfirm?: (value: string) => void | Promise<void>;
   };
   let ask = $state<Ask | null>(null);
+  let askValue = $state("");
+  let askInputEl = $state<HTMLInputElement | null>(null);
+  /** Always open the modal through here so the input field starts clean. */
+  function openAsk(a: Ask) {
+    askValue = a.input?.value ?? "";
+    ask = a;
+  }
+  // A prompt is useless if you have to click into it first.
+  $effect(() => {
+    if (ask?.input && askInputEl) {
+      askInputEl.focus();
+      askInputEl.select();
+    }
+  });
   async function runAsk() {
     const a = ask;
+    const value = askValue.trim();
+    if (a?.input && !value) return;
     ask = null;
-    await a?.onconfirm?.();
+    askValue = "";
+    await a?.onconfirm?.(value);
   }
   function showUndoToast(msg: string) {
     undoToast = msg;
@@ -1674,7 +1841,7 @@
       // can arrive mid-way through a run of rapid Ctrl+Z presses. Confirm before
       // undoing it, and never consume the entry unless the user says yes.
       const n = e.stored.length;
-      ask = {
+      openAsk({
         title: "Restore deleted files?",
         body: `${n} file${n === 1 ? "" : "s"} will be moved back out of the Trash to ${
           n === 1 ? "its" : "their"
@@ -1692,7 +1859,7 @@
           if (trashOpen) trashItems = await api.listTrash();
           if (currentDir) await openFolder(currentDir, { selectIndex: activeIndex });
         },
-      };
+      });
       return;
     }
     undoStack = undoStack.slice(0, -1);
@@ -1845,6 +2012,230 @@
     commitUndo(`Untag "${tag}"`, before);
   }
 
+  // ── events (virtual collections) ──────────────────────────────────────────
+  // Membership is metadata, so every mutation is applied optimistically to the
+  // in-memory items AND persisted; nothing here reloads the folder, which would
+  // cost a full re-walk just to add a tag-like mark. Events are deliberately
+  // OUTSIDE the undo stack for now — like tags they are additive and reversible
+  // from the same menu, and the stack's snapshot shape covers marks only.
+  async function refreshEvents() {
+    try {
+      allEvents = await api.listEvents();
+    } catch {
+      allEvents = [];
+    }
+  }
+
+  async function addTargetsToEvent(id: number, name: string) {
+    const ts = targets();
+    if (!ts.length) return;
+    for (const it of ts) if (!it.events.includes(name)) it.events = [...it.events, name];
+    await api.addToEvent(id, ts.map((i) => i.path)).catch(() => {});
+    await refreshEvents();
+    activity.local("event-add", `Added ${ts.length} to “${name}”`, 1, 1);
+  }
+
+  async function removeTargetsFromEvent(id: number, name: string) {
+    const ts = targets();
+    if (!ts.length) return;
+    for (const it of ts) it.events = it.events.filter((e) => e !== name);
+    await api.removeFromEvent(id, ts.map((i) => i.path)).catch(() => {});
+    if (eventFilter === name && !items.some((i) => i.events.includes(name))) eventFilter = null;
+    await refreshEvents();
+  }
+
+  function newEventForTargets() {
+    const ts = targets();
+    if (!ts.length) return;
+    openAsk({
+      title: "New event",
+      body: `Name this event — the ${ts.length} selected item${ts.length === 1 ? "" : "s"} will start it. Events span folders, so anything you add later joins the same block wherever it lives.`,
+      input: { placeholder: "Monar trip" },
+      confirmLabel: "Create",
+      onconfirm: async (name) => {
+        try {
+          const id = await api.createEvent(name);
+          await addTargetsToEvent(id, name);
+          // Show the result immediately — the point of an event is the block.
+          if (settings.s.groupBy !== "event") settings.set({ groupBy: "event" });
+        } catch (e) {
+          openAsk({ title: "Could not create the event", body: String(e) });
+        }
+      },
+    });
+  }
+
+  /** Make the active item the face of one of its events. */
+  async function setEventCoverFromActive(ev: EventInfo) {
+    if (!active) return;
+    await api.setEventCover(ev.id, active.path).catch(() => {});
+    await refreshEvents();
+    activity.local("event-cover", `“${ev.name}” cover set`, 1, 1);
+  }
+
+  function renameEventPrompt(ev: EventInfo) {
+    openAsk({
+      title: "Rename event",
+      body: `“${ev.name}” — ${ev.count} item${ev.count === 1 ? "" : "s"}.`,
+      input: { value: ev.name },
+      confirmLabel: "Rename",
+      onconfirm: async (name) => {
+        try {
+          await api.renameEvent(ev.id, name);
+        } catch (e) {
+          openAsk({ title: "Could not rename the event", body: String(e) });
+          return;
+        }
+        for (const it of items) {
+          if (it.events.includes(ev.name)) it.events = it.events.map((e) => (e === ev.name ? name : e));
+        }
+        if (eventFilter === ev.name) eventFilter = name;
+        await refreshEvents();
+      },
+    });
+  }
+
+  function deleteEventPrompt(ev: EventInfo) {
+    openAsk({
+      title: `Delete the event “${ev.name}”?`,
+      body: `The ${ev.count} photo${ev.count === 1 ? "" : "s"} in it are not touched — only the grouping goes away. Nothing is removed from disk.`,
+      confirmLabel: "Delete event",
+      onconfirm: async () => {
+        await api.deleteEvent(ev.id).catch(() => {});
+        for (const it of items) {
+          if (it.events.includes(ev.name)) it.events = it.events.filter((e) => e !== ev.name);
+        }
+        if (eventFilter === ev.name) eventFilter = null;
+        await refreshEvents();
+      },
+    });
+  }
+
+  // ── folder management ─────────────────────────────────────────────────────
+  /** Create a subfolder under `parent` — the other half of drag-to-move: you
+   *  can build the destination without leaving the app. */
+  function newSubfolderPrompt(parent: string) {
+    openAsk({
+      title: "New subfolder",
+      body: `Inside ${basename(parent)}.`,
+      input: { placeholder: "Folder name" },
+      confirmLabel: "Create",
+      onconfirm: async (name) => {
+        try {
+          const created = await api.createFolder(parent, name);
+          await api.clearFolderCounts();
+          countsGen++;
+          activity.local("new-folder", `Created ${basename(created)}`, 1, 1);
+          // If files are staged for a move, land them straight in the new
+          // folder — "make a folder for these" is the whole reason to be here.
+          if (cutPaths.length) await movePathsTo(cutPaths, created);
+        } catch (e) {
+          openAsk({ title: "Could not create the folder", body: String(e) });
+        }
+      },
+    });
+  }
+
+  // ── catalog integrity (missing files) ─────────────────────────────────────
+  /** Verify the catalog against the disk and auto-reconnect what moved. Runs on
+   *  launch (see settings.scanOnLaunch) and on demand from the folder menu. */
+  async function runCatalogScan(opts: { announce?: boolean } = {}) {
+    if (scanning) return;
+    scanning = true;
+    const job = "catalog-scan";
+    activity.local(job, "Checking catalog…", 0, 1);
+    try {
+      const r = await api.catalogScan(true);
+      missingRels = r.still_missing ? await api.listMissing().catch(() => []) : [];
+      activity.local(job, "Catalog checked", 1, 1);
+      api.logEvent(
+        `CATALOG-SCAN tracked=${r.tracked} missing=${r.missing} relinked=${r.relinked} unresolved=${r.still_missing} ${r.elapsed_ms}ms`,
+      );
+      if (r.relinked) {
+        activity.local(
+          "catalog-relink",
+          `Reconnected ${r.relinked} moved file${r.relinked === 1 ? "" : "s"}`,
+          1,
+          1,
+        );
+      }
+      if (opts.announce || (r.still_missing && r.missing !== r.relinked)) {
+        if (r.still_missing) {
+          openAsk({
+            title: `${r.still_missing} file${r.still_missing === 1 ? "" : "s"} could not be found`,
+            body:
+              `${r.relinked} moved file${r.relinked === 1 ? " was" : "s were"} reconnected automatically. ` +
+              `The rest keep every rating, label and event and show as “?” in the grid — right-click one and choose ` +
+              `“Locate…” to point FoxCull at the file, or “Forget” once you're sure it's gone.`,
+          });
+        } else if (opts.announce) {
+          openAsk({
+            title: "Catalog is intact",
+            body: `${r.tracked} marked file${r.tracked === 1 ? "" : "s"} checked${r.relinked ? `, ${r.relinked} reconnected` : ""}. Nothing is missing.`,
+          });
+        }
+      }
+      if (currentDir) await openFolder(currentDir, { selectPath: active?.path ?? null, selectIndex: activeIndex });
+      return r;
+    } catch (e) {
+      activity.error(job, `Catalog check failed (${e})`);
+      return null;
+    } finally {
+      scanning = false;
+    }
+  }
+
+  /** Point one "?" entry at the real file. */
+  async function locateMissingFile(item: MediaItem) {
+    const picked = await api.pickMediaFile();
+    if (!picked) return;
+    try {
+      await api.relinkMissing(item.rel, picked);
+      activity.local("relink", `Reconnected ${item.name}`, 1, 1);
+      missingRels = await api.listMissing().catch(() => []);
+      if (currentDir) await openFolder(currentDir, { selectPath: picked });
+    } catch (e) {
+      openAsk({ title: "Could not reconnect that file", body: String(e) });
+    }
+  }
+
+  /** "The whole folder moved over there" — relink every "?" under this item's
+   *  old folder against a folder the user picks. */
+  async function locateMissingFolder(item: MediaItem) {
+    const dir = await api.pickFolder();
+    if (!dir) return;
+    const relDir = item.rel.includes("/") ? item.rel.slice(0, item.rel.lastIndexOf("/")) : "";
+    try {
+      const r = await api.relinkFolder(relDir, dir);
+      missingRels = await api.listMissing().catch(() => []);
+      if (currentDir) await openFolder(currentDir, { selectIndex: activeIndex });
+      openAsk({
+        title: r.relinked ? `Reconnected ${r.relinked} file${r.relinked === 1 ? "" : "s"}` : "Nothing matched",
+        body: r.unresolved.length
+          ? `${r.unresolved.length} entr${r.unresolved.length === 1 ? "y" : "ies"} had no match in that folder and still show as “?”.`
+          : "Every missing entry from that folder found its file.",
+      });
+    } catch (e) {
+      openAsk({ title: "Could not reconnect that folder", body: String(e) });
+    }
+  }
+
+  /** Drop the metadata of "?" entries the user confirms are gone for good. */
+  function forgetMissingTargets(ts: MediaItem[]) {
+    const gone = ts.filter((i) => i.missing);
+    if (!gone.length) return;
+    openAsk({
+      title: `Forget ${gone.length} missing file${gone.length === 1 ? "" : "s"}?`,
+      body: "Their ratings, labels, tags and event membership are deleted from the catalog. Nothing on disk changes — this only applies to entries whose file is already gone.",
+      confirmLabel: "Forget",
+      onconfirm: async () => {
+        await api.forgetMissing(gone.map((i) => i.rel)).catch(() => {});
+        missingRels = await api.listMissing().catch(() => []);
+        if (currentDir) await openFolder(currentDir, { selectIndex: activeIndex });
+      },
+    });
+  }
+
   function selectAllFiltered() {
     selected = new Set(view.map((i) => i.path));
     selectionAnchor = view[activeIndex]?.path ?? view[0]?.path ?? null;
@@ -1915,6 +2306,66 @@
           { separator: true },
         ]
       : [];
+
+    // A "?" entry has no file behind it, so the menu becomes a relink menu:
+    // everything that would touch the disk is replaced by the three ways out —
+    // point at the file, point at the folder it moved to, or forget it.
+    if (ts.some((i) => i.missing)) {
+      const gone = ts.filter((i) => i.missing);
+      return [
+        {
+          label: "Locate this file…",
+          icon: "🔎",
+          disabled: gone.length !== 1,
+          action: () => locateMissingFile(gone[0] ?? ctx),
+        },
+        {
+          label: "Locate the folder it moved to…",
+          icon: "📁",
+          action: () => locateMissingFolder(gone[0] ?? ctx),
+        },
+        { label: "Check the whole catalog again", icon: "↻", action: () => runCatalogScan({ announce: true }) },
+        { separator: true },
+        {
+          label: `Forget${gone.length > 1 ? ` ${gone.length} entries` : " this entry"} (deletes its marks)`,
+          icon: "⌫",
+          danger: true,
+          action: () => forgetMissingTargets(gone),
+        },
+        { separator: true },
+        { label: "Copy the path it used to have", icon: "⧉", action: () => copyPath(ctx.path) },
+      ];
+    }
+
+    // Events. Membership is a per-selection question: an event the whole
+    // selection is already in offers removal, anything else offers adding.
+    const evEntries: MenuEntry[] = [];
+    const inAll = (name: string) => ts.length > 0 && ts.every((i) => i.events.includes(name));
+    for (const ev of allEvents.slice(0, 8)) {
+      evEntries.push(
+        inAll(ev.name)
+          ? {
+              label: `Remove from “${ev.name}”${sfx}`,
+              icon: "−",
+              on: true,
+              action: () => removeTargetsFromEvent(ev.id, ev.name),
+            }
+          : { label: `Add to “${ev.name}”${sfx}`, icon: "＋", action: () => addTargetsToEvent(ev.id, ev.name) },
+      );
+    }
+    evEntries.push({ label: "New event…" + sfx, icon: "✦", action: newEventForTargets });
+    for (const name of ctx.events) {
+      const ev = eventByName.get(name);
+      if (ev && ev.cover_rel !== ctx.rel) {
+        evEntries.push({
+          label: `Use as cover of “${name}”`,
+          icon: "★",
+          action: () => setEventCoverFromActive(ev),
+        });
+      }
+    }
+    evEntries.push({ separator: true });
+
     return [
       { label: "Previous", icon: "←", disabled: activeIndex <= 0, action: () => move(-1) },
       { label: "Next", icon: "→", disabled: activeIndex >= view.length - 1, action: () => move(1) },
@@ -1951,6 +2402,7 @@
       },
       { label: "Clear rating & marks" + sfx, icon: "⟲", action: () => unset() },
       { separator: true },
+      ...evEntries,
       {
         label: "Export as JPEG…" + sfx,
         icon: "⇩",
@@ -2000,11 +2452,23 @@
       entries: [
         { label: "Open folder", icon: "▣", on: isOpen, action: () => openFolder(path) },
         { label: "Refresh folder", icon: "↻", action: () => refreshFolderPath(path) },
+        { separator: true },
         {
-          label: "Paste moved files here",
+          label: cutPaths.length ? `New subfolder… (and move ${cutPaths.length} here)` : "New subfolder…",
+          icon: "＋",
+          action: () => newSubfolderPrompt(path),
+        },
+        {
+          label: `Move ${cutPaths.length || ""} file${cutPaths.length === 1 ? "" : "s"} here`.replace("  ", " "),
           icon: "⇥",
           disabled: cutPaths.length === 0,
           action: () => movePathsTo(cutPaths, path),
+        },
+        {
+          label: "Check catalog for moved files",
+          icon: "🔎",
+          disabled: scanning,
+          action: () => runCatalogScan({ announce: true }),
         },
         { separator: true },
         { label: revealLabel, icon: "↗", action: () => api.reveal(path) },
@@ -2071,10 +2535,10 @@
         "delete",
         `${out.failed.length} file${out.failed.length === 1 ? "" : "s"} couldn't be deleted`,
       );
-      ask = {
+      openAsk({
         title: `${out.failed.length} file${out.failed.length === 1 ? "" : "s"} couldn't be deleted`,
         body: reasons.join("\n\n"),
-      };
+      });
     }
     // Stay where we were — after the rejected shots vanish, the same index lands
     // on the next surviving photo, not back at the top of the folder.
@@ -2591,6 +3055,7 @@
     class:active={i === activeIndex}
     class:selected={selected.has(item.path)}
     class:reject={item.flag === "reject"}
+    class:gone={item.missing}
     class:related={!!rel}
     class:rel-start={!!rel && rel.index === 0}
     class:rel-mid={!!rel && rel.index > 0 && rel.index < rel.count - 1}
@@ -2601,10 +3066,14 @@
     onclick={(e) => gridCellClick(e, i)}
     ondblclick={() => { setActiveTo(i); setView("loupe"); }}
     oncontextmenu={(e) => openContextMenu(e, item, i)}
-    draggable={true}
+    draggable={!item.missing}
     ondragstart={(e) => beginMediaDrag(e, item, i)}
     ondragend={endMediaDrag}
-    title={relatedFor(item) ? relatedTitle(item) : undefined}
+    title={item.missing
+      ? `File not found — ${item.path}\nIts marks are kept. Right-click to relink or forget it.`
+      : relatedFor(item)
+        ? relatedTitle(item)
+        : undefined}
   >
     {#if rel}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -2644,6 +3113,8 @@
         {#if item.flag === "pick"}<span class="fl pick">✓</span>{/if}
         {#if item.rating > 0}<span class="stars">{"★".repeat(item.rating)}</span>{/if}
         {#if item.tags.length}<span class="tagdot" title={item.tags.join(", ")}>🏷</span>{/if}
+        {#if item.events.length}<span class="evtdot" title={`Event: ${item.events.join(", ")}`}>✦</span>{/if}
+        {#if item.missing}<span class="gonemark" title="File not found — right-click to relink">?</span>{/if}
         {#if derivativeBadge(item.name)}<span class="deriv-badge" title="Exported by FoxCull ({derivativeBadge(item.name)})">{derivativeBadge(item.name)}</span>{/if}
         {#if rawKindTag(item, rel)}<span class="kind-tag" class:raw={item.kind === "raw"} title={item.kind === "raw" ? "RAW file" : "JPEG sibling of a RAW"}>{rawKindTag(item, rel)}</span>{/if}
       </span>
@@ -2658,6 +3129,7 @@
     class:active={i === activeIndex}
     class:selected={selected.has(item.path)}
     class:reject={item.flag === "reject"}
+    class:gone={item.missing}
     class:related={!!rel}
     class:rel-start={!!rel && rel.index === 0}
     class:rel-mid={!!rel && rel.index > 0 && rel.index < rel.count - 1}
@@ -2693,6 +3165,7 @@
       {#if item.rating > 0}<span class="s-stars">{"★".repeat(item.rating)}</span>{/if}
       {#if item.flag === "reject"}<span class="s-x">✕</span>{/if}
       {#if item.flag === "pick"}<span class="s-pick">✓</span>{/if}
+      {#if item.missing}<span class="gonemark sm" title="File not found — right-click to relink">?</span>{/if}
       {#if derivativeBadge(item.name)}<span class="s-deriv">{derivativeBadge(item.name)}</span>{/if}
       {#if rawKindTag(item, rel)}<span class="s-kind" class:raw={item.kind === "raw"}>{rawKindTag(item, rel)}</span>{/if}
     </div>
@@ -2713,6 +3186,15 @@
           <span class="brandLockup"><strong>FoxCull</strong><small>{currentDir ? basename(currentDir) : "Library"}</small></span>
         </span>
         <div class="tree-actions">
+          <button
+            class="ico sm"
+            disabled={!currentDir}
+            onclick={() => currentDir && newSubfolderPrompt(currentDir)}
+            title={currentDir ? `New subfolder inside ${basename(currentDir)}` : "Open a folder first"}
+            aria-label="New subfolder"
+          >
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5h6l2 2h10v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 13v5M9.5 15.5h5"/></svg>
+          </button>
           <button
             class="ico sm"
             class:spin={recounting}
@@ -2815,6 +3297,7 @@
               <span class="fm-lbl"><span class="fm-ico">▦</span>Group</span>
               <select class="sel wide" title="Primary grouped section" bind:value={settings.s.groupBy} onchange={() => { settings.set({ groupBy: settings.s.groupBy }); maybeFetchCaptures(); }}>
                 <option value="none">No groups</option>
+                <option value="event">Event</option>
                 <option value="folder">Folder</option>
                 <option value="type">Type</option>
                 <option value="year">Year</option>
@@ -2826,6 +3309,7 @@
               <span class="fm-lbl"><span class="fm-ico sub">▤</span>Subgroup</span>
               <select class="sel wide" title="Nested second grouping level" bind:value={settings.s.subgroupBy} onchange={() => { settings.set({ subgroupBy: settings.s.subgroupBy }); maybeFetchCaptures(); }}>
                 <option value="none">None</option>
+                <option value="event">Event</option>
                 <option value="folder">Folder</option>
                 <option value="type">Type</option>
                 <option value="year">Year</option>
@@ -2833,6 +3317,43 @@
                 <option value="week">Week</option>
               </select>
             </div>
+            <!-- Event-block controls. Only meaningful while an event grouping is
+                 active, so they are disabled (not hidden) everywhere else — the
+                 option stays discoverable without pretending to do something. -->
+            <div class="fm-row evtRow" class:off={!groupingByEvent}>
+              <span class="fm-lbl"><span class="fm-ico">✦</span>Events</span>
+              <label class="chk" title={groupingByEvent ? "Order event blocks by their earliest photo instead of alphabetically. The ↑↓ button above flips ascending/descending either way." : "Set Group (or Subgroup) to Event to use this"}>
+                <input
+                  type="checkbox"
+                  disabled={!groupingByEvent}
+                  checked={settings.s.eventOrder === "date"}
+                  onchange={(e) => settings.set({ eventOrder: (e.currentTarget as HTMLInputElement).checked ? "date" : "name" })}
+                />
+                <span>Order by date</span>
+              </label>
+              <label class="chk" title="Front each event block with a cover photo instead of a plain header">
+                <input
+                  type="checkbox"
+                  disabled={!groupingByEvent}
+                  checked={settings.s.eventCovers}
+                  onchange={(e) => settings.set({ eventCovers: (e.currentTarget as HTMLInputElement).checked })}
+                />
+                <span>Cover art</span>
+              </label>
+            </div>
+            {#if groupingByEvent && allEvents.length}
+              <div class="evtList">
+                {#each allEvents as ev (ev.id)}
+                  <div class="evtManageRow">
+                    <button class="evtName" class:on={eventFilter === ev.name} title="Show only this event" onclick={() => (eventFilter = eventFilter === ev.name ? null : ev.name)}>
+                      <span>{ev.name}</span><span class="cnt">{ev.count}</span>
+                    </button>
+                    <button class="ico xs" title="Rename event" aria-label="Rename event" onclick={() => renameEventPrompt(ev)}>✎</button>
+                    <button class="ico xs" title="Delete event (photos are untouched)" aria-label="Delete event" onclick={() => deleteEventPrompt(ev)}>×</button>
+                  </div>
+                {/each}
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
@@ -2912,10 +3433,38 @@
                 {/if}
               </div>
             </div>
+            <!-- Events are a peer of tags here: one click isolates a trip across
+                 every subfolder in view. Grouping (Arrange ▸ Event) is the other
+                 read of the same metadata — blocks instead of a filter. -->
+            <div class="fm-row col">
+              <span class="fm-lbl">Event</span>
+              <div class="fm-tags">
+                <button class="tagrow" class:on={eventFilter === null} onclick={() => (eventFilter = null)}>Any event</button>
+                {#if allEvents.length}
+                  {#each allEvents as ev (ev.id)}
+                    <button class="tagrow" class:on={eventFilter === ev.name} onclick={() => (eventFilter = eventFilter === ev.name ? null : ev.name)}>
+                      <span>{ev.name}</span><span class="cnt">{ev.count}</span>
+                    </button>
+                  {/each}
+                {:else}
+                  <p class="tagempty">No events yet — select photos and use “New event…” from the right-click menu.</p>
+                {/if}
+              </div>
+            </div>
             <div class="fm-row">
               <span class="fm-lbl">Scope</span>
               <button class="chip" class:on={settings.s.includeSub} onclick={toggleSub} title="Include photos from subfolders">⊞ Include subfolders</button>
             </div>
+            {#if missingRels.length || missingInView}
+              {@const n = Math.max(missingRels.length, missingInView)}
+              <div class="fm-row">
+                <span class="fm-lbl">Catalog</span>
+                <span class="missingNote" title="Catalog entries whose file was not found on disk. Their marks are intact — right-click a “?” tile to relink it.">
+                  ⚠ {n} missing file{n === 1 ? "" : "s"}
+                </span>
+                <button class="chip" disabled={scanning} onclick={() => runCatalogScan({ announce: true })}>Re-check</button>
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
@@ -3175,6 +3724,17 @@
         <div class="row"><span>Trash</span>
           <button class="btn sm" onclick={() => { settingsOpen = false; openTrash(); }}>🗑 Open Trash…</button>
         </div>
+        <div class="row"><span>Check catalog on launch</span>
+          <div class="seg" title="Verify every rated/tagged file is still where the catalog expects it, and auto-reconnect anything that moved or was renamed outside FoxCull. Runs after the folder is on screen; costs nothing unless something is actually missing.">
+            <button class="chip" class:on={settings.s.scanOnLaunch} onclick={() => settings.set({ scanOnLaunch: true })}>On</button>
+            <button class="chip" class:on={!settings.s.scanOnLaunch} onclick={() => settings.set({ scanOnLaunch: false })}>Off</button>
+          </div>
+        </div>
+        <div class="row"><span>Catalog</span>
+          <button class="btn sm" disabled={scanning} onclick={() => { settingsOpen = false; runCatalogScan({ announce: true }); }} title="Run the integrity check now">
+            {scanning ? "Checking…" : "🔎 Check now"}
+          </button>
+        </div>
         <div class="row"><span>Library</span>
           {#if libInfo}
             <button class="btn sm" onclick={() => libInfo && api.reveal(libInfo.catalog)} title="Show the library folder in your file manager">Reveal</button>
@@ -3279,10 +3839,24 @@
       <div class="askBox" role="dialog" aria-label={ask.title}>
         <div class="askTitle">{ask.title}</div>
         <div class="askBody">{ask.body}</div>
+        {#if ask.input}
+          <!-- The global key handler bails out on INPUT targets, so Enter and
+               Escape have to be handled here or the modal would trap the user. -->
+          <input
+            class="askInput"
+            bind:this={askInputEl}
+            bind:value={askValue}
+            placeholder={ask.input.placeholder ?? ""}
+            onkeydown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); runAsk(); }
+              else if (e.key === "Escape") { e.preventDefault(); ask = null; }
+            }}
+          />
+        {/if}
         <div class="askRow">
           {#if ask.onconfirm}
             <button class="askBtn" onclick={() => (ask = null)}>Cancel</button>
-            <button class="askBtn primary" onclick={runAsk}>{ask.confirmLabel ?? "Confirm"}</button>
+            <button class="askBtn primary" disabled={!!ask.input && !askValue.trim()} onclick={runAsk}>{ask.confirmLabel ?? "Confirm"}</button>
           {:else}
             <button class="askBtn primary" onclick={() => (ask = null)}>Close</button>
           {/if}
@@ -3398,7 +3972,19 @@
         <button class="btn sm" class:on={active.flag === "pick"} onclick={() => flag("pick")} title="Pick (P)">Pick</button>
         <button class="btn sm danger" class:on={active.flag === "reject"} onclick={() => flag("reject")} title="Reject (X)">{active.flag === "reject" ? "Unreject" : "Reject"}</button>
 
-        <!-- tags -->
+        <!-- events, then tags: the event says which trip this shot belongs to,
+             which is the coarser fact, so it reads first. -->
+        {#if active.events.length}
+          <div class="tags evts">
+            {#each active.events as name}
+              {@const ev = eventByName.get(name)}
+              <span class="tag evt" title="Event — click to see only this event">
+                <button class="evtChip" onclick={() => (eventFilter = eventFilter === name ? null : name)}>✦ {name}</button>
+                {#if ev}<button class="tagx" title="Remove from this event" aria-label="Remove from event" onclick={() => removeTargetsFromEvent(ev.id, name)}>×</button>{/if}
+              </span>
+            {/each}
+          </div>
+        {/if}
         <div class="tags">
           {#each active.tags as t}
             <span class="tag">{t}<button class="tagx" onclick={() => removeTagFromActive(t)} aria-label="Remove tag">×</button></span>
@@ -3676,6 +4262,23 @@
   .tagrow .cnt { color: var(--text-faint); }
   .tagrow.on .cnt { color: var(--accent-on); }
   .tagempty { padding: 8px 9px; color: var(--text-faint); font-size: 12px; margin: 0; }
+  .missingNote { font-size: 12px; color: color-mix(in srgb, var(--warn, #d9a441) 85%, var(--text)); }
+
+  /* Arrange ▸ Events: the ordering toggles plus a compact manage list. */
+  .evtRow { flex-wrap: wrap; }
+  .evtRow.off { opacity: 0.5; }
+  .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
+  .chk input { accent-color: var(--accent); }
+  .chk input:disabled { cursor: default; }
+  .evtList { display: flex; flex-direction: column; gap: 2px; max-height: 190px; overflow-y: auto; margin-top: 2px; border-top: 1px solid var(--border-soft); padding-top: 6px; }
+  .evtManageRow { display: flex; align-items: center; gap: 3px; }
+  .evtName { flex: 1; min-width: 0; display: flex; justify-content: space-between; gap: 10px; text-align: left; padding: 5px 8px; border-radius: 6px; font-size: 12.5px; color: var(--text); }
+  .evtName:hover { background: var(--bg-hover); }
+  .evtName.on { background: var(--accent); color: var(--accent-on); }
+  .evtName span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .evtName .cnt { color: var(--text-faint); }
+  .evtName.on .cnt { color: var(--accent-on); }
+  .ico.xs { width: 22px; height: 22px; font-size: 12px; flex: 0 0 auto; }
 
   .hold { position: relative; overflow: hidden; }
   .hold-fill { position: absolute; left: 0; top: 0; bottom: 0; background: color-mix(in srgb, var(--reject) 35%, transparent); }
@@ -3795,6 +4398,22 @@
     max-height: 46vh;
     overflow-y: auto;
   }
+  /* Prompt field — the modal doubles as a name prompt (new folder, new event). */
+  .askInput {
+    width: 100%;
+    margin-top: 12px;
+    padding: 8px 11px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-panel);
+    color: var(--text);
+    font-size: 13.5px;
+  }
+  .askInput:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 26%, transparent);
+  }
   .askRow { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
   .askBtn {
     padding: 6px 14px;
@@ -3806,6 +4425,7 @@
     cursor: pointer;
   }
   .askBtn:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+  .askBtn:disabled { opacity: 0.45; pointer-events: none; }
   .askBtn.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
 
   /* Keyboard shortcut guide (?): centered card over a dim backdrop. */
@@ -4016,6 +4636,12 @@
   .cell.selected { border-color: var(--select); }
   .cell.active { border-color: var(--accent); }
   .cell.reject :global(.media) { opacity: 0.35; }
+  /* Missing-file tile: a dashed frame says "this slot is a catalog entry, not a
+     photo" at a glance, without stealing the selection colours. */
+  .cell.gone,
+  .scell.gone { border-style: dashed; border-color: color-mix(in srgb, var(--warn, #d9a441) 60%, transparent); }
+  .cell.gone.active,
+  .scell.gone.active { border-color: var(--accent); }
 
   /* Clips the thumbnail + overlay badges to the tile's rounded corners — the
      job .cell's own overflow:hidden used to do before it had to let the
@@ -4086,6 +4712,25 @@
   .fl.pick { color: var(--pick); }
   .stars { position: absolute; bottom: 4px; left: 6px; color: var(--star); font-size: 13px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
   .tagdot { position: absolute; bottom: 4px; right: 6px; font-size: 11px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
+  /* Event marker — sits inboard of the tag glyph so a photo can carry both. */
+  .evtdot { position: absolute; bottom: 4px; right: 22px; font-size: 11px; color: var(--accent); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.65)); }
+  .gonemark {
+    position: absolute;
+    top: 5px;
+    right: 6px;
+    min-width: 17px;
+    height: 17px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #fff;
+    background: color-mix(in srgb, var(--warn, #d9a441) 88%, #000);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  }
+  .gonemark.sm { min-width: 14px; height: 14px; font-size: 9px; top: 3px; right: 3px; }
   /* Derivative badge (FoxCull export): a small accent pill, top-right under the
      colour-label dot, marking IG / MIX / CROP / TRIM exports. */
   .deriv-badge {
@@ -4204,6 +4849,12 @@
   .tag { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 11px; padding: 1px 4px 1px 8px; color: var(--text-dim); white-space: nowrap; }
   .tagx { font-size: 13px; line-height: 1; color: var(--text-faint); padding: 0 2px; }
   .tagx:hover { color: var(--reject); }
+  /* Event chips carry the accent so a trip is distinguishable from a tag at a
+     glance, and clicking one isolates that event across the whole view. */
+  .tag.evt { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); padding-left: 3px; }
+  .evtChip { font-size: 11px; color: var(--accent); padding: 1px 4px; border-radius: 9px; }
+  .evtChip:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .tags.evts { flex: 0 1 auto; }
   .taginput { width: 70px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 11px; padding: 2px 8px; font-size: 11.5px; color: var(--text); }
   .taginput:focus { outline: none; border-color: var(--accent); width: 110px; }
 

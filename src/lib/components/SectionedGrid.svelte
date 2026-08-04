@@ -3,8 +3,22 @@
   import { untrack } from "svelte";
   import { api } from "$lib/api";
   import { setScrolling } from "$lib/thumbnail-loader";
+  import SectionCover from "./SectionCover.svelte";
 
-  type GridSection = { label: string; count: number; level?: 1 | 2; cellCount?: number };
+  type GridSection = {
+    label: string;
+    count: number;
+    level?: 1 | 2;
+    cellCount?: number;
+    /** "event" swaps the plain text header for an album-art band. */
+    kind?: "event";
+    /** Absolute path of the cover frame for an event band. */
+    cover?: string | null;
+    /** Secondary line under the title (an event's date range). */
+    sub?: string;
+    /** Explicit header height; falls back to the level default. */
+    h?: number;
+  };
 
   // A virtualized grid split into labeled sections (month headers), sharing the
   // same flat `items` array + global index space as VirtualGrid so keyboard
@@ -40,7 +54,18 @@
   let rowH = $derived(cellW + gap);
 
   type Row =
-    | { type: "header"; key: string; label: string; count: number; level: 1 | 2; y: number; h: number }
+    | {
+        type: "header";
+        key: string;
+        label: string;
+        count: number;
+        level: 1 | 2;
+        y: number;
+        h: number;
+        kind?: "event";
+        cover?: string | null;
+        sub?: string;
+      }
     | { type: "cells"; key: string; idxs: number[]; y: number; h: number };
   type HeaderRow = Extract<Row, { type: "header" }>;
 
@@ -53,8 +78,19 @@
     for (let g = 0; g < groups.length; g++) {
       const grp = groups[g];
       const level = grp.level ?? 1;
-      const h = level === 2 ? Math.max(28, headerH - 8) : headerH;
-      out.push({ type: "header", key: `h${g}`, label: grp.label, count: grp.count, level, y, h });
+      const h = grp.h ?? (level === 2 ? Math.max(28, headerH - 8) : headerH);
+      out.push({
+        type: "header",
+        key: `h${g}`,
+        label: grp.label,
+        count: grp.count,
+        level,
+        y,
+        h,
+        kind: grp.kind,
+        cover: grp.cover,
+        sub: grp.sub,
+      });
       y += h;
       let remaining = grp.cellCount ?? grp.count;
       while (remaining > 0) {
@@ -172,16 +208,21 @@
   export function scrollToIndex(i: number, center = false) {
     const el = viewport;
     if (!el) return;
-    const r = rows.find(
+    const ri = rows.findIndex(
       (rw) => rw.type === "cells" && rw.idxs.length > 0 && i >= rw.idxs[0] && i <= rw.idxs[rw.idxs.length - 1],
     );
-    if (!r) return;
+    if (ri < 0) return;
+    const r = rows[ri];
     if (center) {
       el.scrollTop = Math.max(0, r.y - (vpHeight - rowH) / 2);
       return;
     }
-    // Reveal the month header too when scrolling up to a section's first row.
-    if (r.y - headerH < el.scrollTop) el.scrollTop = Math.max(0, r.y - headerH);
+    // Reveal this row's own header too when scrolling up to a section's first
+    // row. Its real height matters: an event band is far taller than a month
+    // label, and a fixed `headerH` would leave the band half off-screen.
+    const prev = rows[ri - 1];
+    const lead = prev && prev.type === "header" ? prev.h : headerH;
+    if (r.y - lead < el.scrollTop) el.scrollTop = Math.max(0, r.y - lead);
     else if (r.y + rowH > el.scrollTop + vpHeight) el.scrollTop = r.y + rowH - vpHeight;
   }
 
@@ -193,10 +234,24 @@
 <div class="vp" bind:this={viewport} onscroll={onScroll}>
   <div class="canvas" style="height:{totalH}px">
     {#each visibleHeaders as r (r.key)}
-      <div class="hdr level-{r.level}" style="top:{r.y}px; height:{r.h}px">
-        <strong>{r.label}</strong>
-        <span>{r.count}</span>
-      </div>
+      {#if r.kind === "event"}
+        <div class="hdr evt" class:art={!!r.cover} style="top:{r.y}px; height:{r.h}px">
+          {#if r.cover}
+            <SectionCover path={r.cover} />
+            <span class="scrim"></span>
+          {/if}
+          <span class="evtText">
+            <strong>{r.label}</strong>
+            {#if r.sub}<small>{r.sub}</small>{/if}
+          </span>
+          <span class="evtCount">{r.count}</span>
+        </div>
+      {:else}
+        <div class="hdr level-{r.level}" style="top:{r.y}px; height:{r.h}px">
+          <strong>{r.label}</strong>
+          <span>{r.count}</span>
+        </div>
+      {/if}
     {/each}
     {#each slotCell as sc, s (s)}
       {#if sc}
@@ -251,7 +306,76 @@
     background: color-mix(in srgb, var(--bg-panel) 68%, transparent);
     padding-left: 12px;
   }
-  .hdr span {
+  /* An event band reads as a chapter card, not a label: full-bleed cover, a
+     scrim so the title stays legible over any photo, and enough height that a
+     long recursive feed visibly breaks into trips. */
+  .hdr.evt {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0;
+    margin-bottom: 6px;
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-lg, 12px);
+    overflow: hidden;
+    background: var(--bg-elev);
+    backdrop-filter: none;
+  }
+  .hdr.evt .scrim {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, #000 8%, transparent) 0%,
+      color-mix(in srgb, #000 62%, transparent) 100%
+    );
+  }
+  .evtText {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 0 16px 12px;
+    min-width: 0;
+  }
+  .evtText strong {
+    font-family: var(--font-display);
+    font-size: 19px;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .evtText small {
+    font-size: 11.5px;
+    letter-spacing: 0.02em;
+    color: var(--text-dim);
+  }
+  .hdr.evt.art .evtText strong,
+  .hdr.evt.art .evtText small {
+    color: #fff;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+  }
+  .evtCount {
+    position: relative;
+    flex: 0 0 auto;
+    margin: 0 14px 13px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    background: color-mix(in srgb, var(--bg-elev) 82%, transparent);
+    color: var(--text-faint);
+  }
+  .hdr.evt.art .evtCount {
+    background: rgba(0, 0, 0, 0.45);
+    color: #fff;
+  }
+  /* Scoped away from event bands, whose spans (scrim, text stack, pill) carry
+     their own layout — an unscoped `.hdr span` outranked all of it. */
+  .hdr:not(.evt) span {
     min-width: 24px;
     padding: 2px 7px;
     border-radius: 999px;

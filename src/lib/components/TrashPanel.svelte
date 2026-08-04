@@ -32,6 +32,8 @@
       label: null,
       flag: null,
       tags: [],
+      events: [],
+      missing: false,
     };
   }
 

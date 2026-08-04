@@ -897,6 +897,15 @@
 <div class="loupe">
   {#if !item}
     <div class="empty">No selection</div>
+  {:else if item.missing}
+    <!-- A "?" catalog entry: there is nothing to render, and saying so beats a
+         silent black frame. The relink actions live in the right-click menu. -->
+    <div class="empty vfail">
+      <p class="vt">{item.name}</p>
+      <p>This file isn't where the catalog expects it — its ratings, labels, tags and events are still here.</p>
+      <p class="vpath">{item.path}</p>
+      <p>Right-click it (in the grid or here) to locate the file, locate the folder it moved to, or forget the entry.</p>
+    </div>
   {:else if item.kind === "video"}
     {#if videoErr}
       <div class="empty vfail">
@@ -1594,6 +1603,13 @@
   .vfail p {
     margin: 0;
     line-height: 1.5;
+  }
+  /* The path a missing entry still points at — long, so it wraps and shrinks. */
+  .vfail .vpath {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11.5px;
+    color: var(--text-faint);
+    word-break: break-all;
   }
   .obtn {
     margin-top: 4px;

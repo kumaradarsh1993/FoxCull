@@ -39,6 +39,20 @@ pub struct TrashRow {
     pub deleted_at: i64,
 }
 
+/// An **event** — a virtual collection sitting at the same level as tags
+/// ("Monar trip", "Rashi's birthday"). Membership is metadata, not a folder, so
+/// the same event spans any number of directories; the grid groups by it.
+#[derive(Serialize, Clone)]
+pub struct EventInfo {
+    pub id: i64,
+    pub name: String,
+    pub created_at: i64,
+    /// Rel-path of the member chosen as the block's cover ("album art"), if set.
+    /// `None` means the UI picks the first member.
+    pub cover_rel: Option<String>,
+    pub count: i64,
+}
+
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -156,8 +170,263 @@ impl Catalog {
             )",
             [],
         )?;
+        // Events: named virtual collections, peers of tags rather than folders.
+        // `cover_rel` is the member that fronts the event's block in the grid.
+        // NOCASE on the name so "Monar Trip" and "monar trip" are one event.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS events (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                created_at INTEGER NOT NULL,
+                cover_rel  TEXT
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS event_members (
+                event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                rel      TEXT NOT NULL,
+                PRIMARY KEY (event_id, rel)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_event_members_rel ON event_members(rel)",
+            [],
+        )?;
+        // Catalog integrity: rel-paths that carry metadata but whose file was not
+        // on disk at the last scan. Deliberately a *flag*, never a delete — the
+        // metadata survives so the file can be relinked (Lightroom's "?" state).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS missing (
+                rel   TEXT PRIMARY KEY,
+                since INTEGER NOT NULL
+            )",
+            [],
+        )?;
         Ok(conn)
     }
+
+    // ── events (virtual collections) ─────────────────────────────────────────
+
+    /// Every event with its member count, newest-used ordering left to the UI.
+    /// Ordered by id so "primary event" (the one a multi-membership item groups
+    /// under) is stable and equals the first event the item was added to.
+    pub fn list_events(&self) -> Vec<EventInfo> {
+        let conn = self.conn.lock();
+        let mut stmt = match conn.prepare(
+            "SELECT e.id, e.name, e.created_at, e.cover_rel,
+                    (SELECT COUNT(*) FROM event_members m WHERE m.event_id = e.id)
+             FROM events e ORDER BY e.id",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = stmt.query_map([], |r| {
+            Ok(EventInfo {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                created_at: r.get(2)?,
+                cover_rel: r.get(3)?,
+                count: r.get(4)?,
+            })
+        });
+        match rows {
+            Ok(it) => it.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Create an event, or return the existing one's id when the name is taken
+    /// (case-insensitively). Idempotent so "New event…" can't produce twins.
+    pub fn create_event(&self, name: &str) -> rusqlite::Result<i64> {
+        let conn = self.conn.lock();
+        if let Ok(id) = conn.query_row(
+            "SELECT id FROM events WHERE name = ?1",
+            params![name],
+            |r| r.get::<_, i64>(0),
+        ) {
+            return Ok(id);
+        }
+        conn.execute(
+            "INSERT INTO events(name, created_at) VALUES(?1, ?2)",
+            params![name, now()],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn rename_event(&self, id: i64, name: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock();
+        conn.execute("UPDATE events SET name = ?2 WHERE id = ?1", params![id, name])?;
+        Ok(())
+    }
+
+    pub fn delete_event(&self, id: i64) {
+        let conn = self.conn.lock();
+        let _ = conn.execute("DELETE FROM event_members WHERE event_id = ?1", params![id]);
+        let _ = conn.execute("DELETE FROM events WHERE id = ?1", params![id]);
+    }
+
+    pub fn set_event_cover(&self, id: i64, rel: Option<&str>) -> rusqlite::Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE events SET cover_rel = ?2 WHERE id = ?1",
+            params![id, rel],
+        )?;
+        Ok(())
+    }
+
+    pub fn add_to_event(&self, id: i64, rels: &[String]) -> rusqlite::Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt =
+                tx.prepare("INSERT OR IGNORE INTO event_members(event_id, rel) VALUES(?1, ?2)")?;
+            for rel in rels {
+                stmt.execute(params![id, rel])?;
+            }
+        }
+        tx.commit()
+    }
+
+    pub fn remove_from_event(&self, id: i64, rels: &[String]) -> rusqlite::Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt =
+                tx.prepare("DELETE FROM event_members WHERE event_id = ?1 AND rel = ?2")?;
+            for rel in rels {
+                stmt.execute(params![id, rel])?;
+            }
+        }
+        tx.commit()
+    }
+
+    /// Event names per rel-path at or under a prefix, in one query. Ordered by
+    /// event id, so `[0]` is each item's primary (first-joined) event.
+    pub fn events_under(&self, prefix: &str) -> HashMap<String, Vec<String>> {
+        let conn = self.conn.lock();
+        let (sql, bind): (&str, Option<String>) = if prefix.is_empty() {
+            (
+                "SELECT m.rel, e.name FROM event_members m
+                 JOIN events e ON e.id = m.event_id ORDER BY e.id",
+                None,
+            )
+        } else {
+            (
+                "SELECT m.rel, e.name FROM event_members m
+                 JOIN events e ON e.id = m.event_id
+                 WHERE m.rel = ?1 OR m.rel LIKE ?2 ORDER BY e.id",
+                Some(format!("{prefix}/%")),
+            )
+        };
+        let mut stmt = match conn.prepare(sql) {
+            Ok(s) => s,
+            Err(_) => return HashMap::new(),
+        };
+        let map = |r: &rusqlite::Row<'_>| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?));
+        let rows = match &bind {
+            None => stmt.query_map([], map),
+            Some(like) => stmt.query_map(params![prefix, like], map),
+        };
+        let mut out: HashMap<String, Vec<String>> = HashMap::new();
+        if let Ok(it) = rows {
+            for (rel, name) in it.flatten() {
+                out.entry(rel).or_default().push(name);
+            }
+        }
+        out
+    }
+
+    // ── catalog integrity (missing files / relink) ───────────────────────────
+
+    /// Every rel-path the catalog holds USER metadata for — the set worth
+    /// protecting across a manual file move. Deliberately excludes `captures`
+    /// and `dir_counts` (regenerable caches) and rows whose decision is entirely
+    /// default, so an unrated file that was merely looked at never becomes a
+    /// "missing photo" the user has to resolve.
+    pub fn tracked_rels(&self) -> Vec<String> {
+        let conn = self.conn.lock();
+        let mut stmt = match conn.prepare(
+            "SELECT rel FROM decisions
+               WHERE rating <> 0 OR label IS NOT NULL OR flag IS NOT NULL
+             UNION SELECT rel FROM tags
+             UNION SELECT rel FROM trims
+             UNION SELECT rel FROM video_segments
+             UNION SELECT rel FROM event_members",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0));
+        match rows {
+            Ok(it) => it.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Replace the whole missing set with `rels`, preserving the `since`
+    /// timestamp of entries that were already flagged.
+    pub fn set_missing(&self, rels: &[String]) -> rusqlite::Result<()> {
+        let ts = now();
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt =
+                tx.prepare("INSERT OR IGNORE INTO missing(rel, since) VALUES(?1, ?2)")?;
+            for rel in rels {
+                stmt.execute(params![rel, ts])?;
+            }
+            // Anything no longer in the set has been found again.
+            let mut keep = tx.prepare("SELECT rel FROM missing")?;
+            let existing: Vec<String> = keep
+                .query_map([], |r| r.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            drop(keep);
+            let wanted: std::collections::HashSet<&String> = rels.iter().collect();
+            let mut del = tx.prepare("DELETE FROM missing WHERE rel = ?1")?;
+            for rel in existing.iter().filter(|r| !wanted.contains(r)) {
+                del.execute(params![rel])?;
+            }
+        }
+        tx.commit()
+    }
+
+    pub fn clear_missing(&self, rels: &[String]) {
+        let conn = self.conn.lock();
+        for rel in rels {
+            let _ = conn.execute("DELETE FROM missing WHERE rel = ?1", params![rel]);
+        }
+    }
+
+    /// Missing rel-paths at or under a prefix ("" = the whole catalog).
+    pub fn missing_under(&self, prefix: &str) -> Vec<String> {
+        let conn = self.conn.lock();
+        let (sql, like): (&str, String) = if prefix.is_empty() {
+            ("SELECT rel FROM missing ORDER BY rel", String::new())
+        } else {
+            (
+                "SELECT rel FROM missing WHERE rel = ?1 OR rel LIKE ?2 ORDER BY rel",
+                format!("{prefix}/%"),
+            )
+        };
+        let mut stmt = match conn.prepare(sql) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let map = |r: &rusqlite::Row<'_>| r.get::<_, String>(0);
+        let rows = if prefix.is_empty() {
+            stmt.query_map([], map)
+        } else {
+            stmt.query_map(params![prefix, like], map)
+        };
+        match rows {
+            Ok(it) => it.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
 
     // ── per-folder media counts (left-pane badges) ──────────────────────────
 
@@ -444,6 +713,12 @@ impl Catalog {
             let _ = conn.execute("DELETE FROM trims WHERE rel = ?1", params![rel]);
             let _ = conn.execute("DELETE FROM video_segments WHERE rel = ?1", params![rel]);
             let _ = conn.execute("DELETE FROM captures WHERE rel = ?1", params![rel]);
+            let _ = conn.execute("DELETE FROM event_members WHERE rel = ?1", params![rel]);
+            let _ = conn.execute(
+                "UPDATE events SET cover_rel = NULL WHERE cover_rel = ?1",
+                params![rel],
+            );
+            let _ = conn.execute("DELETE FROM missing WHERE rel = ?1", params![rel]);
         }
     }
 
@@ -493,6 +768,25 @@ impl Catalog {
                     params![from, to],
                 )?;
                 tx.execute("DELETE FROM captures WHERE rel = ?1", params![from])?;
+
+                // Event membership travels with the file, and an event whose
+                // cover was this file keeps its cover. Both are why a move made
+                // through FoxCull is safe where a move made in Explorer is not.
+                tx.execute("DELETE FROM event_members WHERE rel = ?1", params![to])?;
+                tx.execute(
+                    "UPDATE event_members SET rel = ?2 WHERE rel = ?1",
+                    params![from, to],
+                )?;
+                tx.execute(
+                    "UPDATE events SET cover_rel = ?2 WHERE cover_rel = ?1",
+                    params![from, to],
+                )?;
+                // The file is accounted for at its new home — clear any "?" flag
+                // on either end so a relink resolves the entry immediately.
+                tx.execute(
+                    "DELETE FROM missing WHERE rel = ?1 OR rel = ?2",
+                    params![from, to],
+                )?;
             }
             tx.execute("DELETE FROM dir_counts", [])?;
         }

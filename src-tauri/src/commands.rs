@@ -235,6 +235,13 @@ pub struct MediaItem {
     pub label: Option<String>,
     pub flag: Option<String>,
     pub tags: Vec<String>,
+    /// Events this file belongs to, in join order — `[0]` is its primary event
+    /// (the one the grid groups it under when several apply).
+    pub events: Vec<String>,
+    /// True for a catalog entry whose file was not on disk at the last scan.
+    /// The row still carries every mark; the grid draws it as a "?" placeholder
+    /// so the metadata can be relinked instead of silently lost.
+    pub missing: bool,
 }
 
 #[derive(Serialize)]
@@ -852,6 +859,8 @@ pub fn list_folder_media(
                 label: None,
                 flag: None,
                 tags: Vec::new(),
+                events: Vec::new(),
+                missing: false,
             }
         })
         .collect();
@@ -875,6 +884,53 @@ pub fn list_folder_media(
     for item in &mut items {
         if let Some(tags) = tagmap.remove(&item.rel) {
             item.tags = tags;
+        }
+    }
+    // Attach event membership the same way — one query for the whole subtree.
+    let mut evmap = catalog.events_under(&prefix);
+    for item in &mut items {
+        if let Some(events) = evmap.remove(&item.rel) {
+            item.events = events;
+        }
+    }
+
+    // Lightroom's "?" photos: catalog entries under this folder whose file is
+    // gone. They are appended as placeholder items so their marks stay visible
+    // and reachable (relink / forget) instead of vanishing with the file. Only
+    // entries whose parent folder matches the current scope are shown, so a
+    // non-recursive view doesn't inherit a whole subtree's ghosts.
+    let missing_rels = catalog.missing_under(&prefix);
+    if !missing_rels.is_empty() {
+        let root_path = root.clone();
+        let decision_map: HashMap<&str, _> = decisions.iter().map(|d| (d.rel.as_str(), d)).collect();
+        let mut tagmap_missing = catalog.tags_under(&prefix);
+        let mut evmap_missing = catalog.events_under(&prefix);
+        for rel in missing_rels {
+            let parent = rel.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+            if !recursive && !parent.eq_ignore_ascii_case(&prefix) {
+                continue;
+            }
+            let abs = match &root_path {
+                Some(r) => r.join(&rel).to_string_lossy().to_string(),
+                None => rel.clone(),
+            };
+            let as_path = PathBuf::from(&abs);
+            let d = decision_map.get(rel.as_str());
+            items.push(MediaItem {
+                name: rel.rsplit('/').next().unwrap_or(&rel).to_string(),
+                kind: media::classify(&as_path).as_str().to_string(),
+                ext: media::ext_lower(&as_path),
+                mtime: 0,
+                size: 0,
+                path: abs,
+                rel: rel.clone(),
+                rating: d.map(|d| d.rating).unwrap_or(0),
+                label: d.and_then(|d| d.label.clone()),
+                flag: d.and_then(|d| d.flag.clone()),
+                tags: tagmap_missing.remove(&rel).unwrap_or_default(),
+                events: evmap_missing.remove(&rel).unwrap_or_default(),
+                missing: true,
+            });
         }
     }
     crate::log::line(&format!(
@@ -3193,6 +3249,408 @@ pub fn move_media_files(
         }
     }
     out
+}
+
+// ── folder management (Lightroom-style: the app owns the moves) ─────────────
+
+/// Create `name` as a direct child of `parent` and return its absolute path.
+/// Restricted to the active library (never the `_FoxCull` folder), and the name
+/// must be a single plain segment — no separators, no `..`, no drive prefix —
+/// so a typed name can never escape the folder the user right-clicked.
+#[tauri::command]
+pub fn create_folder(
+    state: State<'_, AppState>,
+    parent: String,
+    name: String,
+) -> Result<String, String> {
+    let trimmed = name.trim().trim_end_matches(['.', ' ']).to_string();
+    if trimmed.is_empty() {
+        return Err("folder name is empty".into());
+    }
+    if trimmed.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|']) {
+        return Err(r#"a folder name cannot contain \ / : * ? " < > |"#.into());
+    }
+    if has_unsafe_components(Path::new(&trimmed)) || trimmed == ".." || trimmed == "." {
+        return Err("invalid folder name".into());
+    }
+    let root_state = state.root.lock().clone();
+    let root = canonical_active_root(&root_state)?;
+    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
+    let parent_dir = validate_active_dir(&root, lib.as_ref(), &parent)?;
+    let target = parent_dir.join(&trimmed);
+    if target.exists() {
+        return Err(format!("\"{trimmed}\" already exists here"));
+    }
+    std::fs::create_dir(&target).map_err(|e| format!("could not create folder: {e}"))?;
+    Ok(target.to_string_lossy().to_string())
+}
+
+// ── catalog integrity: find, flag and relink moved/renamed files ────────────
+
+#[derive(Serialize)]
+pub struct ScanReport {
+    /// Rel-paths carrying user metadata that were checked.
+    pub tracked: usize,
+    /// How many of those were absent from disk when the scan began.
+    pub missing: usize,
+    /// Absences the scan resolved by itself (folder moved, file renamed away).
+    pub relinked: usize,
+    /// Still unresolved — these are the "?" items the user can relink by hand.
+    pub still_missing: usize,
+    /// Media files walked while hunting for relink candidates (0 = no walk was
+    /// needed because nothing was missing — the fast, common path).
+    pub scanned_files: usize,
+    pub elapsed_ms: u64,
+}
+
+/// Directory part of a rel-path ("" for a file at the library root).
+fn rel_parent(rel: &str) -> &str {
+    rel.rsplit_once('/').map(|(p, _)| p).unwrap_or("")
+}
+
+fn rel_name(rel: &str) -> &str {
+    rel.rsplit('/').next().unwrap_or(rel)
+}
+
+/// Verify every metadata-carrying catalog entry still points at a real file and,
+/// when it doesn't, try to find where the file went — the guarantee that makes
+/// moving photos outside FoxCull survivable.
+///
+/// Two passes, cheapest first:
+/// 1. **Existence check** over the tracked rel-paths. If nothing is missing the
+///    command returns without ever walking the drive, which is why a normal
+///    launch costs a few hundred stats rather than a full scan.
+/// 2. **Relink hunt** (only if something IS missing): walk the library once,
+///    then match by *folder cohort* before individual filenames. A whole folder
+///    that moved is recognised as one move because most of its filenames turn up
+///    together under a single new directory; leftovers fall back to a unique
+///    filename match. Metadata is NEVER deleted here — anything unresolved is
+///    flagged so the UI can show a "?" and let the user point at the file.
+#[tauri::command]
+pub async fn catalog_scan(
+    state: State<'_, AppState>,
+    catalog: State<'_, Catalog>,
+    relink: bool,
+) -> Result<ScanReport, String> {
+    let t0 = Instant::now();
+    let root_state = state.root.lock().clone();
+    let root = canonical_active_root(&root_state)?;
+
+    let tracked = catalog.tracked_rels();
+    let tracked_count = tracked.len();
+
+    let root_for_stat = root.clone();
+    let tracked_for_stat = tracked.clone();
+    let (mut missing, present): (Vec<String>, Vec<String>) =
+        tauri::async_runtime::spawn_blocking(move || {
+            warm_pool().install(|| {
+                tracked_for_stat
+                    .into_par_iter()
+                    .partition(|rel| !root_for_stat.join(rel).exists())
+            })
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let missing_before = missing.len();
+    let mut relinked: Vec<(String, String)> = Vec::new();
+    let mut scanned_files = 0usize;
+
+    if !missing.is_empty() && relink {
+        let root_for_walk = root.clone();
+        let disk: Vec<PathBuf> = tauri::async_runtime::spawn_blocking(move || {
+            let mut paths: Vec<(PathBuf, i64, u64)> = Vec::new();
+            collect(&root_for_walk, true, &mut paths);
+            paths.into_iter().map(|(p, _, _)| p).collect()
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        scanned_files = disk.len();
+
+        // Files that already carry metadata are off-limits as relink targets —
+        // adopting one would overwrite a second photo's marks to "fix" the first.
+        let owned: HashSet<String> = present.iter().map(|r| r.to_lowercase()).collect();
+        let mut by_name: HashMap<String, Vec<String>> = HashMap::new();
+        for p in &disk {
+            let rel = rel_under(&root, p);
+            if owned.contains(&rel.to_lowercase()) {
+                continue;
+            }
+            by_name
+                .entry(rel_name(&rel).to_lowercase())
+                .or_default()
+                .push(rel);
+        }
+
+        // Pass 2a — folder cohorts. Group the absent entries by their old folder
+        // and ask which single directory now holds most of those filenames.
+        let mut cohorts: HashMap<&str, Vec<&String>> = HashMap::new();
+        for rel in &missing {
+            cohorts.entry(rel_parent(rel)).or_default().push(rel);
+        }
+        let mut claimed: HashSet<String> = HashSet::new();
+        for (old_dir, members) in &cohorts {
+            let mut votes: HashMap<&str, usize> = HashMap::new();
+            for m in members {
+                if let Some(cands) = by_name.get(&rel_name(m).to_lowercase()) {
+                    for c in cands {
+                        *votes.entry(rel_parent(c)).or_insert(0) += 1;
+                    }
+                }
+            }
+            let Some((best_dir, score)) = votes.into_iter().max_by_key(|(_, n)| *n) else {
+                continue;
+            };
+            // A cohort move needs real agreement: at least half the folder's
+            // entries, and never a "match" back onto the folder we came from.
+            if best_dir.eq_ignore_ascii_case(old_dir) || score * 2 < members.len().max(1) {
+                continue;
+            }
+            let best_dir = best_dir.to_string();
+            for m in members {
+                let want = if best_dir.is_empty() {
+                    rel_name(m).to_string()
+                } else {
+                    format!("{best_dir}/{}", rel_name(m))
+                };
+                let found = by_name
+                    .get(&rel_name(m).to_lowercase())
+                    .and_then(|c| c.iter().find(|r| r.eq_ignore_ascii_case(&want)))
+                    .cloned();
+                if let Some(to) = found {
+                    if claimed.insert(to.to_lowercase()) {
+                        relinked.push(((*m).clone(), to));
+                    }
+                }
+            }
+        }
+
+        // Pass 2b — leftovers. A single unambiguous filename match anywhere in
+        // the library is safe to adopt; two or more candidates is not, and stays
+        // a "?" for the user to resolve.
+        let done: HashSet<String> = relinked.iter().map(|(f, _)| f.to_lowercase()).collect();
+        for m in &missing {
+            if done.contains(&m.to_lowercase()) {
+                continue;
+            }
+            let Some(cands) = by_name.get(&rel_name(m).to_lowercase()) else {
+                continue;
+            };
+            let free: Vec<&String> = cands
+                .iter()
+                .filter(|c| !claimed.contains(&c.to_lowercase()))
+                .collect();
+            if free.len() == 1 {
+                let to = free[0].clone();
+                claimed.insert(to.to_lowercase());
+                relinked.push((m.clone(), to));
+            }
+        }
+
+        if !relinked.is_empty() {
+            catalog
+                .move_media_entries(&relinked)
+                .map_err(|e| format!("relink failed: {e}"))?;
+            let resolved: HashSet<String> = relinked.iter().map(|(f, _)| f.clone()).collect();
+            missing.retain(|m| !resolved.contains(m));
+        }
+    }
+
+    catalog
+        .set_missing(&missing)
+        .map_err(|e| format!("could not record missing files: {e}"))?;
+
+    let report = ScanReport {
+        tracked: tracked_count,
+        missing: missing_before,
+        relinked: relinked.len(),
+        still_missing: missing.len(),
+        scanned_files,
+        elapsed_ms: t0.elapsed().as_millis() as u64,
+    };
+    crate::log::line(&format!(
+        "CATALOG-SCAN tracked={} missing={} relinked={} unresolved={} walked={} {}ms",
+        report.tracked,
+        report.missing,
+        report.relinked,
+        report.still_missing,
+        report.scanned_files,
+        report.elapsed_ms
+    ));
+    Ok(report)
+}
+
+/// Every unresolved "?" entry, so the UI can offer a relink list.
+#[tauri::command]
+pub fn list_missing(catalog: State<'_, Catalog>) -> Vec<String> {
+    catalog.missing_under("")
+}
+
+/// Point one missing catalog entry at the file the user picked.
+#[tauri::command]
+pub fn relink_missing(
+    state: State<'_, AppState>,
+    catalog: State<'_, Catalog>,
+    rel: String,
+    path: String,
+) -> Result<String, String> {
+    let root_state = state.root.lock().clone();
+    let root = canonical_active_root(&root_state)?;
+    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
+    let target = validate_active_media_file(&root, lib.as_ref(), &path)?;
+    let to = rel_under(&root, &target);
+    if to.eq_ignore_ascii_case(&rel) {
+        catalog.clear_missing(std::slice::from_ref(&rel));
+        return Ok(to);
+    }
+    catalog
+        .move_media_entries(&[(rel, to.clone())])
+        .map_err(|e| format!("relink failed: {e}"))?;
+    Ok(to)
+}
+
+#[derive(Serialize)]
+pub struct RelinkOutcome {
+    pub relinked: usize,
+    pub unresolved: Vec<String>,
+}
+
+/// Relink every missing entry that used to live under `rel_dir` by looking for
+/// each one inside `new_dir` — the "I know where that folder went" action. The
+/// sub-path below `rel_dir` is preserved first (a whole tree that moved), with a
+/// flat filename match in `new_dir` as the fallback.
+#[tauri::command]
+pub fn relink_folder(
+    state: State<'_, AppState>,
+    catalog: State<'_, Catalog>,
+    // Invoked from JS as `relDir` / `newDir` — Tauri 2 camelCases argument
+    // lookup (see the note in src/lib/api.ts).
+    rel_dir: String,
+    new_dir: String,
+) -> Result<RelinkOutcome, String> {
+    let root_state = state.root.lock().clone();
+    let root = canonical_active_root(&root_state)?;
+    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
+    let dest = validate_active_dir(&root, lib.as_ref(), &new_dir)?;
+    let dest_rel = rel_under(&root, &dest);
+
+    let prefix = rel_dir.trim_end_matches('/').to_string();
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut unresolved: Vec<String> = Vec::new();
+    for rel in catalog.missing_under(&prefix) {
+        let sub = rel
+            .strip_prefix(&format!("{prefix}/"))
+            .unwrap_or(rel_name(&rel));
+        let nested = dest.join(sub);
+        let flat = dest.join(rel_name(&rel));
+        let hit = if nested.is_file() {
+            Some(nested)
+        } else if flat.is_file() {
+            Some(flat)
+        } else {
+            None
+        };
+        match hit {
+            Some(p) => pairs.push((rel, rel_under(&root, &p))),
+            None => unresolved.push(rel),
+        }
+    }
+    if !pairs.is_empty() {
+        catalog
+            .move_media_entries(&pairs)
+            .map_err(|e| format!("relink failed: {e}"))?;
+    }
+    crate::log::line(&format!(
+        "RELINK-FOLDER from={prefix} to={dest_rel} relinked={} unresolved={}",
+        pairs.len(),
+        unresolved.len()
+    ));
+    Ok(RelinkOutcome {
+        relinked: pairs.len(),
+        unresolved,
+    })
+}
+
+/// Drop the metadata for entries the user confirms are gone for good. This is
+/// the ONLY path that deletes marks for a missing file — a scan never does.
+#[tauri::command]
+pub fn forget_missing(catalog: State<'_, Catalog>, rels: Vec<String>) -> usize {
+    catalog.forget(&rels);
+    rels.len()
+}
+
+// ── events (virtual collections spanning folders) ───────────────────────────
+
+#[tauri::command]
+pub fn list_events(catalog: State<'_, Catalog>) -> Vec<crate::catalog::EventInfo> {
+    catalog.list_events()
+}
+
+#[tauri::command]
+pub fn create_event(catalog: State<'_, Catalog>, name: String) -> Result<i64, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("event name is empty".into());
+    }
+    catalog.create_event(&name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rename_event(catalog: State<'_, Catalog>, id: i64, name: String) -> Result<(), String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("event name is empty".into());
+    }
+    catalog.rename_event(id, &name).map_err(|e| e.to_string())
+}
+
+/// Delete the event itself. Member files are untouched — an event is metadata
+/// about photos, never a container that owns them.
+#[tauri::command]
+pub fn delete_event(catalog: State<'_, Catalog>, id: i64) {
+    catalog.delete_event(id);
+}
+
+#[tauri::command]
+pub fn add_to_event(
+    state: State<'_, AppState>,
+    catalog: State<'_, Catalog>,
+    id: i64,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    let root = state.root.lock().clone();
+    let rels: Vec<String> = paths.iter().map(|p| rel_of(&root, p)).collect();
+    catalog.add_to_event(id, &rels).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn remove_from_event(
+    state: State<'_, AppState>,
+    catalog: State<'_, Catalog>,
+    id: i64,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    let root = state.root.lock().clone();
+    let rels: Vec<String> = paths.iter().map(|p| rel_of(&root, p)).collect();
+    catalog
+        .remove_from_event(id, &rels)
+        .map_err(|e| e.to_string())
+}
+
+/// Choose the shot that fronts an event's block in the grid ("album art").
+/// `path = None` reverts to "let the grid pick the first member".
+#[tauri::command]
+pub fn set_event_cover(
+    state: State<'_, AppState>,
+    catalog: State<'_, Catalog>,
+    id: i64,
+    path: Option<String>,
+) -> Result<(), String> {
+    let root = state.root.lock().clone();
+    let rel = path.map(|p| rel_of(&root, &p));
+    catalog
+        .set_event_cover(id, rel.as_deref())
+        .map_err(|e| e.to_string())
 }
 
 /// Export `paths` into `dest` as viewable files. RAW (NEF etc.) becomes a JPEG

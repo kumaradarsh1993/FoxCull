@@ -16,6 +16,37 @@ export interface MediaItem {
   label: string | null;
   flag: "pick" | "reject" | null;
   tags: string[];
+  /** Events this file belongs to, in join order — `[0]` is the primary event
+   *  (what the grid groups it under when several apply). */
+  events: string[];
+  /** A catalog entry whose file was not on disk at the last scan. Its marks are
+   *  intact; the grid draws it as a "?" placeholder so it can be relinked. */
+  missing: boolean;
+}
+
+/** A named virtual collection ("Monar trip") — a peer of tags, not a folder. */
+export interface EventInfo {
+  id: number;
+  name: string;
+  created_at: number;
+  /** Rel-path of the member that fronts the event's block, or null for "first". */
+  cover_rel: string | null;
+  count: number;
+}
+
+/** Result of a catalog integrity pass (see `api.catalogScan`). */
+export interface ScanReport {
+  tracked: number;
+  missing: number;
+  relinked: number;
+  still_missing: number;
+  scanned_files: number;
+  elapsed_ms: number;
+}
+
+export interface RelinkOutcome {
+  relinked: number;
+  unresolved: string[];
 }
 
 export interface EditSourceItem {

@@ -11,7 +11,11 @@ export type ViewMode = "grid" | "details" | "loupe";
 export type FilmstripPos = "bottom" | "left" | "right" | "hidden";
 export type SortBy = "name" | "date" | "capture" | "type" | "size";
 export type SortDir = "asc" | "desc";
-export type GroupBy = "none" | "folder" | "type" | "year" | "month" | "week";
+export type GroupBy = "none" | "folder" | "type" | "year" | "month" | "week" | "event";
+/** How event BLOCKS are ordered against each other when grouping by event.
+ *  "name" is alphabetical; "date" uses each event's earliest capture. Both
+ *  honour `sortDir`, so ascending/descending works either way. */
+export type EventOrder = "name" | "date";
 export type TypeFilter = "all" | "image" | "video" | "raw";
 export type DeleteMode = "recycle" | "folder";
 export type RelatedMode = "expanded" | "collapsed";
@@ -31,6 +35,16 @@ export interface AppSettings {
   /** Section the grid by real capture date — off, by month, or by week. */
   groupBy: GroupBy;
   subgroupBy: GroupBy;
+  /** Order of event blocks when grouping by event. Only meaningful then — the
+   *  toggle that sets it is disabled in every other grouping. */
+  eventOrder: EventOrder;
+  /** Show each event block behind a cover image ("album art") instead of a
+   *  plain text header. */
+  eventCovers: boolean;
+  /** Verify the catalog against the disk when the app opens a library, and
+   *  auto-reconnect anything that moved. Costs a few seconds on a big catalog;
+   *  turning it off means moved files silently keep showing as "?". */
+  scanOnLaunch: boolean;
   typeFilter: TypeFilter;
   includeSub: boolean;
   liveScrub: boolean;
@@ -91,6 +105,9 @@ const DEFAULTS: AppSettings = {
   sortDir: "asc",
   groupBy: "none",
   subgroupBy: "none",
+  eventOrder: "date",
+  eventCovers: true,
+  scanOnLaunch: true,
   typeFilter: "all",
   includeSub: true,
   liveScrub: false,

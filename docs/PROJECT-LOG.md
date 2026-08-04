@@ -555,3 +555,85 @@ Arrow navigation now releases stale focus only from grid, filmstrip and Details
 media cells before moving. Native click, Right and Down testing showed a single
 selector following the active item; intentional modifier-based multi-selection
 and ordinary control focus remain unchanged.
+
+---
+
+## 2026-08-04 - v1.4.0 stable, and the catalog stops losing photos
+
+The owner confirmed from real work that the 1.4.0 nightlies had resolved the
+fast-scroll freeze, and asked for the latest nightly to be promoted. v1.4.0
+shipped as stable with **no code change over nightly.8** - the tagged commit
+carries only the stable release notes and the base-version bump. That is
+deliberate: the build he tested is the build that shipped.
+
+He then asked for two features, both of which are really about the same thing -
+metadata that survives contact with the real world.
+
+### Moving photos used to quietly destroy their marks
+
+FoxCull keys every rating, label, flag, tag and trim by the file's path relative
+to the drive. That is what makes a drive's catalog portable between machines,
+and it is also what made a move in Explorer catastrophic: the row stayed, the
+path stopped resolving, and the marks were effectively gone with no signal that
+anything had happened. The owner named the model he wanted, and it was the right
+one - Lightroom's. Flag what you cannot find with a "?", never delete it, work
+out for yourself when a whole folder has moved, and let me remap the rest by
+hand. He was explicit that he is happy to wait ten or fifteen seconds at launch
+for this, the way he already does in Lightroom.
+
+The shape that fell out of that:
+
+- **Verify, then hunt - in that order, because the order is the cost model.**
+  Pass one only asks the filesystem whether each metadata-carrying path still
+  exists. If nothing is missing - the overwhelmingly common case - the command
+  returns without ever walking the library, and the promised ten seconds cost
+  a few hundred stats instead. The walk is the expensive thing, so it is the
+  thing that has to be conditional.
+- **Folders move, not files.** Matching filename-by-filename would have been the
+  obvious implementation and the wrong one: it is ambiguous exactly where people
+  have duplicates. So absent entries are grouped by the folder they used to live
+  in, and a folder is considered moved when at least half its filenames turn up
+  together under one new directory. Only the leftovers fall back to an
+  individual match, and only when that match is unique.
+- **Never adopt a file that already has metadata.** Reconnecting one photo must
+  not overwrite another photo's marks to do it. This is the guard that makes
+  automatic relinking safe enough to run unattended on launch.
+- **A scan never deletes.** Anything unresolved is flagged and rendered as a "?"
+  tile that still carries its full marks. Exactly one path in the app deletes
+  metadata for a missing file, and it is the explicit "Forget" action behind a
+  confirmation.
+
+The other half of the ask was the everyday path: he wanted to move photos *inside*
+FoxCull so this problem does not arise. Dragging a selection onto a folder in the
+left pane already moved the files and their metadata together - that was built
+earlier and worked. What was missing was somewhere to drop them, so the tree can
+now create subfolders, and creating one with files already staged moves them
+straight in.
+
+### Events
+
+The second feature is a virtual collection sitting at the same level as tags -
+"Monar trip", "Rashi's birthday" - and the important word in the request was
+*virtual*. It is emphatically not a folder. The photos stay wherever they are
+filed; the event is metadata, so a trip whose shots are scattered across ten
+subfolders still renders as one block.
+
+Grouping by event was therefore the natural home for it: the grid already
+sections by folder, type and date, and an event is just another section key. Two
+things needed care. Blocks needed to be orderable by name *or* by date in both
+directions, but the grouped sort compares section keys directly and never applies
+the sort direction to them - so the direction is baked into a computed rank
+instead of applied at compare time. And unassigned shots needed to reliably trail
+every real block, which under a numeric collator means parking them at a rank no
+real event can reach.
+
+Visually he asked for something closer to how Google Photos fronts an album than
+to a text header, and he was right that it changes how a long recursive feed
+reads: each event gets a cover band with the frame, the name, the date range and
+the count. The cover is whichever member was chosen with "Use as cover", or the
+first one otherwise.
+
+Events were deliberately left out of the undo stack, like tags' own menu actions.
+The stack snapshots marks, every event action is one menu click to reverse, and
+widening the snapshot shape for this would have been a lot of machinery for very
+little.

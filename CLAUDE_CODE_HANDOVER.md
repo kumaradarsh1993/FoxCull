@@ -1,5 +1,61 @@
 # Agent Handover: FoxCull
 
+## 2026-08-04: v1.4.0 promoted to stable; catalog integrity + Events landed
+
+**v1.4.0 is stable.** The owner called it: nightly.8 resolved the fast-scroll
+freeze in his real work, so the 1.4.0 line shipped as stable with no code change
+over nightly.8 — the tagged commit carries only stable release notes and the
+committed base version bump 1.0.1 → 1.4.0. Do not re-open the freeze
+investigation without new evidence; the disproved theories are listed further
+down this file.
+
+**Two owner-requested features are in `main`, shipped as `v1.5.0-nightly.1` and
+awaiting device QA.** Full ledger:
+`docs/changes/2026-08-04-catalog-integrity-and-events.md`.
+
+1. **Catalog integrity — moving files no longer destroys metadata.** The catalog
+   keys everything by path-relative-to-drive, so a move made in Explorer used to
+   orphan the marks silently. There is now a Lightroom-shaped answer:
+   `catalog_scan` verifies every metadata-carrying entry, auto-relinks what it
+   can, and **flags** the rest as `missing` instead of deleting anything. The
+   relink is cohort-first (a folder that moved is recognised as one move when
+   half its filenames appear together under one new directory), then falls back
+   to a unique filename match. Unresolved entries render as "?" tiles carrying
+   their full marks, with Locate file / Locate folder / Forget on right-click.
+   `forget_missing` is the ONLY path in the app that deletes marks for a missing
+   file — a scan never does. Drag-to-move onto the folder tree (which already
+   moved metadata correctly) is now joined by "New subfolder…".
+2. **Events.** A virtual collection peer to tags, stored in `events` /
+   `event_members`, spanning folders. `Arrange ▸ Group ▸ Event` renders each
+   event as an album-art band (cover, name, date range, count) that holds
+   together across every subfolder in view; `Filters ▸ Event` isolates one.
+   Blocks order by name or earliest capture, ascending or descending.
+
+**Things a next agent should know before touching either:**
+
+- **The scan's cost model is deliberate.** Pass 1 is an existence check over
+  tracked rel-paths only; the library is walked ONLY if something is missing.
+  Do not "optimise" this into an unconditional walk, and do not make the launch
+  scan block the first paint — it runs after the folder is on screen.
+- **`tracked_rels` excludes default-valued decision rows** and the
+  `captures`/`dir_counts` caches on purpose. Merely opening a folder must never
+  manufacture "missing photos" the owner then has to resolve.
+- **A relink never adopts a file that already carries metadata.** Fixing one
+  photo must not overwrite another's marks; that guard is in `catalog_scan`'s
+  `owned` set.
+- **Event block direction is baked into a rank, not applied at compare time.**
+  The grouped sort compares section keys directly and never multiplies by
+  `sortDir` (that is pre-existing behaviour for every grouping), so `eventRank`
+  encodes ascending/descending itself. `NO_EVENT_KEY = "999999"` parks unassigned
+  shots last under the numeric collator.
+- **Events are outside the undo stack**, like tags' menu actions. That is a
+  decision, not a gap — the stack's snapshot shape covers marks only.
+- **Not yet natively verified:** relinking a genuinely moved folder, the "?"
+  tiles, and the cover band's rendering. `cargo check`, `npm run check` and
+  `npm run build` are all clean, and the browser-pane dev server confirmed the
+  new Arrange/Filters controls render and enable/disable correctly, but IPC is
+  inert there. Treat nightly.1 as device-QA pending.
+
 ## 2026-08-03: nightly.8 selector fix — stale focus ring, not two selections
 
 Owner reported that after mouse-clicking a grid photo, the first arrow key moved
