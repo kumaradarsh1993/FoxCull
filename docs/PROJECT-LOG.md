@@ -637,3 +637,53 @@ Events were deliberately left out of the undo stack, like tags' own menu actions
 The stack snapshots marks, every event action is one menu click to reverse, and
 widening the snapshot shape for this would have been a lot of machinery for very
 little.
+
+---
+
+## 2026-08-04 (evening) - the freeze that was a different freeze
+
+The owner clicked `D:\` - by accident, he only meant to expand it - and the whole
+window went "Not Responding" for minutes. Coming days after the 1.4.0 scroll-freeze
+work, the obvious read was "it's back". It wasn't, and the thing that proved it
+took one command: the native `foxcull.exe` was `Responding=False` while every
+WebView2 child process was `Responding=True`. The 1.4.0 freeze had exactly the
+opposite signature - a jammed JavaScript thread with a healthy native process.
+Same word from the user, different bug, and the fingerprint separates them in
+seconds. That is worth more than any amount of reasoning about what "froze" means.
+
+The cause was a threading model, not an algorithm. A synchronous Tauri command
+runs on the main thread, which is also the thread that pumps the window's
+messages, and the folder walk was synchronous. On any real folder that is
+invisible - 8,403 files on `F:\` in 390 ms. On `D:\` it descended into
+`node_modules`, a shared cargo target directory and a Steam library, and took the
+window with it. Nothing was wrong with the walk; it was on the wrong thread, and
+only a pathological folder ever revealed that. Three other commands had the same
+latent defect and were converted at the same time.
+
+Beyond just moving it off the thread, the owner's framing was the useful part: he
+did not ask for it to be fast, he asked for it not to trap him. So the scan is
+now abandonable - click another folder and the old walk is dropped - it reports a
+live file count instead of sitting mute, the activity bar lifts and highlights
+itself while it works, and the scanning screen says in plain words that you can
+go elsewhere. Slow is acceptable when it is honest and you are not stuck in it.
+
+### The audit that should not have found anything
+
+He also asked for a fresh start: delete the `_FoxCull` folder on every drive,
+since he had done no culling and his Trash was empty. He added "unless you think
+something is important". Checking was meant to be a formality.
+
+Two drives were holding real media in their recycle folders with no row in the
+`trash` table: an 18 GB merged Dubai-trip clip on E:, and 22 files on P: of which
+8 were DJI Mavic Mini clips totalling about a gigabyte. None of the originals were
+back on disk. The Trash panel showed nothing because it lists the table, not the
+folder - so the files were invisible, unreachable by Restore, and about to be
+deleted with his blessing, based on a screen that was telling him the truth about
+a database and nothing at all about his disk.
+
+The immediate fix is that the Trash now reconciles the folder against the table
+and adopts whatever it finds, reconstructing where each file came from. But the
+lesson generalises past this panel, and it is the same one behind the catalog
+integrity work earlier the same day: when a view renders a catalog and the user
+reads it as the filesystem, the two have to be reconciled or the view is quietly
+lying. How the rows went missing in the first place is still unproven.

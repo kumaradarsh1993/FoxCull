@@ -130,6 +130,11 @@
   // user can also scroll freely without the active cell being yanked back
   // (we key on activeIndex and read the live DOM scroll, NOT the reactive
   // scrollPos, so manual scrolling doesn't re-trigger this).
+  /// Has this strip been positioned at least once since it mounted? NOT `$state`
+  /// — the effect below both reads and writes it, and as reactive state that
+  /// would re-run the effect against itself (the same trap documented on
+  /// `tilePending` in Thumb.svelte).
+  let positioned = false;
   $effect(() => {
     const i = activeIndex; // the intended reactive trigger
     const el = viewport;
@@ -144,8 +149,23 @@
     if (cellStart < cur + margin) v = cellStart - margin;
     else if (cellEnd > cur + vpMain - margin) v = cellEnd + margin - vpMain;
     v = Math.max(0, Math.min(v, Math.max(0, total - vpMain)));
-    if (Math.abs(v - cur) < 1) return; // already in view — don't move
-    const behavior = matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    if (Math.abs(v - cur) < 1) {
+      positioned = true;
+      return; // already in view — don't move
+    }
+    // A freshly mounted strip starts at scroll 0, so a smooth scroll to photo
+    // 750 visibly REWINDS to the start and races back — every time the strip
+    // reappears (B, Grid → Focus, leaving full screen). Worse, it renders and
+    // requests a thumbnail for every cell it passes over, which is the "it
+    // reloads everything from the beginning" the owner reported.
+    //
+    // Jump instantly for the first placement and for any jump longer than a
+    // viewport; keep the smooth glide for ordinary arrow-key stepping, which is
+    // the only case where the animation is telling you anything.
+    const far = Math.abs(v - cur) > vpMain;
+    const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const behavior = !positioned || far || reduced ? "auto" : "smooth";
+    positioned = true;
     if (orientation === "h") el.scrollTo({ left: v, behavior });
     else el.scrollTo({ top: v, behavior });
   });

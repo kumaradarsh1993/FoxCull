@@ -612,10 +612,51 @@ pub fn list_tree(dir: String) -> Result<Vec<TreeDir>, String> {
     Ok(out)
 }
 
+/// Directories that can never hold the user's photos but CAN hold hundreds of
+/// thousands of files, so walking into them turns "open this drive" into a
+/// multi-minute crawl. Opening `D:\` on the owner's machine hit exactly this:
+/// `node_modules`, a shared cargo target dir and a Steam library between them
+/// dwarf the entire photo collection.
+///
+/// Deliberately conservative — only names that are unambiguously machine-owned.
+/// Anything a person might plausibly have dropped photos in is NOT listed.
+fn is_skippable_dir(lower: &str) -> bool {
+    matches!(
+        lower,
+        "$recycle.bin"
+            | "system volume information"
+            | "node_modules"
+            | "$windows.~ws"
+            | "$windows.~bt"
+            | "windows"
+            | "program files"
+            | "program files (x86)"
+            | "programdata"
+            | "appdata"
+            | "$sysreset"
+            | "recovery"
+            | "steamlibrary"
+            | "steamapps"
+    )
+}
+
 /// Recursively gather media file paths under `dir`. Uses `file_type()` (free on
 /// Windows, no extra stat) and does NOT follow symlinks, so symlink loops can't
 /// hang the walk. Hidden folders (dotfolders) are skipped.
-fn collect(dir: &Path, recursive: bool, out: &mut Vec<(PathBuf, i64, u64)>) {
+///
+/// `tick` is called at every directory with the running file count and returns
+/// `true` to abandon the walk. It carries both jobs deliberately: a folder
+/// switch must abandon an in-flight walk instead of racing it, and a drive-root
+/// walk that runs for minutes must report progress or it looks like a hang.
+fn collect_cancellable(
+    dir: &Path,
+    recursive: bool,
+    out: &mut Vec<(PathBuf, i64, u64)>,
+    tick: &dyn Fn(usize) -> bool,
+) {
+    if tick(out.len()) {
+        return;
+    }
     let rd = match std::fs::read_dir(dir) {
         Ok(r) => r,
         Err(_) => return,
@@ -633,6 +674,7 @@ fn collect(dir: &Path, recursive: bool, out: &mut Vec<(PathBuf, i64, u64)>) {
             if !recursive
                 || dname.starts_with('.')
                 || dname.to_ascii_lowercase().starts_with("_foxcull")
+                || is_skippable_dir(&dname.to_ascii_lowercase())
             {
                 continue;
             }
@@ -648,7 +690,7 @@ fn collect(dir: &Path, recursive: bool, out: &mut Vec<(PathBuf, i64, u64)>) {
                     }
                 }
             }
-            collect(&entry.path(), true, out);
+            collect_cancellable(&entry.path(), true, out, tick);
         } else if ft.is_file() {
             // Skip dotfiles (macOS "._*" AppleDouble sidecars on shared
             // exFAT/NTFS drives look like media by extension but aren't).
@@ -670,6 +712,11 @@ fn collect(dir: &Path, recursive: bool, out: &mut Vec<(PathBuf, i64, u64)>) {
             }
         }
     }
+}
+
+/// Uncancellable convenience wrapper for callers with a bounded walk.
+fn collect(dir: &Path, recursive: bool, out: &mut Vec<(PathBuf, i64, u64)>) {
+    collect_cancellable(dir, recursive, out, &|_| false);
 }
 
 /// Recursively count media files under `dir` (extension classification only — no
@@ -818,8 +865,20 @@ pub fn list_drives() -> Vec<TreeDir> {
 /// with stored culling decisions joined in via a single catalog query. Folders
 /// are excluded — the tree handles navigation. This is the import path; it only
 /// enumerates paths (no decode), so even a 10k-image year folder returns quickly.
+/// **`async` is load-bearing, not decoration.** Tauri runs a *synchronous*
+/// command on the main thread — the same thread that pumps the native window's
+/// messages. This walk used to be synchronous, which was invisible on a normal
+/// folder (390 ms for 8,403 files) and catastrophic on a drive root: opening
+/// `D:\` sent it into `node_modules`, a shared cargo target dir and a Steam
+/// library, and the window went "Not Responding" for minutes with the app
+/// otherwise healthy (`foxcull.exe Responding=False` while every WebView2
+/// process stayed responsive — that asymmetry is the fingerprint).
+///
+/// The walk now runs on a blocking worker and is cancelled by a folder switch,
+/// so no folder can ever freeze the window again.
 #[tauri::command]
-pub fn list_folder_media(
+pub async fn list_folder_media(
+    app: AppHandle,
     state: State<'_, AppState>,
     catalog: State<'_, Catalog>,
     dir: String,
@@ -831,12 +890,64 @@ pub fn list_folder_media(
     }
     // Cancel any in-flight warming for the folder we're leaving, so a rapid
     // folder switch can't leave two warm floods thrashing the disk at once.
-    state.warm_gen.fetch_add(1, Ordering::SeqCst);
+    // The same generation doubles as this walk's cancellation token: the NEXT
+    // folder open bumps it, and this walk notices and abandons itself.
+    let my_gen = state.warm_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let root = state.root.lock().clone();
 
     let t0 = Instant::now();
-    let mut paths: Vec<(PathBuf, i64, u64)> = Vec::new();
-    collect(p, recursive, &mut paths);
+    let walk_dir = p.to_path_buf();
+    let gen_handle = state.warm_gen.clone();
+    let scan_label = format!(
+        "Scanning {}",
+        p.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| dir.clone())
+    );
+    let app_for_walk = app.clone();
+    let label_for_walk = scan_label.clone();
+    let paths: Vec<(PathBuf, i64, u64)> = tauri::async_runtime::spawn_blocking(move || {
+        let mut out: Vec<(PathBuf, i64, u64)> = Vec::new();
+        // A drive-root walk can run for minutes. Report a live file count so the
+        // activity chip proves the app is working rather than wedged — this is
+        // the only feedback the user gets while the folder is still empty.
+        // `Cell` because the walker takes a `Fn`, not a `FnMut`.
+        let last_tick = std::cell::Cell::new(Instant::now());
+        let announced = std::cell::Cell::new(false);
+        collect_cancellable(&walk_dir, recursive, &mut out, &|found| {
+            if gen_handle.load(Ordering::SeqCst) != my_gen {
+                return true;
+            }
+            if last_tick.get().elapsed().as_millis() >= 400 {
+                last_tick.set(Instant::now());
+                announced.set(true);
+                emit_activity(
+                    &app_for_walk,
+                    "scan-folder",
+                    &format!("{label_for_walk} — {found} files"),
+                    0,
+                    0, // indeterminate: the total is unknowable until we finish
+                    "running",
+                );
+            }
+            false
+        });
+        if announced.get() {
+            emit_activity(&app_for_walk, "scan-folder", &label_for_walk, 1, 1, "done");
+        }
+        out
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    // Abandoned mid-walk because the user moved on — return nothing rather than
+    // a half-scanned folder the frontend would render as the truth. The frontend
+    // discards it anyway (it guards on the folder still being current), but a
+    // partial list must never leave this function looking authoritative.
+    if state.warm_gen.load(Ordering::SeqCst) != my_gen {
+        emit_activity(&app, "scan-folder", &scan_label, 1, 1, "done");
+        crate::log::line(&format!("SCAN cancelled dir={dir:?} after {}ms", t0.elapsed().as_millis()));
+        return Ok(Vec::new());
+    }
     let walk_ms = t0.elapsed().as_millis();
     let file_count = paths.len();
 
@@ -947,14 +1058,22 @@ pub fn list_folder_media(
 /// Edit-mode source browser: videos plus audio tracks from the current folder.
 /// This intentionally stays separate from Library mode so music files do not
 /// become culling items.
+/// `async` for the same reason as `list_folder_media`: a synchronous command
+/// runs on the main thread, and this is an unbounded recursive walk.
 #[tauri::command]
-pub fn list_edit_sources(dir: String, recursive: bool) -> Result<Vec<EditSourceItem>, String> {
+pub async fn list_edit_sources(dir: String, recursive: bool) -> Result<Vec<EditSourceItem>, String> {
     let p = Path::new(&dir);
     if !p.is_dir() {
         return Err(format!("not a directory: {dir}"));
     }
-    let mut paths: Vec<(PathBuf, i64, u64)> = Vec::new();
-    collect_edit_sources(p, recursive, &mut paths);
+    let walk_dir = p.to_path_buf();
+    let paths: Vec<(PathBuf, i64, u64)> = tauri::async_runtime::spawn_blocking(move || {
+        let mut out: Vec<(PathBuf, i64, u64)> = Vec::new();
+        collect_edit_sources(&walk_dir, recursive, &mut out);
+        out
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     let mut items: Vec<EditSourceItem> = paths
         .into_iter()
         .map(|(path, mtime, size)| {
@@ -3147,108 +3266,122 @@ pub struct MoveOutcome {
     pub errors: Vec<String>,
 }
 
+/// `async` + a blocking worker: dragging a thousand photos onto a folder is N
+/// filesystem moves, and a synchronous Tauri command would run every one of them
+/// on the main thread and hang the window (see `list_folder_media`).
 #[tauri::command]
-pub fn move_media_files(
+pub async fn move_media_files(
     state: State<'_, AppState>,
     catalog: State<'_, Catalog>,
     paths: Vec<String>,
     dest: String,
-) -> MoveOutcome {
+) -> Result<MoveOutcome, String> {
     let root_state = state.root.lock().clone();
     let root = match canonical_active_root(&root_state) {
         Ok(r) => r,
         Err(e) => {
-            return MoveOutcome {
+            return Ok(MoveOutcome {
                 moved: 0,
                 dest,
                 files: Vec::new(),
                 failed: paths,
                 errors: vec![e],
-            }
+            })
         }
     };
     let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
     let dest_dir = match validate_active_dir(&root, lib.as_ref(), &dest) {
         Ok(d) => d,
         Err(e) => {
-            return MoveOutcome {
+            return Ok(MoveOutcome {
                 moved: 0,
                 dest,
                 files: Vec::new(),
                 failed: paths,
                 errors: vec![e],
-            }
+            })
         }
     };
     let cache_dir = state.cache_dir.lock().clone();
-    let mut out = MoveOutcome {
-        moved: 0,
-        dest: dest_dir.to_string_lossy().to_string(),
-        files: Vec::new(),
-        failed: Vec::new(),
-        errors: Vec::new(),
-    };
-    let mut catalog_moves: Vec<(String, String)> = Vec::new();
-    let mut seen = HashSet::new();
 
-    for p in paths {
-        if !seen.insert(p.clone()) {
-            continue;
-        }
-        let src = match validate_active_media_file(&root, lib.as_ref(), &p) {
-            Ok(src) => src,
-            Err(e) => {
-                out.failed.push(p);
-                out.errors.push(e);
+    // Everything below touches the disk once per file; it runs on a blocking
+    // worker so a big selection can't wedge the window.
+    let (out, catalog_moves) = tauri::async_runtime::spawn_blocking(move || {
+        let mut out = MoveOutcome {
+            moved: 0,
+            dest: dest_dir.to_string_lossy().to_string(),
+            files: Vec::new(),
+            failed: Vec::new(),
+            errors: Vec::new(),
+        };
+        let mut catalog_moves: Vec<(String, String)> = Vec::new();
+        let mut seen = HashSet::new();
+
+        for p in paths {
+            if !seen.insert(p.clone()) {
                 continue;
             }
-        };
-        if src.parent() == Some(dest_dir.as_path()) {
-            out.failed.push(src.to_string_lossy().to_string());
-            out.errors.push("file is already in that folder".into());
-            continue;
-        }
-        let Some(name) = src.file_name() else {
-            out.failed.push(src.to_string_lossy().to_string());
-            out.errors.push("file has no filename".into());
-            continue;
-        };
-        let target = uniquify(dest_dir.join(name));
-        let caches = cache_files_for(&cache_dir, &src.to_string_lossy());
-        let moved = std::fs::rename(&src, &target).is_ok() || {
-            // Cross-volume fallback: copy, then remove the source. If the
-            // source removal fails the "move" must not leave a stray duplicate
-            // at the destination — delete the copy before reporting failure.
-            let copied = std::fs::copy(&src, &target).is_ok();
-            let removed = copied && std::fs::remove_file(&src).is_ok();
-            if copied && !removed {
-                let _ = std::fs::remove_file(&target);
+            let src = match validate_active_media_file(&root, lib.as_ref(), &p) {
+                Ok(src) => src,
+                Err(e) => {
+                    out.failed.push(p);
+                    out.errors.push(e);
+                    continue;
+                }
+            };
+            if src.parent() == Some(dest_dir.as_path()) {
+                out.failed.push(src.to_string_lossy().to_string());
+                out.errors.push("file is already in that folder".into());
+                continue;
             }
-            removed
-        };
-        if moved {
-            for c in caches {
-                let _ = std::fs::remove_file(c);
+            let Some(name) = src.file_name() else {
+                out.failed.push(src.to_string_lossy().to_string());
+                out.errors.push("file has no filename".into());
+                continue;
+            };
+            let target = uniquify(dest_dir.join(name));
+            let caches = cache_files_for(&cache_dir, &src.to_string_lossy());
+            let moved = std::fs::rename(&src, &target).is_ok() || {
+                // Cross-volume fallback: copy, then remove the source. If the
+                // source removal fails the "move" must not leave a stray
+                // duplicate at the destination — delete the copy before
+                // reporting failure.
+                let copied = std::fs::copy(&src, &target).is_ok();
+                let removed = copied && std::fs::remove_file(&src).is_ok();
+                if copied && !removed {
+                    let _ = std::fs::remove_file(&target);
+                }
+                removed
+            };
+            if moved {
+                for c in caches {
+                    let _ = std::fs::remove_file(c);
+                }
+                let from_rel = rel_under(&root, &src);
+                let to_rel = rel_under(&root, &target);
+                catalog_moves.push((from_rel, to_rel));
+                out.moved += 1;
+                out.files.push(MoveRecord {
+                    from: src.to_string_lossy().to_string(),
+                    to: target.to_string_lossy().to_string(),
+                });
+            } else {
+                out.failed.push(src.to_string_lossy().to_string());
+                out.errors.push("move failed".into());
             }
-            let from_rel = rel_under(&root, &src);
-            let to_rel = rel_under(&root, &target);
-            catalog_moves.push((from_rel, to_rel));
-            out.moved += 1;
-            out.files.push(MoveRecord {
-                from: src.to_string_lossy().to_string(),
-                to: target.to_string_lossy().to_string(),
-            });
-        } else {
-            out.failed.push(src.to_string_lossy().to_string());
-            out.errors.push("move failed".into());
         }
-    }
+        (out, catalog_moves)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut out = out;
     if !catalog_moves.is_empty() {
         if let Err(e) = catalog.move_media_entries(&catalog_moves) {
             out.errors.push(format!("catalog update failed: {e}"));
         }
     }
-    out
+    Ok(out)
 }
 
 // ── folder management (Lightroom-style: the app owns the moves) ─────────────
@@ -4076,8 +4209,56 @@ pub struct TrashItem {
 /// Everything in the active drive's Trash, most recently rejected first. Prunes
 /// rows whose file has vanished (e.g. emptied outside the app).
 #[tauri::command]
-pub fn list_trash(state: State<'_, AppState>, catalog: State<'_, Catalog>) -> Vec<TrashItem> {
+pub async fn list_trash(
+    state: State<'_, AppState>,
+    catalog: State<'_, Catalog>,
+) -> Result<Vec<TrashItem>, String> {
     let recycle = state.recycle_dir.lock().clone();
+
+    // ── adopt orphans before listing ────────────────────────────────────────
+    // Files can end up in the per-drive recycle folder with no `trash` row —
+    // a catalog reset or a lost write is enough. The consequence is severe and
+    // silent: the Trash panel shows nothing, Restore can't reach them, and the
+    // files sit there consuming disk forever while the user is told the Trash
+    // is empty. That is how an 18 GB merged clip and a gigabyte of drone
+    // footage went unaccounted for on this machine.
+    //
+    // The recycle layout mirrors the original rel-path (`stored == orig` for
+    // every row FoxCull writes), so an orphan can be reconstructed exactly:
+    // its position under `recycle/` IS where it came from. Adopting it makes it
+    // visible and restorable — never deleted, just accounted for.
+    let recycle_for_scan = recycle.clone();
+    let known: HashSet<String> = catalog
+        .list_trash()
+        .into_iter()
+        .map(|r| r.stored.to_lowercase())
+        .collect();
+    let adopted: Vec<(String, String, String, i64)> =
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut found: Vec<(PathBuf, i64, u64)> = Vec::new();
+            collect(&recycle_for_scan, true, &mut found);
+            found
+                .into_iter()
+                .filter_map(|(path, mtime, _)| {
+                    let rel = rel_under(&recycle_for_scan, &path);
+                    if rel.is_empty() || known.contains(&rel.to_lowercase()) {
+                        return None;
+                    }
+                    let name = rel_name(&rel).to_string();
+                    Some((rel.clone(), rel, name, mtime))
+                })
+                .collect()
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    if !adopted.is_empty() {
+        crate::log::line(&format!(
+            "TRASH adopted {} orphaned file(s) from the recycle folder",
+            adopted.len()
+        ));
+        let _ = catalog.add_trash_many(&adopted);
+    }
+
     let mut stale: Vec<String> = Vec::new();
     let items: Vec<TrashItem> = catalog
         .list_trash()
@@ -4108,7 +4289,7 @@ pub fn list_trash(state: State<'_, AppState>, catalog: State<'_, Catalog>) -> Ve
     if !stale.is_empty() {
         catalog.remove_trash(&stale);
     }
-    items
+    Ok(items)
 }
 
 #[derive(Serialize)]
@@ -4268,10 +4449,22 @@ pub fn reveal(app: AppHandle, path: String) -> Result<(), String> {
         if p.is_file() {
             use std::os::windows::process::CommandExt;
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            // One argument, comma-joined — explorer.exe parses its own command
-            // line and wants `/select,<path>` as a single token.
+            // explorer.exe parses its OWN command line and splits `/select,…` on
+            // spaces, so an unquoted path with a space silently loses everything
+            // after it and Explorer falls back to opening Documents. That is
+            // exactly what "Show in Explorer" did on
+            // `P:\All media MASTER\Pics\2010\…` — it looked like the external
+            // drive was unsupported; the real trigger was the space in the
+            // folder name, and it would have failed identically on any drive.
+            //
+            // The path therefore has to be quoted INSIDE the single `/select,`
+            // token. `raw_arg` is required to do that: `arg()` applies Rust's
+            // own MSVC-style quoting on top, producing a doubly-quoted token
+            // Explorer rejects the same way. Backslashes are forced because
+            // Explorer will not accept a forward-slash path here.
+            let native = p.to_string_lossy().replace('/', "\\");
             return std::process::Command::new("explorer.exe")
-                .arg(format!("/select,{}", p.display()))
+                .raw_arg(format!("/select,\"{native}\""))
                 .creation_flags(CREATE_NO_WINDOW)
                 .spawn()
                 // explorer.exe exits non-zero even when it worked, so only the

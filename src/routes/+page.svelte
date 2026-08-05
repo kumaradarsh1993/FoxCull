@@ -1215,10 +1215,16 @@
     }
   }
 
+  /** Bumped by every folder open. A scan of a huge tree (a whole drive root)
+   *  can take minutes, so the user must be free to click elsewhere meanwhile —
+   *  the backend abandons the superseded walk, and this guard makes sure a late
+   *  reply from it can never overwrite the folder they actually landed on. */
+  let openGen = 0;
   async function openFolder(
     dir: string,
     opts: { selectPath?: string | null; selectIndex?: number } = {},
   ) {
+    const gen = ++openGen;
     currentDir = dir;
     loading = true;
     resetThumbs();
@@ -1228,14 +1234,18 @@
     capturesDir = null;
     try {
       libInfo = await api.setLibraryRoot(rootForDir(dir));
-      items = await api.listFolderMedia(dir, settings.s.includeSub);
+      const found = await api.listFolderMedia(dir, settings.s.includeSub);
+      if (gen !== openGen) return; // superseded — the newer open owns the view
+      items = found;
       folderRefreshKey++;
       writable = await api.folderWritable(dir);
     } catch (e) {
+      if (gen !== openGen) return;
       items = [];
       folderRefreshKey++;
       console.error(e);
     }
+    if (gen !== openGen) return;
     // Land on the requested photo (restore on launch) or index (stay put after a
     // delete), else the top.
     let idx = 0;
@@ -3881,7 +3891,17 @@
         }}
       >
         {#if loading}
-          <div class="welcome"><p>Scanning {currentDir ? basename(currentDir) : ""}…</p></div>
+          <!-- A drive root can take minutes to walk. Echo the backend's live
+               file count here as well as in the activity chip, and say plainly
+               that the folder tree still works — the freeze that wasn't a
+               freeze was mostly a communication failure. -->
+          <div class="welcome scanning">
+            <p class="scanTitle">Scanning {currentDir ? basename(currentDir) : ""}…</p>
+            {#if activity.jobs["scan-folder"]?.state === "running"}
+              <p class="scanCount">{activity.jobs["scan-folder"].label}</p>
+              <p class="scanHint">Big folder. You can pick a different folder on the left at any time — this scan will be dropped.</p>
+            {/if}
+          </div>
         {:else if !currentDir}
           <div class="welcome">
             <div class="welcomeMark"><img class="wIcon" src="/favicon.png" alt="" width="74" height="74" /></div>
@@ -4610,6 +4630,10 @@
 
   .welcome { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--text-dim); text-align: center; padding: 24px; }
   .welcome h1 { font-size: 28px; margin: 0; }
+  .welcome.scanning { gap: 7px; }
+  .scanTitle { margin: 0; font-size: 15px; color: var(--text); }
+  .scanCount { margin: 0; font-size: 12.5px; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .scanHint { margin: 4px 0 0; font-size: 12px; max-width: 380px; color: var(--text-faint); line-height: 1.5; }
   .welcome .wIcon { border-radius: 16px; opacity: 0.95; }
   .welcome kbd {
     display: inline-block;

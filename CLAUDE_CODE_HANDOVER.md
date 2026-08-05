@@ -1,5 +1,55 @@
 # Agent Handover: FoxCull
 
+## 2026-08-04 (evening): the main-thread hang, and ~19 GB of invisible Trash
+
+Shipped as `v1.5.0-nightly.2`. Ledger:
+`docs/changes/2026-08-04-main-thread-hang-filmstrip-explorer.md`.
+
+**THE RULE THIS SESSION ESTABLISHED: a Tauri command that touches the filesystem
+must be `async`.** A *synchronous* Tauri command runs on the main thread — the
+same thread that pumps the native window's messages. `list_folder_media` was
+sync, and clicking `D:\` (into `node_modules`, a cargo target dir and a Steam
+library) hung the window for minutes. `list_edit_sources`, `move_media_files` and
+`list_trash` had the same latent defect and were converted too. Before writing a
+new command here, ask whether its worst case is bounded; if not, it is `async` +
+`spawn_blocking`.
+
+**The diagnostic that settled it in one command**, worth reusing:
+`foxcull.exe Responding=False` while every `msedgewebview2.exe` child was
+`Responding=True`. That asymmetry rules out the webview and the GPU and points
+straight at the native message pump — the opposite of the 1.4.0 freeze, which was
+a blocked *JS* main thread. Do not assume a new "freeze" is the old one.
+
+**⚠️ UNRESOLVED, NEEDS THE OWNER'S DECISION: ~19 GB of his media is sitting in
+per-drive recycle folders with no `trash` row**, so the Trash panel showed
+nothing and he believed his Trash was empty *while asking to delete the
+`_FoxCull` folders for a fresh start*. **Nothing has been deleted.** Audit:
+
+| Drive | `_FoxCull` | trash rows | files in `recycle/` |
+|---|---|---|---|
+| D: | 24 MB | 0 | 0 — safe to delete |
+| E: | **18,051 MB** | 0 | **1**: an 18 GB merged Dubai-trip MP4, untracked |
+| F: | 127 MB | 0 | 0 — safe to delete |
+| P: | **1,161 MB** | 14 | **22**: 14 tracked (Jan-2022) + 8 untracked DJI clips |
+
+None of the originals are back on disk. `list_trash` now **adopts** orphans so
+they are visible and restorable (the recycle layout mirrors the original
+rel-path, so `stored == orig` reconstructs the restore target exactly). The
+fresh start must not proceed on E: or P: until he has looked at them.
+
+**Root cause of the orphaning is not yet established.** A catalog reset is the
+leading theory (there is a `FoxCullLibraryResetBackup-*` folder on D:), i.e. the
+`trash` rows were lost while the files stayed. If a code path can strand files
+in `recycle/` without a row, it is still there — worth an audit of
+`dispose_rejected`'s failure modes.
+
+Also fixed: the filmstrip rewound to photo 1 and raced back every time it
+appeared (smooth `scrollTo` from a freshly mounted strip's `scrollLeft = 0`);
+and "Show in Explorer" opened `OneDrive\Documents` for any path containing a
+space — Explorer splits its own command line, so the path must be quoted INSIDE
+the `/select,` token via `raw_arg`. Both directions were verified by execution,
+reading Explorer's real location back through `Shell.Application`.
+
 ## 2026-08-04: v1.4.0 promoted to stable; catalog integrity + Events landed
 
 **v1.4.0 is stable.** The owner called it: nightly.8 resolved the fast-scroll

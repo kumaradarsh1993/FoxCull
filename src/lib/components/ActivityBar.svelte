@@ -28,7 +28,11 @@
 </script>
 
 {#if jobs.length}
-  <div class="act">
+  <!-- `busy` lifts the whole chip while work is in flight. The bar sits in the
+       quietest corner of the app by design, which is right when it is idle and
+       wrong when the user is waiting on it — a long folder scan has to look
+       like something is happening, then settle back down. -->
+  <div class="act" class:busy={running.length > 0}>
     <button
       class="main"
       onclick={() => (expanded = !expanded)}
@@ -77,6 +81,18 @@
     border-top: 1px solid var(--border-soft);
     background: color-mix(in srgb, var(--bg-panel) 94%, transparent);
     flex: 0 0 auto;
+    transition: background 260ms ease, border-color 260ms ease;
+  }
+  .act.busy {
+    border-top-color: color-mix(in srgb, var(--accent) 55%, transparent);
+    background: color-mix(in srgb, var(--accent) 9%, var(--bg-panel));
+  }
+  .act.busy .lbl {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .act.busy .num {
+    color: var(--text-dim);
   }
   .main {
     display: flex;

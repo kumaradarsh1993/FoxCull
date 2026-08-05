@@ -179,3 +179,54 @@ distinct block with a feature photo.
 - **Events stay out of the undo stack**, like tags' own add/remove menu entries.
   The stack's snapshot shape covers marks only, and every event action is one
   menu click to reverse.
+
+---
+
+## 2026-08-04 · A Tauri command that touches the filesystem is `async`, always
+
+**Question:** why did clicking `D:\` hang the whole window for minutes, when the
+same code opened an 8,403-file folder on `F:\` in 390 ms?
+
+**Decided:** because a *synchronous* Tauri command runs on the **main thread**,
+which is the thread that pumps the native window's messages. The walk and the
+window are the same thread, so a slow walk is a dead window. Nothing about the
+code was wrong on a normal folder; the threading model only shows up at the tail.
+
+- Every command whose worst case is unbounded — a recursive walk, N file moves,
+  anything on a removable drive — is `async` + `spawn_blocking`. The bounded ones
+  (a single `read_dir`, a catalog query) may stay synchronous.
+- Long work must also be **cancellable and superseded-safe**. `warm_gen` is
+  bumped on every folder open and now doubles as the walk's cancellation token;
+  the frontend additionally guards on an `openGen` counter so a late reply from
+  an abandoned scan can never overwrite the folder the user actually landed on.
+- **Diagnostic worth keeping:** `foxcull.exe Responding=False` while every
+  `msedgewebview2.exe` child is `Responding=True` means the NATIVE pump is
+  blocked. The 1.4.0 freeze had the opposite signature (a blocked JS main thread,
+  native process healthy). Two different bugs with the same user-facing word.
+
+---
+
+## 2026-08-04 · The in-app Trash adopts orphans instead of ignoring them
+
+**Question:** the owner asked to delete every `_FoxCull` folder for a fresh
+start, having checked the Trash and found it empty. Was that safe?
+
+**No.** ~19 GB of his media was sitting in the per-drive recycle folders with no
+`trash` row — an 18 GB merged Dubai clip on E:, and 8 DJI Mavic Mini clips on P:.
+The Trash panel showed nothing because it lists the table, not the folder, so the
+files were invisible, unrestorable, and about to be deleted on his say-so.
+
+**Decided:** `list_trash` reconciles the folder against the table and **adopts**
+anything it finds, rather than treating the table as the sole truth. The recycle
+layout mirrors the original rel-path (`stored == orig` for every row FoxCull
+writes), so an orphan's position under `recycle/` reconstructs its restore target
+exactly. Adoption never deletes; it only makes a file accountable.
+
+The general principle, which is the same one behind `catalog_scan`: **where the
+filesystem and the catalog disagree, surface the discrepancy — never let the
+catalog's silence stand in for the filesystem's contents.** A panel that renders
+a table is telling you about the table; if the user reads it as "what is on
+disk", the two had better be reconciled.
+
+Root cause of the orphaning is unproven (a catalog reset is the leading theory).
+Until it is, adoption is the safety net rather than the fix.
