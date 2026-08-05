@@ -1,68 +1,47 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
-Your feedback on the last nightly, worked through — plus a data bug your
-"phantom missing file" report turned out to be hiding.
+Both things you called out on nightly.4, fixed.
 
-## Events are now a banner inside the timeline
+## The Trash is a real folder now
 
-You were right that the album-style blocks were heavier than you wanted. Events
-no longer reorder anything. Your date order stays the spine, and an event paints
-as a continuous coloured bar down the left of exactly the rows its photos occupy
-— where it ends mid-row, the next photos simply carry on.
+`FoxCull Trash` sits at the root of each drive, visible in the folder tree like
+anything else. Click it and you get the **normal grid** — thumbnails, file sizes,
+sorting, Focus view, full playback. So you can actually watch the clip before
+deciding whether it deserved deleting.
 
-- Turn it on at **Arrange ▸ Events ▸ Show event banners**.
-- It **disables itself** when you sort by name, size or type. A "continuous" bar
-  only means something along a time axis.
-- The colour comes from the event's name, so the same trip is the same colour in
-  every folder, every session.
-- A bar crossing a month header splits into two bands — the separator wins and
-  the event resumes underneath.
-- The old block view with cover art is still there under **Group ▸ Event** if you
-  ever want the album read.
+- **The popup window is gone.** Restore and Delete permanently are right-click
+  actions inside the folder.
+- Where each file came from shows in the info bar (`🗑 from …`) and in the
+  right-click menu.
+- It's flat — no twenty-deep folder tree to click through for three rejects.
+- Trashed files never leak back into the library: the folder is skipped when
+  scanning a parent, and only listed when you open it directly.
 
-**Events now behave like tags**: remove the last photo from one and it's gone,
-from the menu, the filter and the manage list. That's why "Dubai" kept appearing
-after you'd emptied it — it was a real record with no photos, and the list could
-only ever grow.
+**Your existing trash moves itself on first launch, per drive.** Same volume, so
+it's an instant rename even for the 18 GB clip — nothing is copied and nothing is
+deleted. The orphaned files that had no Trash entry get one on the way, so the
+~19 GB on E: and P: becomes visible and restorable.
 
-## Tags: removing is finally a bulk action
+There's also a small `_trash-index.json` in the folder recording where everything
+came from. That's the belt-and-braces fix for how those orphans happened: even if
+the catalog is lost again, the files still know where they belong.
 
-Adding a tag worked on a selection; removing only ever worked on one photo. Now
-the bar shows the tags **every** selected photo has, and × removes it from all of
-them.
+## The event banner — why you never saw it
 
-## Clear metadata is one checklist
+Not a rendering bug. Your saved settings had `Group by: Event` and `Sort by:
+Name`. The first kept you on the old cover-art blocks; the second suppressed the
+banner, which needs a time order to mean anything. Nothing on screen told you.
 
-Instead of six one-shot menu items that each closed the menu, **Clear ▸ Choose
-what to clear…** (also on right-click) opens a dialog with tick boxes for stars,
-colour labels, pick/reject, tags and events, applied in one pass. Boxes come
-pre-ticked for whatever the selection actually has.
+That's my fault for keeping both modes. **The event grouping is now removed** —
+events are only the banner. Your settings migrate automatically: the grouping is
+cleared and you're switched to capture-date order, which is where the banner
+actually draws.
 
-## You can now find a missing file
-
-"1 file missing · Re-check" told you a number and nothing else. It's now a button
-that lists them with their old paths — click one and it takes you to the folder,
-where its "?" tile is waiting with Locate and Forget.
-
-## …which uncovered a real bug
-
-That phantom missing file on E: was never on E:. **The first visit to a new drive
-was cloning the previously-open drive's catalog.** Since marks are keyed by path
-relative to the drive root, every cloned row described a file that had never
-existed there — so a single trim on a video that lives on F: made both D: and E:
-permanently claim a missing file. All three drives were also carrying the same
-7,254-entry cache.
-
-New drives now start empty. Existing clones on D: and E: are cleared by the hard
-reset we discussed.
-
-## Smaller
-
-- The duplicate FoxCull icon and name under the title bar is gone; the sidebar
-  header is just actions now.
-- That "double border" you asked about is deliberate — the outer ring marks the
-  **active** photo (the one keys act on) within a wider selection. I've left it.
+- If a sort ever makes it impossible again, the Arrange panel now says so with a
+  one-click fix.
+- Creating a new event turns the banner on and switches sort if needed, so you
+  see the result immediately.
 
 ---
 

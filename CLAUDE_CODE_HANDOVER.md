@@ -1,5 +1,51 @@
 # Agent Handover: FoxCull
 
+## 2026-08-05: the visible Trash, and the settings trap that hid the event banner
+
+Shipped as `v1.5.0-nightly.5`. Ledger:
+`docs/changes/2026-08-05-visible-trash-and-event-rail-migration.md`.
+
+**Two "you didn't build it" reports, and both were fair.**
+
+**1. The event banner was invisible because of a decision, not a bug.** Reading
+the owner's `foxcull-settings.json` explained it in one look: `groupBy: "event"`
+(so he still got the old cover-art blocks) plus `sortBy: "name"` (so
+`eventRailPossible` was false and the banner was suppressed, silently). The cause
+was mine — he asked for the banner *instead of* the blocks and I kept both "for
+when you want the album read". **Optionality nobody asked for pinned an upgrading
+user to the old behaviour.** The grouping mode is now deleted outright, and a
+stored `groupBy: "event"` migrates to `groupBy: "none"` **AND** `sortBy:
+"capture"` — mapping only the grouping would have left him on a plain grid with
+the feature still off, i.e. the same dead end one step later. When a sort makes
+the banner impossible the Arrange row now says so with a one-click fix.
+
+**2. The Trash rework had been held for the wrong reason.** I conflated "do not
+delete his 19 GB" (right) with "do not change the mechanism" (wrong — he had
+asked for it explicitly). Built now:
+- `<drive>\FoxCull Trash`, visible at the drive root, **flat**, browsed as a
+  normal folder — full grid, sizes, sorting, playback. `TrashPanel.svelte` is
+  deleted; Restore / Delete permanently are right-click actions in the folder.
+- Skipped when walking a *parent* so trashed files never leak into the library;
+  opening it directly still lists it, because the walk starts at the opened dir.
+- `_trash-index.json` beside the files mirrors `stored -> orig` and is rewritten
+  on every dispose/restore/purge/adoption. **This is the structural fix for the
+  orphan class**: a flat folder loses the positional provenance the mirrored tree
+  encoded, so the sidecar carries it, and unlike the catalog it travels with the
+  files.
+- `migrate_recycle` relocates an existing `_FoxCull\recycle` on library
+  activation: rename-only (same volume, so the 18 GB clip is instant), re-keys
+  catalog rows to flat names, and adopts orphans using their old mirrored
+  position as their origin. Nothing is deleted.
+
+**NEEDS DEVICE QA, and this one matters:** the migration moves ~19 GB across E:
+and P: on first launch per drive. It is rename-only and never deletes, but it has
+not been exercised against those volumes.
+
+**Still blocked on the owner:** the hard reset, and the CLI adapter for the
+external agent (design in `docs/EVENTS-MOVES-AND-RELINK.md` §5). The orphaned
+trash is no longer "blocked" — it becomes visible and restorable on migration, so
+he can review it in the app and decide.
+
 ## 2026-08-04 (night): event banners, bulk clear, and a catalog CLONE bug
 
 Shipped as `v1.5.0-nightly.4`. Ledger:

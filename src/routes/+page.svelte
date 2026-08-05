@@ -24,7 +24,6 @@
   import VirtualStrip from "$lib/components/VirtualStrip.svelte";
   import DetailsView from "$lib/components/DetailsView.svelte";
   import ContextMenu, { type MenuEntry } from "$lib/components/ContextMenu.svelte";
-  import TrashPanel from "$lib/components/TrashPanel.svelte";
   import ActivityBar from "$lib/components/ActivityBar.svelte";
   import EditStudio from "$lib/components/EditStudio.svelte";
   import ControllerPanel from "$lib/components/ControllerPanel.svelte";
@@ -399,8 +398,27 @@
     return () => clearInterval(poll);
   });
   let libInfo = $state<LibraryInfo | null>(null);
-  let trashOpen = $state(false);
+  // The Trash is a real, visible folder now (`<drive>\FoxCull Trash`), so it is
+  // browsed like any other: full grid, thumbnails, size, sorting, playback. The
+  // old modal that listed names and nothing else is gone. These rows only carry
+  // the provenance the filesystem can't (where each file came from).
   let trashItems = $state<TrashItem[]>([]);
+  // Inlined rather than using `samePath` — that helper is declared further down
+  // and a $derived reads at declaration order.
+  let inTrashFolder = $derived(
+    !!libInfo &&
+      !!currentDir &&
+      currentDir.replace(/[\\/]+$/, "").toLowerCase() ===
+        libInfo.recycle.replace(/[\\/]+$/, "").toLowerCase(),
+  );
+  let trashByName = $derived(
+    new Map(trashItems.map((t) => [t.stored.toLowerCase(), t])),
+  );
+  /** The trash row for a media item, when we're browsing the Trash folder. */
+  function trashRowFor(it: MediaItem): TrashItem | undefined {
+    if (!inTrashFolder) return undefined;
+    return trashByName.get(basename(it.path).toLowerCase());
+  }
   let controllerOpen = $state(false);
   let padHelpOpen = $state(false);
   let shortcutsOpen = $state(false);
@@ -487,87 +505,9 @@
   // number of directories, so the block it forms in the grid stays whole no
   // matter how the shots are filed on disk. An item may belong to several; the
   // FIRST one it joined is its primary and decides which block it sits in.
-  const NO_EVENT_LABEL = "No event";
-  /** Sort rank parked past any real event so unassigned shots trail the blocks.
-   *  Numeric because the section collator compares numerically. */
-  const NO_EVENT_KEY = "999999";
-
   const eventOf = (it: MediaItem) => it.events[0] ?? null;
 
-  type EventStat = {
-    count: number;
-    first: number;
-    last: number;
-    /** The member explicitly chosen as cover, if it is in this view. */
-    cover: MediaItem | null;
-    /** Fallback cover: the first real (non-missing) member encountered. */
-    firstShot: MediaItem | null;
-  };
-
-  /** Per-event facts for the block headers, over the whole loaded folder (not
-   *  the filtered view) so an event's cover and date range don't jump around as
-   *  filters are toggled. */
-  let eventStats = $derived.by(() => {
-    const coverRel = new Map(allEvents.map((e) => [e.name, e.cover_rel]));
-    const out = new Map<string, EventStat>();
-    for (const it of items) {
-      for (const name of it.events) {
-        let s = out.get(name);
-        if (!s) {
-          s = { count: 0, first: Infinity, last: -Infinity, cover: null, firstShot: null };
-          out.set(name, s);
-        }
-        s.count++;
-        if (!it.missing) {
-          const t = captureOf(it);
-          if (t < s.first) s.first = t;
-          if (t > s.last) s.last = t;
-          if (coverRel.get(name) === it.rel) s.cover = it;
-          if (!s.firstShot) s.firstShot = it;
-        }
-      }
-    }
-    return out;
-  });
-
-  function eventCoverPath(name: string): string | null {
-    const s = eventStats.get(name);
-    return s?.cover?.path ?? s?.firstShot?.path ?? null;
-  }
-
-  const dayFmt = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
-  function eventDateRange(name: string): string {
-    const s = eventStats.get(name);
-    if (!s || !Number.isFinite(s.first)) return "";
-    const a = dayFmt.format(new Date(s.first * 1000));
-    const b = dayFmt.format(new Date(s.last * 1000));
-    return a === b ? a : `${a} – ${b}`;
-  }
-
-  // Blocks are ordered by name or by each event's earliest capture, and unlike
-  // the other groupings that order has to honour ascending/descending — the
-  // grouped sort compares section keys directly (never multiplied by sortDir),
-  // so the direction is baked into a rank here instead.
-  let eventRank = $derived.by(() => {
-    const names = [...eventStats.keys()];
-    const byDate = settings.s.eventOrder === "date";
-    names.sort((a, b) => {
-      if (byDate) {
-        const fa = eventStats.get(a)?.first ?? 0;
-        const fb = eventStats.get(b)?.first ?? 0;
-        const c = (Number.isFinite(fa) ? fa : 0) - (Number.isFinite(fb) ? fb : 0);
-        if (c !== 0) return c;
-      }
-      return collator.compare(a, b);
-    });
-    if (settings.s.sortDir === "desc") names.reverse();
-    const m = new Map<string, string>();
-    names.forEach((n, i) => m.set(n, String(i).padStart(6, "0")));
-    return m;
-  });
-
   let eventByName = $derived(new Map(allEvents.map((e) => [e.name, e])));
-  let groupingByEvent = $derived(settings.s.groupBy === "event" || settings.s.subgroupBy === "event");
 
   // ── the event rail ────────────────────────────────────────────────────────
   // Events do NOT reorder the grid. The timeline (month/week/year) stays the
@@ -926,10 +866,6 @@
   function sectionPartKey(it: MediaItem, g: typeof settings.s.groupBy): string {
     if (g === "folder") return parentOf(it.path);
     if (g === "type") return it.kind;
-    if (g === "event") {
-      const name = eventOf(it);
-      return name ? (eventRank.get(name) ?? NO_EVENT_KEY) : NO_EVENT_KEY;
-    }
     if (g === "none") return "";
     const d = new Date(captureOf(it) * 1000);
     if (g === "year") return `${d.getUTCFullYear()}`;
@@ -940,7 +876,6 @@
   function sectionPartLabel(it: MediaItem, g: typeof settings.s.groupBy): string {
     if (g === "folder") return parentName(it.path);
     if (g === "type") return TYPE_LABEL[it.kind] ?? it.kind;
-    if (g === "event") return eventOf(it) ?? NO_EVENT_LABEL;
     if (g === "none") return "";
     const d = new Date(captureOf(it) * 1000);
     if (g === "year") return `${d.getUTCFullYear()}`;
@@ -1025,20 +960,7 @@
   });
   let relatedHiddenCount = $derived(Math.max(0, baseView.length - view.length));
 
-  type GridSection = {
-    label: string;
-    count: number;
-    level?: 1 | 2;
-    cellCount?: number;
-    /** Event blocks get an album-art band: a cover frame and a date range. */
-    kind?: "event";
-    cover?: string | null;
-    sub?: string;
-    h?: number;
-  };
-
-  /** Height of an event's album-art band vs an ordinary text header. */
-  const EVENT_BAND_H = 128;
+  type GridSection = { label: string; count: number; level?: 1 | 2; cellCount?: number };
 
   // Grouped grid sections over the sorted view. Group + subgroup render as true
   // nested headers: the parent carries a total count, the child owns the cells.
@@ -1057,18 +979,7 @@
       const anchor = relatedIndex.groupByPath.get(it.path)?.representative ?? it;
       const pk = sectionPartKey(anchor, primaryBy);
       if (pk !== primaryKey) {
-        const label = sectionPartLabel(anchor, primaryBy) || "All media";
-        primary = { label, count: 0, level: 1, cellCount: 0 };
-        // An event section is drawn as a cover band, the way an album fronts a
-        // trip — that's what makes a long recursive feed readable.
-        if (primaryBy === "event" && label !== NO_EVENT_LABEL) {
-          primary.kind = "event";
-          primary.sub = eventDateRange(label);
-          if (settings.s.eventCovers) {
-            primary.cover = eventCoverPath(label);
-            primary.h = EVENT_BAND_H;
-          }
-        }
+        primary = { label: sectionPartLabel(anchor, primaryBy) || "All media", count: 0, level: 1, cellCount: 0 };
         out.push(primary);
         primaryKey = pk;
         subKey = "";
@@ -1329,7 +1240,7 @@
   /** Whether the current view depends on real capture dates. */
   // Event blocks ordered by date need real capture times too — an event's rank
   // is its earliest shot, and mtime would rank a re-copied folder wrongly.
-  let needCaptures = $derived(DATE_GROUPS.has(settings.s.groupBy) || DATE_GROUPS.has(settings.s.subgroupBy) || settings.s.sortBy === "capture" || (groupingByEvent && settings.s.eventOrder === "date") || hasBurstLikeNames(items));
+  let needCaptures = $derived(DATE_GROUPS.has(settings.s.groupBy) || DATE_GROUPS.has(settings.s.subgroupBy) || settings.s.sortBy === "capture" || hasBurstLikeNames(items));
 
   let capturesDir: string | null = null;
   async function fetchCaptures(dir: string, paths: string[]) {
@@ -1907,7 +1818,7 @@
               : `Restored ${out.restored} file${out.restored === 1 ? "" : "s"}`,
           );
           api.logEvent(`UNDO ${e.label} → restored ${out.restored}`);
-          if (trashOpen) trashItems = await api.listTrash();
+          if (inTrashFolder) trashItems = await api.listTrash().catch(() => []);
           if (currentDir) await openFolder(currentDir, { selectIndex: activeIndex });
         },
       });
@@ -2187,8 +2098,14 @@
         try {
           const id = await api.createEvent(name);
           await addTargetsToEvent(id, name);
-          // Show the result immediately — the point of an event is the block.
-          if (settings.s.groupBy !== "event") settings.set({ groupBy: "event" });
+          // Make the result visible immediately. Creating an event and seeing
+          // nothing change is the whole failure this replaces, so if the current
+          // sort can't draw a banner, move to the one that can.
+          if (!settings.s.eventRail) settings.set({ eventRail: true });
+          if (!eventRailPossible) {
+            settings.set({ sortBy: "capture" });
+            maybeFetchCaptures();
+          }
         } catch (e) {
           openAsk({ title: "Could not create the event", body: String(e) });
         }
@@ -2486,6 +2403,47 @@
         },
         { separator: true },
         { label: "Copy the path it used to have", icon: "⧉", action: () => copyPath(ctx.path) },
+      ];
+    }
+
+    // Inside the Trash folder the menu is about disposition, not culling. The
+    // items themselves are ordinary media here — previewable, playable, sortable
+    // — which was the whole point of making the folder visible.
+    if (inTrashFolder) {
+      const rows = ts.map(trashRowFor).filter((r): r is TrashItem => !!r);
+      const one = trashRowFor(ctx);
+      return [
+        { label: "Previous", icon: "←", disabled: activeIndex <= 0, action: () => move(-1) },
+        { label: "Next", icon: "→", disabled: activeIndex >= view.length - 1, action: () => move(1) },
+        { separator: true },
+        {
+          label: viewMode === "loupe" ? "Back to grid" : "Open in Focus",
+          icon: "▣",
+          action: () => setView(viewMode === "loupe" ? "grid" : "loupe"),
+        },
+        { label: "Open in default app", icon: "▶", action: () => api.openExternal(ctx.path) },
+        { separator: true },
+        {
+          label: `Restore to original location${rows.length > 1 ? ` (${rows.length})` : ""}`,
+          icon: "↩",
+          disabled: !rows.length,
+          action: () => restoreSelected(rows),
+        },
+        {
+          label: `Delete permanently${rows.length > 1 ? ` (${rows.length})` : ""}`,
+          icon: "⌫",
+          danger: true,
+          disabled: !rows.length,
+          action: () => purgeSelected(rows),
+        },
+        { separator: true },
+        {
+          label: one ? `Came from: ${one.orig}` : "Origin unknown",
+          icon: "ⓘ",
+          disabled: true,
+          action: () => {},
+        },
+        { label: revealLabel, icon: "⤴", action: () => api.reveal(ctx.path) },
       ];
     }
 
@@ -2874,13 +2832,50 @@
   }
 
   // ── in-app Trash (per-drive recycle folder) ──────────────────────────────
+  /** Navigate to the Trash folder — it lives in the tree like anything else. */
   async function openTrash() {
+    const dir = libInfo?.recycle;
+    if (dir) await openFolder(dir);
+  }
+
+  async function loadTrashRows() {
     try {
       trashItems = await api.listTrash();
     } catch {
       trashItems = [];
     }
-    trashOpen = true;
+  }
+
+  // Keep provenance loaded exactly while the Trash folder is open.
+  $effect(() => {
+    if (inTrashFolder) void loadTrashRows();
+    else if (trashItems.length) trashItems = [];
+  });
+
+  /** Put trashed files back where they came from, then refresh the view. */
+  async function restoreSelected(rows: TrashItem[]) {
+    if (!rows.length) return;
+    const out = await api.restoreTrash(rows.map((r) => r.stored));
+    activity.local("trash-restore", `Restored ${out.restored} file${out.restored === 1 ? "" : "s"}`, 1, 1);
+    if (out.failed.length) activity.error("trash-restore-err", `${out.failed.length} could not be restored`);
+    await loadTrashRows();
+    if (currentDir) await openFolder(currentDir, { selectIndex: activeIndex });
+  }
+
+  /** Permanent deletion — the only irreversible action in the app, so it asks. */
+  function purgeSelected(rows: TrashItem[]) {
+    if (!rows.length) return;
+    openAsk({
+      title: `Delete ${rows.length} file${rows.length === 1 ? "" : "s"} permanently?`,
+      body: "This erases them from the disk. There is no undo and they do not go to the system Recycle Bin.",
+      confirmLabel: "Delete permanently",
+      onconfirm: async () => {
+        const n = await api.purgeTrash(rows.map((r) => r.stored));
+        activity.local("trash-purge", `Deleted ${n} file${n === 1 ? "" : "s"}`, 1, 1);
+        await loadTrashRows();
+        if (currentDir) await openFolder(currentDir, { selectIndex: activeIndex });
+      },
+    });
   }
   async function restoreFromTrash(stored: string[]) {
     await api.restoreTrash(stored);
@@ -3450,7 +3445,6 @@
               <span class="fm-lbl"><span class="fm-ico">▦</span>Group</span>
               <select class="sel wide" title="Primary grouped section" bind:value={settings.s.groupBy} onchange={() => { settings.set({ groupBy: settings.s.groupBy }); maybeFetchCaptures(); }}>
                 <option value="none">No groups</option>
-                <option value="event">Event</option>
                 <option value="folder">Folder</option>
                 <option value="type">Type</option>
                 <option value="year">Year</option>
@@ -3462,7 +3456,6 @@
               <span class="fm-lbl"><span class="fm-ico sub">▤</span>Subgroup</span>
               <select class="sel wide" title="Nested second grouping level" bind:value={settings.s.subgroupBy} onchange={() => { settings.set({ subgroupBy: settings.s.subgroupBy }); maybeFetchCaptures(); }}>
                 <option value="none">None</option>
-                <option value="event">Event</option>
                 <option value="folder">Folder</option>
                 <option value="type">Type</option>
                 <option value="year">Year</option>
@@ -3490,15 +3483,12 @@
                 />
                 <span>Show event banners</span>
               </label>
-              {#if groupingByEvent}
-                <label class="chk" title="Order event blocks by their earliest photo instead of alphabetically.">
-                  <input
-                    type="checkbox"
-                    checked={settings.s.eventOrder === "date"}
-                    onchange={(e) => settings.set({ eventOrder: (e.currentTarget as HTMLInputElement).checked ? "date" : "name" })}
-                  />
-                  <span>Order by date</span>
-                </label>
+              {#if !eventRailPossible}
+                <!-- The dead end this replaces: the toggle was on, the sort made
+                     it impossible, and nothing on screen said so. -->
+                <button class="chip" onclick={() => { settings.set({ sortBy: "capture" }); maybeFetchCaptures(); }}>
+                  Sort by capture date to use it
+                </button>
               {/if}
             </div>
             {#if allEvents.length}
@@ -3883,7 +3873,7 @@
           </div>
         </div>
         <div class="row"><span>Trash</span>
-          <button class="btn sm" onclick={() => { settingsOpen = false; openTrash(); }}>🗑 Open Trash…</button>
+          <button class="btn sm" onclick={() => { settingsOpen = false; void openTrash(); }} title="Opens the visible FoxCull Trash folder in the library — preview and play anything before deciding">🗑 Open Trash folder</button>
         </div>
         <div class="row"><span>Check catalog on launch</span>
           <div class="seg" title="Verify every rated/tagged file is still where the catalog expects it, and auto-reconnect anything that moved or was renamed outside FoxCull. Runs after the folder is on screen; costs nothing unless something is actually missing.">
@@ -3909,15 +3899,6 @@
         {/if}
         <div class="row hintrow">Each drive keeps its own catalog, preview cache &amp; recycle in a <code>_FoxCull</code> folder. Press <kbd>?</kbd> for all shortcuts · <kbd>F</kbd> play mode · <kbd>L</kbd> dim.</div>
       </div>
-    {/if}
-
-    {#if trashOpen}
-      <TrashPanel
-        items={trashItems}
-        onclose={() => (trashOpen = false)}
-        onrestore={restoreFromTrash}
-        onpurge={purgeFromTrash}
-      />
     {/if}
 
     {#if controllerOpen}
@@ -4212,7 +4193,14 @@
       <div class="info">
         <span class="activeIdentity">
           <span class="name" title={active.path}>{active.name}</span>
-          <span class="meta">{active.kind} · {activeIndex + 1} of {view.length}</span>
+          {#if inTrashFolder}
+            {@const row = trashRowFor(active)}
+            <span class="meta trashMeta" title={row ? `Deleted from ${row.orig}` : "Origin unknown"}>
+              🗑 {row ? `from ${row.orig}` : "origin unknown"}
+            </span>
+          {:else}
+            <span class="meta">{active.kind} · {activeIndex + 1} of {view.length}</span>
+          {/if}
         </span>
         <span class="infoDivider"></span>
         <div class="rate" title="Star rating (1–5 · ` clears)">
@@ -4518,6 +4506,7 @@
   .tagrow .cnt { color: var(--text-faint); }
   .tagrow.on .cnt { color: var(--accent-on); }
   .tagempty { padding: 8px 9px; color: var(--text-faint); font-size: 12px; margin: 0; }
+  .trashMeta { color: color-mix(in srgb, var(--warn, #d9a441) 80%, var(--text-dim)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 44ch; }
   .missingNote {
     font-size: 12px;
     padding: 3px 7px;

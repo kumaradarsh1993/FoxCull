@@ -11,11 +11,11 @@ export type ViewMode = "grid" | "details" | "loupe";
 export type FilmstripPos = "bottom" | "left" | "right" | "hidden";
 export type SortBy = "name" | "date" | "capture" | "type" | "size";
 export type SortDir = "asc" | "desc";
-export type GroupBy = "none" | "folder" | "type" | "year" | "month" | "week" | "event";
-/** How event BLOCKS are ordered against each other when grouping by event.
- *  "name" is alphabetical; "date" uses each event's earliest capture. Both
- *  honour `sortDir`, so ascending/descending works either way. */
-export type EventOrder = "name" | "date";
+/** NOTE: `"event"` was briefly a grouping and is deliberately gone. Events are a
+ *  banner drawn inside the timeline, not a competing axis — keeping both modes
+ *  meant a stored `groupBy: "event"` silently pinned the owner to the old
+ *  album view while the new banner sat suppressed. See `migrate` below. */
+export type GroupBy = "none" | "folder" | "type" | "year" | "month" | "week";
 export type TypeFilter = "all" | "image" | "video" | "raw";
 export type DeleteMode = "recycle" | "folder";
 export type RelatedMode = "expanded" | "collapsed";
@@ -35,12 +35,6 @@ export interface AppSettings {
   /** Section the grid by real capture date — off, by month, or by week. */
   groupBy: GroupBy;
   subgroupBy: GroupBy;
-  /** Order of event blocks when grouping by event. Only meaningful then — the
-   *  toggle that sets it is disabled in every other grouping. */
-  eventOrder: EventOrder;
-  /** Show each event block behind a cover image ("album art") instead of a
-   *  plain text header. Only applies to the (legacy) event GROUPING. */
-  eventCovers: boolean;
   /** Paint events as a continuous banner down the left of the rows they occupy,
    *  inside the normal date-ordered grid — the lightweight read of an event.
    *  Self-disables under name/size ordering, where a run isn't meaningful. */
@@ -109,8 +103,6 @@ const DEFAULTS: AppSettings = {
   sortDir: "asc",
   groupBy: "none",
   subgroupBy: "none",
-  eventOrder: "date",
-  eventCovers: true,
   eventRail: true,
   scanOnLaunch: true,
   typeFilter: "all",
@@ -164,6 +156,18 @@ class Settings {
         };
         // Migrate the old boolean month toggle to the new granularity field.
         if (loaded.groupBy === undefined && loaded.groupByMonth) migrated.groupBy = "month";
+        // `groupBy: "event"` was the short-lived album-block mode. Anyone holding
+        // it was, by definition, trying to look at events — so drop the grouping
+        // AND put them on a capture-date order, which is what the replacement
+        // banner needs to draw. Without the sort change they would land on a
+        // plain grid with the new feature silently switched off, which is
+        // exactly the dead end this migration exists to prevent.
+        const legacyEvent = (v: unknown) => v === "event";
+        if (legacyEvent(migrated.groupBy)) {
+          migrated.groupBy = "none";
+          migrated.sortBy = "capture";
+        }
+        if (legacyEvent(migrated.subgroupBy)) migrated.subgroupBy = "none";
         // glimpseSpeed changed meaning on 2026-07-22 (fixed-length sweep ratio
         // -> plain realtime multiple). A stored 10-100 would now mean 10-100x
         // realtime, which is a blur; snap anything out of range back to default.

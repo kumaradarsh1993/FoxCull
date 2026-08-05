@@ -98,6 +98,69 @@ pub fn cache_dir_for(catalog_path: &Path) -> PathBuf {
 /// with it.
 const LIB_DIRNAME: &str = "_FoxCull";
 
+/// The in-app Trash, at the DRIVE ROOT and deliberately visible: `<drive>\FoxCull
+/// Trash`. It used to hide inside `_FoxCull\recycle`, which meant a deleted clip
+/// could not be browsed, previewed or played before you committed — the owner
+/// could not answer "why did I throw this away?" without leaving the app.
+///
+/// Flat on purpose (no mirrored folder tree). Provenance lives in the catalog and
+/// is mirrored into `_trash-index.json` beside the files, so a lost catalog can
+/// no longer strand ~19 GB of media with no record of where it belongs.
+pub const TRASH_DIRNAME: &str = "FoxCull Trash";
+
+/// Sidecar that survives the catalog: `stored filename -> original rel-path`.
+const TRASH_INDEX: &str = "_trash-index.json";
+
+fn is_trash_dirname(name: &str) -> bool {
+    name.eq_ignore_ascii_case(TRASH_DIRNAME)
+}
+
+/// Rewrite `_trash-index.json` from the catalog's current rows. Cheap (one small
+/// file), and always a full rewrite so it can never drift into a half-truth.
+fn write_trash_index(recycle: &Path, catalog: &Catalog) {
+    if !recycle.is_dir() {
+        return;
+    }
+    let rows = catalog.list_trash();
+    let map: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({ "stored": r.stored, "orig": r.orig, "name": r.name, "deleted_at": r.deleted_at })
+        })
+        .collect();
+    let body = serde_json::json!({
+        "note": "Where each file in this folder came from. FoxCull rebuilds this automatically; it exists so the files can be restored even if the catalog is lost. Safe to leave alone.",
+        "entries": map,
+    });
+    if let Ok(s) = serde_json::to_string_pretty(&body) {
+        let _ = std::fs::write(recycle.join(TRASH_INDEX), s);
+    }
+}
+
+/// Read the sidecar back: `lowercased stored filename -> (orig, deleted_at)`.
+fn read_trash_index(recycle: &Path) -> HashMap<String, (String, i64)> {
+    let mut out = HashMap::new();
+    let Ok(s) = std::fs::read_to_string(recycle.join(TRASH_INDEX)) else {
+        return out;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) else {
+        return out;
+    };
+    if let Some(arr) = v.get("entries").and_then(|e| e.as_array()) {
+        for e in arr {
+            let (Some(stored), Some(orig)) = (
+                e.get("stored").and_then(|x| x.as_str()),
+                e.get("orig").and_then(|x| x.as_str()),
+            ) else {
+                continue;
+            };
+            let at = e.get("deleted_at").and_then(|x| x.as_i64()).unwrap_or(0);
+            out.insert(stored.to_lowercase(), (orig.to_string(), at));
+        }
+    }
+    out
+}
+
 struct Library {
     dir: PathBuf,
     catalog: PathBuf,
@@ -142,13 +205,79 @@ fn resolve_library(data_root: &Path, root: &Path) -> Library {
     } else {
         (data_root.join("libraries").join(drive_id(root)), false)
     };
+    // The Trash sits beside the user's folders, not inside our hidden library —
+    // that is the whole point of the move. A read-only mount can't host it, so
+    // that case keeps the old app-data location.
+    let recycle = if on_drive {
+        root.join(TRASH_DIRNAME)
+    } else {
+        dir.join("recycle")
+    };
     Library {
         catalog: dir.join("catalog.sqlite"),
         cache: dir.join("thumbs"),
-        recycle: dir.join("recycle"),
+        recycle,
         dir,
         on_drive,
     }
+}
+
+/// One-time move of an existing hidden `_FoxCull\recycle` into the visible
+/// `<drive>\FoxCull Trash`, flattening the mirrored folder tree.
+///
+/// Same volume, so each file is a metadata-only rename — an 18 GB clip moves
+/// instantly. Catalog rows are re-keyed to the new flat `stored` name, and files
+/// the catalog never knew about are adopted on the way (that is how the owner's
+/// orphans get their record back). Nothing is deleted, ever.
+fn migrate_recycle(old: &Path, new: &Path, catalog: &Catalog) {
+    if !old.is_dir() || old == new {
+        return;
+    }
+    let mut found: Vec<(PathBuf, i64, u64)> = Vec::new();
+    collect(old, true, &mut found);
+    if found.is_empty() {
+        let _ = std::fs::remove_dir_all(old);
+        return;
+    }
+    if std::fs::create_dir_all(new).is_err() {
+        return;
+    }
+    let known: HashMap<String, crate::catalog::TrashRow> = catalog
+        .list_trash()
+        .into_iter()
+        .map(|r| (r.stored.to_lowercase(), r))
+        .collect();
+    let mut rows: Vec<(String, String, String, i64)> = Vec::new();
+    let mut drop_old: Vec<String> = Vec::new();
+    for (path, mtime, _) in found {
+        let rel = rel_under(old, &path);
+        let name = rel_name(&rel).to_string();
+        let target = uniquify(new.join(&name));
+        if std::fs::rename(&path, &target).is_err() {
+            continue;
+        }
+        let stored = rel_under(new, &target);
+        let prev = known.get(&rel.to_lowercase());
+        // An orphan has no row to inherit from; its position under the old
+        // mirrored tree IS where it came from, which is exactly why the old
+        // layout could be reconstructed and the new flat one needs the sidecar.
+        let orig = prev.map(|r| r.orig.clone()).unwrap_or_else(|| rel.clone());
+        let at = prev.map(|r| r.deleted_at).unwrap_or(mtime);
+        rows.push((stored, orig, name, at));
+        drop_old.push(rel);
+    }
+    if !rows.is_empty() {
+        let _ = catalog.add_trash_many(&rows);
+        catalog.remove_trash(&drop_old);
+        crate::log::line(&format!(
+            "TRASH migrated {} file(s) from {} to {}",
+            rows.len(),
+            old.display(),
+            new.display()
+        ));
+    }
+    write_trash_index(new, catalog);
+    let _ = std::fs::remove_dir_all(old);
 }
 
 // ── background-activity reporting (the Lightroom-style top-left indicator) ───
@@ -563,6 +692,9 @@ pub fn set_library_root(
         *state.cache_dir.lock() = lib.cache.clone();
         *state.lib_dir.lock() = lib.dir.clone();
         *state.recycle_dir.lock() = lib.recycle.clone();
+        // Relocate a pre-existing hidden recycle folder into the visible Trash.
+        // Same volume, so even an 18 GB clip is an instant rename.
+        migrate_recycle(&lib.dir.join("recycle"), &lib.recycle, &catalog);
         let _ = app.asset_protocol_scope().allow_directory(&lib.cache, true);
         let _ = app.asset_protocol_scope().allow_directory(&lib.recycle, true);
 
@@ -688,6 +820,7 @@ fn collect_cancellable(
             if !recursive
                 || dname.starts_with('.')
                 || dname.to_ascii_lowercase().starts_with("_foxcull")
+                || is_trash_dirname(&dname)
                 || is_skippable_dir(&dname.to_ascii_lowercase())
             {
                 continue;
@@ -4014,23 +4147,26 @@ fn drive_root(path: &str) -> PathBuf {
     PathBuf::from(if cfg!(windows) { "C:\\" } else { "/" })
 }
 
-/// Move one file into the per-drive recycle folder, mirroring its path from the
-/// drive root so shots from different subfolders never collide. Returns
-/// `(stored, orig)` — the path within the recycle dir, and the original
-/// drive-relative path (for Restore). Fast rename first; copy+remove across
-/// volumes. Never clobbers an existing file (uniquifies).
+/// Move one file into the visible per-drive Trash, FLAT. Returns
+/// `(stored, orig)` — the filename within the Trash folder, and the original
+/// drive-relative path (for Restore). Never clobbers an existing file.
 fn move_into_recycle(root: &Path, recycle: &Path, src: &Path) -> Result<(String, String), String> {
     let rel = src
         .strip_prefix(root)
         .map(|r| r.to_path_buf())
         .unwrap_or_else(|_| PathBuf::from(src.file_name().unwrap_or_default()));
     let orig = rel.to_string_lossy().replace('\\', "/");
-    let target = uniquify(recycle.join(&rel));
+    // FLAT. The Trash is somewhere the user actually browses now, and a mirrored
+    // twenty-deep folder tree is hostile to that — you would be clicking through
+    // `2026 > S23 Ultra > Munnar trip` to reach three rejects. Collisions are
+    // handled by `uniquify`, and provenance moves to the catalog + sidecar.
+    let name = PathBuf::from(src.file_name().unwrap_or_default());
+    let target = uniquify(recycle.join(&name));
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    // The recycle folder is ALWAYS on the same volume as the source (it lives at
-    // `<drive-root>/_FoxCull/recycle`, and `src` is validated to sit under that
+    // The Trash folder is ALWAYS on the same volume as the source (it lives at
+    // `<drive-root>/FoxCull Trash`, and `src` is validated to sit under that
     // same drive root). So `rename` is a metadata-only move that's instant even
     // for a 17 GB clip — and a failure here means the file is *locked* (a preview
     // or playback still holds it open) or permission-denied, NOT a cross-device
@@ -4200,6 +4336,7 @@ pub async fn dispose_rejected(
     catalog.forget(&forget);
     if !trash_rows.is_empty() {
         let _ = catalog.add_trash_many(&trash_rows);
+        write_trash_index(&recycle, &catalog);
     }
     Ok(TrashOutcome {
         deleted,
@@ -4254,6 +4391,11 @@ pub async fn list_trash(
         tauri::async_runtime::spawn_blocking(move || {
             let mut found: Vec<(PathBuf, i64, u64)> = Vec::new();
             collect(&recycle_for_scan, true, &mut found);
+            // The sidecar is the reason a flat Trash is safe: it remembers
+            // where each file came from independently of the catalog, so a
+            // catalog that is reset or lost no longer strands the files with no
+            // record of their home.
+            let sidecar = read_trash_index(&recycle_for_scan);
             found
                 .into_iter()
                 .filter_map(|(path, mtime, _)| {
@@ -4262,7 +4404,11 @@ pub async fn list_trash(
                         return None;
                     }
                     let name = rel_name(&rel).to_string();
-                    Some((rel.clone(), rel, name, mtime))
+                    let (orig, at) = sidecar
+                        .get(&rel.to_lowercase())
+                        .cloned()
+                        .unwrap_or_else(|| (rel.clone(), mtime));
+                    Some((rel, orig, name, at))
                 })
                 .collect()
         })
@@ -4274,6 +4420,7 @@ pub async fn list_trash(
             adopted.len()
         ));
         let _ = catalog.add_trash_many(&adopted);
+        write_trash_index(&recycle, &catalog);
     }
 
     let mut stale: Vec<String> = Vec::new();
@@ -4389,6 +4536,7 @@ pub fn restore_trash(
         }
     }
     catalog.remove_trash(&done);
+    write_trash_index(&recycle, &catalog);
     RestoreOutcome { restored, failed }
 }
 
@@ -4427,6 +4575,7 @@ pub fn purge_trash(
         }
     }
     catalog.remove_trash(&done);
+    write_trash_index(&recycle, &catalog);
     n
 }
 
