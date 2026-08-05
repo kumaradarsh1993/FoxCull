@@ -1,57 +1,48 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
-Fixes for everything you hit on the last nightly — plus something the audit
-turned up that you should look at before deleting anything.
+## Video stills are no longer washed out
 
-## ⚠️ There are ~19 GB of your files in FoxCull's Trash that it wasn't showing you
+Your read was right that something was off before playback started, and right
+that it wasn't a paused state — colour came back on play and never went washed
+out again on pause.
 
-While checking the `_FoxCull` folders for the fresh start, two drives turned out
-to be holding real media in their recycle folders with no Trash entry, so the
-Trash panel showed nothing and Restore couldn't reach them:
+That is the fingerprint of the still image FoxCull paints while the video is
+still opening. Your footage is BT.709, but JPEG means BT.601, and the still was
+being *labelled* BT.601 without actually being converted. FoxCull was showing
+BT.709 colours decoded with the wrong maths; the video player then decoded the
+same clip correctly, which is why it snapped.
 
-- **E:** an 18 GB merged Dubai-trip clip
-- **P:** 22 files — 14 photos/videos from Jan 2022, plus 8 DJI Mavic Mini clips
-  (~1 GB) that had no Trash entry at all
+Measured on your own Note 10+ footage against a reference decode, the fix is
+worth ~2.8 dB and a visible lift in saturation. It applies to grid thumbnails
+too — they were wrong as well, just too small for it to read.
 
-None of the originals are back on disk. This build makes them visible: opening
-the Trash now adopts anything sitting in the recycle folder without an entry,
-reconstructed to restore exactly where it came from. Nothing is deleted — open
-the Trash on each drive and decide.
+One caveat: **stills already in the cache keep the old colour.** The cache is
+keyed on the file, and the file hasn't changed. New clips are correct
+immediately; to rebuild everything, delete `<drive>\_FoxCull\thumbs` and it
+regenerates.
 
-## Clicking a whole drive no longer freezes the app
+## A paused video now looks paused
 
-Opening `D:\` locked the window for minutes. The scan was running on the same
-thread that keeps the window alive, so a folder large enough to take minutes took
-the whole app with it.
+A play button sits over the frame whenever a clip is stopped, the way YouTube
+does it. It gets out of the way while you scrub or Glimpse.
 
-Scanning now happens off that thread, and:
+## New: a written guide to Events, moving files, and relinking
 
-- **You can leave.** Click any other folder mid-scan and FoxCull drops the old
-  one and goes where you asked.
-- **It tells you what it's doing.** A live file count appears while it works, the
-  activity bar at the bottom-left lifts and highlights itself while anything is
-  running and settles back when it finishes, and the scanning screen says you're
-  free to click elsewhere.
-- **It skips what can't hold photos.** `node_modules`, Windows system folders,
-  Steam libraries and the like are no longer walked — they were most of the wait.
+`docs/EVENTS-MOVES-AND-RELINK.md` in the repo covers all three features
+end-to-end — what to do, what happens in the awkward cases, and a blunt list of
+where they don't work. Three things in it are worth knowing before you plan a
+workflow:
 
-The same treatment went to moving files, browsing Edit sources and opening the
-Trash, so none of those can hang the window either.
+- **Moving and renaming a file in the same pass cannot be recovered** by the
+  relink pass. Both stages of matching key on the filename.
+- **Marks don't cross drives.** Catalogs are per-drive.
+- **Don't use "Forget" while a drive is disconnected** — every file on it looks
+  missing, and Forget is the one action that deletes marks.
 
-## The filmstrip no longer rewinds to the beginning
-
-Pressing `B`, going from Grid to Focus, or leaving full screen made the bottom
-strip appear at the first photo and race across to your current one, reloading
-thumbnails the whole way. It now lands directly on your photo. Arrow-key stepping
-keeps its smooth glide, which is the only place that animation was useful.
-
-## "Show in Explorer" works again
-
-It was opening `OneDrive\Documents` instead of the photo's folder. Not the
-external drive's fault — Explorer splits its own command line on spaces, so any
-path with a space in it (like `All media MASTER`) lost everything after the
-space. Fixed and verified on that exact file.
+It also proposes a command-line adapter so an external agent can tell FoxCull
+what it moved or tagged, and a rework of the Trash into a visible folder you can
+browse and play from. Both are waiting on your go-ahead.
 
 ---
 

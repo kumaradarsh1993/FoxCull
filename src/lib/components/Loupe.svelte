@@ -993,6 +993,19 @@
         <div class="liveScrub" class:shown={liveScrubActive}>
           <canvas bind:this={stageCanvas}></canvas>
         </div>
+        <!-- Paused state, YouTube-style: a scrim plus one big play button, so a
+             stopped clip reads as "paused video" rather than "a slightly odd
+             photo". Hidden while scrubbing or glimpsing — during those the user
+             is watching frames go by and a button over the middle is in the way.
+             It is a real button, not decoration: the whole picture already
+             toggles play on click, and this gives that affordance a target. -->
+        {#if displayPaused && !scrubbing && !glimpsing}
+          <button class="playOverlay" onclick={togglePlay} title="Play (Space)" aria-label="Play">
+            <span class="poIcon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.2v13.6L19 12z" /></svg>
+            </span>
+          </button>
+        {/if}
         {#if !engineReady && scrubbing && preview != null && strip && stripSrc}
           <!-- Final Cut-style drag scrub: the sprite frame under the cursor
                paints the WHOLE stage instantly (decode-free) while the real
@@ -1229,6 +1242,47 @@
   .stagewrap video {
     width: 100%;
     height: 100%;
+  }
+  /* Paused overlay. Sits above the picture but BELOW the scrub layers (z 4-5)
+     and the transport, so nothing it covers is ever interactive at the time. */
+  .playOverlay {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+  }
+  .poIcon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 76px;
+    height: 76px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.52);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(3px);
+    transition: transform 140ms ease, background 140ms ease;
+  }
+  .playOverlay:hover .poIcon {
+    background: rgba(0, 0, 0, 0.66);
+    transform: scale(1.06);
+  }
+  .poIcon svg {
+    width: 34px;
+    height: 34px;
+    margin-left: 4px; /* optically centre the triangle in the circle */
+    fill: #fff;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .poIcon {
+      transition: none;
+    }
   }
   .scrubStage {
     position: absolute;

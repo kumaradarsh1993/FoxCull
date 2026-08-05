@@ -687,3 +687,48 @@ lesson generalises past this panel, and it is the same one behind the catalog
 integrity work earlier the same day: when a view renders a catalog and the user
 reads it as the filesystem, the two have to be reconciled or the view is quietly
 lying. How the rows went missing in the first place is still unproven.
+
+---
+
+## 2026-08-04 (late) - the washed-out still, and a theory killed before it shipped
+
+The owner reported that a video in Focus view looked "very washed out" until he
+pressed play, at which point the colour snapped back - and, tellingly, did not go
+washed out again when he paused. He wondered whether it was a half-built paused
+state.
+
+That last detail is the whole diagnosis. An HTML video poster is shown only until
+the first frame arrives and never returns, so "correct after play, never washed
+out again on pause" locates the bug in the still image and nowhere else. Not
+playback, not CSS, not a paused state. The symptom was more precise than any
+amount of code reading would have been.
+
+The first theory was still wrong. Washed-out video stills are almost always a
+limited-versus-full range mismatch, and that is where the investigation started.
+Testing it took one command: adding the range conversion produced a byte-identical
+file, because swscale already handles range on the hop from yuv420p to yuvj420p.
+The theory died in about a minute rather than becoming a plausible-looking commit.
+
+The real cause was a label. His footage is BT.709; JPEG means BT.601; and ffmpeg's
+mjpeg encoder tags its output BT.601 without converting the coefficients. FoxCull
+was handing the webview BT.709 pixels wearing a BT.601 label, and the webview
+believed the label. Asking swscale to genuinely convert instead measured 41.19 dB
+against an RGB ground-truth decode where the old path managed 38.36. The grid
+tiles had been wrong all along too - a saturation shift just doesn't read at
+176 pixels.
+
+What was deliberately not done is worth recording: HDR clips extracted without
+tone-mapping will still look flat, and worse than this did. Every clip reachable
+on this machine was SDR, so there was nothing to verify a tone-map chain against,
+and shipping an unverified filter chain to fix an unobserved case is how you
+acquire a bug you cannot reproduce.
+
+He also asked, reasonably, for a written explanation of the three features that
+had just landed - events, moving files, relinking - because he wanted to plan his
+workflow around them rather than discover their edges by losing something. Writing
+that document was more useful than writing it was comfortable: it forced an
+explicit list of what does not work. Move and rename in the same pass is
+unrecoverable. Marks do not cross drives, because catalogs are per drive. And
+"Forget" on a disconnected drive would cheerfully delete the marks for every file
+that is merely unplugged. None of those are new bugs; all three were invisible
+until someone had to write them down for a user.

@@ -88,7 +88,26 @@ pub fn make_poster(
     }
     // q:v 3 keeps the still crisp — the previous default quantizer made the
     // Focus/full-screen first frame look pixelated even at full resolution.
-    let scale = format!("scale=w={box_px}:h={box_px}:force_original_aspect_ratio=decrease");
+    //
+    // `out_color_matrix=bt470bg` is the colour fix, and it is not cosmetic.
+    // Phone and drone footage is BT.709 (`yuv420p(tv, bt709)`), but JPEG/JFIF
+    // means BT.601 — and ffmpeg's mjpeg encoder simply LABELS the output
+    // `bt470bg` without converting the coefficients. The webview honours that
+    // label, so it decoded BT.709 pixels with the BT.601 matrix: a desaturated,
+    // washed-out still. The `<video>` element then decoded the same clip with
+    // the correct matrix, which is why colour "snapped back" the instant
+    // playback started and never went washed-out again on pause (an HTML poster
+    // is shown only until the first frame, and never returns).
+    //
+    // Measured on real footage (Note 10+ 1080p60), PSNR against the same frame
+    // decoded straight to RGB — higher is more faithful:
+    //   current (label only) .............. 38.36 dB
+    //   out_color_matrix=bt470bg .......... 41.19 dB   ← this
+    //   round-trip via rgb24 .............. 38.97 dB
+    // Asking swscale to genuinely convert wins, and it costs nothing.
+    let scale = format!(
+        "scale=w={box_px}:h={box_px}:force_original_aspect_ratio=decrease:out_color_matrix=bt470bg"
+    );
     // `-skip_frame nokey` means the decoder only touches the keyframe at/before
     // the seek point instead of decoding forward frame-by-frame to exactly 1.0s —
     // on 4K60 HEVC that's one frame decoded instead of ~60, and visually the

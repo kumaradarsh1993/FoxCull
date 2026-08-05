@@ -1,5 +1,60 @@
 # Agent Handover: FoxCull
 
+## 2026-08-04 (late): video still colour, paused overlay, and the workflow doc
+
+Shipped as `v1.5.0-nightly.3`. Ledger:
+`docs/changes/2026-08-04-video-poster-colour-play-overlay.md`.
+
+**Video stills were washed out because the poster JPEG was mislabelled, not
+mis-ranged.** ffmpeg's mjpeg encoder tags output `bt470bg` (BT.601) without
+converting BT.709 coefficients; the webview honoured the label and decoded with
+the wrong matrix. `make_poster` now passes `out_color_matrix=bt470bg` so swscale
+genuinely converts. Proven by PSNR against an RGB ground-truth decode on real
+footage: 38.36 → 41.19 dB. **The obvious theory (limited/full range) was tested
+and falsified first** — `in_range=auto:out_range=pc` produced a byte-identical
+file, because swscale already handles range on the yuv420p → yuvj420p hop. Do not
+re-add it.
+
+The symptom alone was diagnostic and worth remembering: colour correct after
+play and *not* washed out again on pause means an HTML `<video poster>`, which is
+shown only until the first frame and never returns. That located the bug in the
+still, before any code was read.
+
+**Not done, deliberately: HDR posters.** A PQ/HLG source extracted without
+tone-mapping will still look flat, and worse than this was. Every clip reachable
+on this machine is SDR `bt709`, so there was nothing to verify a chain against.
+Reuse `TONEMAP_CHAIN` (with its existing zscale-missing fallback) when an HDR
+clip is available.
+
+**Cached posters keep the old colour** — the key is (path, mtime, size, edge) and
+none changed. Only new/changed files regenerate.
+
+**`docs/EVENTS-MOVES-AND-RELINK.md` is new and is now the reference** for Events,
+in-app moves and the relink pass, including where they fail. Load-bearing
+entries: move+rename in one pass is unrecoverable; cross-drive moves lose marks
+(per-drive catalogs); *Forget* on a disconnected drive would delete marks for
+files that are merely offline.
+
+**TWO PROPOSALS AWAIT THE OWNER — do not build them unprompted, and do not
+re-litigate them either; the reasoning is in §5 and §6 of that doc:**
+
+1. **A CLI adapter on the same binary** (`foxcull.exe catalog --drive P: move …`)
+   so the external agent reorganising his drive can report moves/tags. This is
+   the *only* thing that can survive a move+rename. Direct SQLite access and a
+   localhost API were both considered and rejected there.
+2. **Trash rework** to a visible flat `<drive>\FoxCull Trash`, browsable in the
+   grid (so clips can be played before deciding), with provenance mirrored into a
+   `_trash-index.json` — the direct fix for the orphan class documented in the
+   previous section. Held because it would move his ~19 GB of existing trash,
+   which he wants to review first.
+
+**Still blocked on him:** the ~19 GB of orphaned Trash from the previous section,
+and the hard reset. Nothing has been deleted.
+
+Face/pet recognition was raised and explicitly parked: the recommendation is to
+build the adapter and let a separate program write labels in through `tag add`,
+rather than bundling a model into a tool whose stated goal is to stay light.
+
 ## 2026-08-04 (evening): the main-thread hang, and ~19 GB of invisible Trash
 
 Shipped as `v1.5.0-nightly.2`. Ledger:
