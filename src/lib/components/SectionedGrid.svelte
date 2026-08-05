@@ -4,6 +4,7 @@
   import { api } from "$lib/api";
   import { setScrolling } from "$lib/thumbnail-loader";
   import SectionCover from "./SectionCover.svelte";
+  import EventRail, { RAIL_W, type EventRun } from "./EventRail.svelte";
 
   type GridSection = {
     label: string;
@@ -32,6 +33,7 @@
     headerH = 38,
     overscanRows = 3,
     activeIndex = 0,
+    eventRuns = [],
     cell,
   }: {
     items: T[];
@@ -41,6 +43,10 @@
     headerH?: number;
     overscanRows?: number;
     activeIndex?: number;
+    /** Contiguous stretches of `items` in one event, drawn as a left-gutter
+     *  banner. A run that straddles a section header is split by it — the
+     *  timeline stays the spine and the event bends around it. */
+    eventRuns?: EventRun[];
     cell: Snippet<[T, number]>;
   } = $props();
 
@@ -49,8 +55,11 @@
   let vpWidth = $state(0);
   let vpHeight = $state(0);
 
-  let cols = $derived(Math.max(1, Math.floor((vpWidth + gap) / (cellMin + gap))));
-  let cellW = $derived(cols > 0 ? (vpWidth - gap * (cols - 1)) / cols : cellMin);
+  // Reserved for the whole grid while any event is in view — see VirtualGrid.
+  let rail = $derived(eventRuns.length ? RAIL_W : 0);
+  let gridW = $derived(Math.max(0, vpWidth - rail));
+  let cols = $derived(Math.max(1, Math.floor((gridW + gap) / (cellMin + gap))));
+  let cellW = $derived(cols > 0 ? (gridW - gap * (cols - 1)) / cols : cellMin);
   let rowH = $derived(cellW + gap);
 
   type Row =
@@ -131,7 +140,7 @@
     for (const r of visible) {
       if (r.type !== "cells") continue;
       for (let c = 0; c < r.idxs.length; c++) {
-        out.push({ gi: r.idxs[c], x: c * (cellW + gap), y: r.y });
+        out.push({ gi: r.idxs[c], x: rail + c * (cellW + gap), y: r.y });
       }
     }
     return out;
@@ -229,10 +238,48 @@
   export function columnCount() {
     return cols;
   }
+
+  /** Runs mapped onto positioned rows. Unlike the plain grid, rows here are not
+   *  a simple `index / cols` — sections restart the packing and headers sit
+   *  between them — so this walks the real row list. A run crossing a header is
+   *  emitted as two bands, which is the desired reading: the month separator
+   *  wins, and the event visibly resumes underneath it. */
+  let visibleRails = $derived.by(() => {
+    if (!rail) return [] as { key: string; name: string; top: number; height: number }[];
+    const out: { key: string; name: string; top: number; height: number }[] = [];
+    for (const run of eventRuns) {
+      let band: { top: number; bottom: number } | null = null;
+      const flush = (i: number) => {
+        if (band) out.push({ key: `${run.name}:${run.start}:${i}`, name: run.name, top: band.top, height: band.bottom - band.top });
+        band = null;
+      };
+      for (let ri = 0; ri < rows.length; ri++) {
+        const row = rows[ri];
+        if (row.type === "header") {
+          flush(ri);
+          continue;
+        }
+        const hit = row.idxs.some((gi) => gi >= run.start && gi <= run.end);
+        if (hit) {
+          if (!band) band = { top: row.y, bottom: row.y + row.h - gap };
+          else band.bottom = row.y + row.h - gap;
+        } else {
+          flush(ri);
+        }
+      }
+      flush(rows.length);
+    }
+    const lo = scrollTop - vpHeight;
+    const hi = scrollTop + vpHeight * 2;
+    return out.filter((b) => b.top + b.height >= lo && b.top <= hi);
+  });
 </script>
 
 <div class="vp" bind:this={viewport} onscroll={onScroll}>
   <div class="canvas" style="height:{totalH}px">
+    {#each visibleRails as r (r.key)}
+      <EventRail name={r.name} top={r.top} height={r.height} width={rail} />
+    {/each}
     {#each visibleHeaders as r (r.key)}
       {#if r.kind === "event"}
         <div class="hdr evt" class:art={!!r.cover} style="top:{r.y}px; height:{r.h}px">

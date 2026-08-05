@@ -3,6 +3,7 @@
   import { untrack } from "svelte";
   import { api } from "$lib/api";
   import { setScrolling } from "$lib/thumbnail-loader";
+  import EventRail, { RAIL_W, type EventRun } from "./EventRail.svelte";
 
   let {
     items,
@@ -10,6 +11,7 @@
     gap = 6,
     overscanRows = 3,
     activeIndex = 0,
+    eventRuns = [],
     cell,
   }: {
     items: T[];
@@ -17,6 +19,9 @@
     gap?: number;
     overscanRows?: number;
     activeIndex?: number;
+    /** Contiguous stretches of `items` belonging to one event, drawn as a banner
+     *  down the left gutter. Empty = the feature is off and no gutter is taken. */
+    eventRuns?: EventRun[];
     cell: Snippet<[T, number]>;
   } = $props();
 
@@ -25,8 +30,13 @@
   let vpWidth = $state(0);
   let vpHeight = $state(0);
 
-  let cols = $derived(Math.max(1, Math.floor((vpWidth + gap) / (cellMin + gap))));
-  let cellW = $derived(cols > 0 ? (vpWidth - gap * (cols - 1)) / cols : cellMin);
+  // The rail gutter is reserved for the WHOLE grid whenever any event is in
+  // view, never per-row: a gutter that appeared and vanished as you scrolled
+  // past an event boundary would reflow every tile mid-scroll.
+  let rail = $derived(eventRuns.length ? RAIL_W : 0);
+  let gridW = $derived(Math.max(0, vpWidth - rail));
+  let cols = $derived(Math.max(1, Math.floor((gridW + gap) / (cellMin + gap))));
+  let cellW = $derived(cols > 0 ? (gridW - gap * (cols - 1)) / cols : cellMin);
   let rowH = $derived(cellW + gap);
   let rowCount = $derived(Math.ceil(items.length / cols));
   let totalH = $derived(Math.max(0, rowCount * rowH - gap));
@@ -142,10 +152,33 @@
   export function columnCount() {
     return cols;
   }
+
+  /** Each run mapped to the pixel band its rows occupy. Only the runs that
+   *  intersect the rendered window are emitted, so a library with hundreds of
+   *  events costs the same as one with two. */
+  let visibleRails = $derived.by(() => {
+    if (!rail || cols <= 0) return [] as { key: string; name: string; top: number; height: number }[];
+    const out: { key: string; name: string; top: number; height: number }[] = [];
+    for (const r of eventRuns) {
+      const r0 = Math.floor(r.start / cols);
+      const r1 = Math.floor(r.end / cols);
+      if (r1 < firstRow || r0 > lastRow) continue;
+      out.push({
+        key: `${r.name}:${r.start}`,
+        name: r.name,
+        top: r0 * rowH,
+        height: (r1 - r0 + 1) * rowH - gap,
+      });
+    }
+    return out;
+  });
 </script>
 
 <div class="vp" bind:this={viewport} onscroll={onScroll}>
   <div class="canvas" style="height:{totalH}px">
+    {#each visibleRails as r (r.key)}
+      <EventRail name={r.name} top={r.top} height={r.height} width={rail} />
+    {/each}
     {#each slotItem as idx, s (s)}
       {#if idx >= 0}
         {@const row = Math.floor(idx / cols)}
@@ -153,7 +186,7 @@
         <div
           class="cellpos"
           class:active={idx === activeIndex}
-          style="left:{col * (cellW + gap)}px; top:{row * rowH}px; width:{cellW}px; height:{cellW}px"
+          style="left:{rail + col * (cellW + gap)}px; top:{row * rowH}px; width:{cellW}px; height:{cellW}px"
         >
           {@render cell(items[idx], idx)}
         </div>

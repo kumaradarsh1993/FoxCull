@@ -535,10 +535,24 @@ pub fn set_library_root(
                         let _ = std::fs::rename(&legacy_thumbs, &lib.cache);
                     }
                 }
-            } else if current.is_file() {
-                catalog.checkpoint();
-                let _ = std::fs::copy(&current, &lib.catalog);
             }
+            // NOTHING seeds a new drive's catalog from ANOTHER drive's catalog.
+            //
+            // This used to fall through to `copy(current -> lib.catalog)`, which
+            // meant the first visit to a new drive cloned whatever drive you had
+            // open before. Catalog keys are paths RELATIVE TO THE DRIVE ROOT, so
+            // every cloned row then described a file that does not exist here —
+            // and the integrity scan dutifully reported them as missing.
+            //
+            // That is exactly what happened on this machine: F:'s single trim row
+            // for `Movies _ Final Exports_bak/Chaos Day 1 Drone shots.mp4` was
+            // cloned onto D: and E:, so both drives permanently claimed "1 file
+            // could not be found" for a file that had never been on them. All
+            // three also carried an identical 7,254-row capture cache, which is
+            // the same clone showing through.
+            //
+            // A drive that FoxCull has not seen before starts empty. The only
+            // legitimate adoption is the same drive's own legacy catalog, above.
         }
         std::fs::create_dir_all(&lib.cache).ok();
 
@@ -3716,6 +3730,9 @@ pub fn forget_missing(catalog: State<'_, Catalog>, rels: Vec<String>) -> usize {
 
 #[tauri::command]
 pub fn list_events(catalog: State<'_, Catalog>) -> Vec<crate::catalog::EventInfo> {
+    // Sweep before listing: `forget` and a bulk removal can both empty an event,
+    // and an event with no photos should be as gone as an unused tag.
+    catalog.prune_empty_events();
     catalog.list_events()
 }
 

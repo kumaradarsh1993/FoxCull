@@ -63,20 +63,39 @@ different device folders and still come out as one block.
 5. Right-click a good shot → **Use as cover of "Munnar trip"** to choose the
    frame that fronts the block.
 
-### Reading it back
+### Reading it back — three ways, lightest first
 
-- **`Arrange ▸ Group ▸ Event`** — the grid becomes event blocks, each with a
-  cover band (cover frame, name, date range, count). Works at any level of the
-  hierarchy: open a year folder with subfolders included, and every event inside
-  it separates out.
-- **`Filters ▸ Event`** — isolate one event across everything currently loaded.
-  This is the "virtual collection" read.
-- **Order by date / Cover art** — two checkboxes under `Arrange ▸ Events`. Date
-  order ranks blocks by each event's *earliest* photo. The existing ↑↓ button
-  flips ascending/descending for both name and date order. They are disabled
-  outside an event grouping, deliberately, so the option stays discoverable.
-- Manage (rename, delete, isolate) from the list under Arrange. **Deleting an
-  event never touches a photo** — it removes the grouping only.
+**1. The event banner (default).** Events do **not** reorder anything. The
+timeline stays the spine, and an event paints as a continuous coloured bar down
+the left of exactly the rows its photos occupy — the way Google Photos surfaces
+an album inside a date feed. Anything not in the event carries on in the same
+flow; a stray photo in the middle simply splits the bar in two.
+
+- Toggle: `Arrange ▸ Events ▸ Show event banners`.
+- **It self-disables under name/size/type ordering.** A "continuous" bar only
+  means something along a time axis; scattered photos would make it a lie. Sort
+  by Capture date or Modified, or group by Year/Month/Week, and it comes back.
+- The colour is derived from the event's name, so the same trip is the same
+  colour in every folder and across sessions, with nothing stored.
+- A run crossing a month header is drawn as two bands. The separator wins and the
+  event visibly resumes underneath — deliberate, so the timeline stays readable.
+
+**2. `Filters ▸ Event`** — isolate one event across everything loaded. The
+"virtual collection" read.
+
+**3. `Arrange ▸ Group ▸ Event`** — the heavier read, still available: the grid
+becomes event blocks with cover bands (cover frame, name, date range, count),
+and *Order by date* / the ↑↓ button rank the blocks. Use it when you want an
+album view rather than a timeline.
+
+Manage (rename, delete, isolate) from the list under Arrange. **Deleting an event
+never touches a photo.**
+
+### Lifecycle — events behave like tags
+
+An event exists only while something is in it. Remove its last photo and it
+disappears from every menu and filter, exactly as an unused tag does. There is no
+"empty event" to clean up, and the Add-to list cannot silently grow forever.
 
 ### Awkward and adversarial cases
 
@@ -87,7 +106,10 @@ different device folders and still come out as one block.
 | Two events with the **same name** | Impossible — names are unique, case-insensitively. Creating "monar trip" when "Monar Trip" exists returns the existing one | `UNIQUE COLLATE NOCASE`, and `create_event` is idempotent. |
 | The cover photo is **deleted or moved away** | The block falls back to its first remaining member | The explicit cover is stored but resolved against what is actually in view. |
 | An event's photos are **all outside the current folder** | No block appears | Events are grouped over what is loaded. Open a higher folder with subfolders included to see them. |
-| You **undo** after adding to an event | Nothing happens | **Events are not on the undo stack.** So are tags' menu actions. Reverse it from the same right-click menu. This is a decision, not a gap — but it is the one that will surprise you. |
+| You **undo** after adding to an event | Nothing happens | **Events are not on the undo stack.** So are tags' menu actions. Reverse it from the same right-click menu, or `Clear metadata… ▸ Events`. This is a decision, not a gap — but it is the one that will surprise you. |
+| You remove the **last** photo from an event | The event is gone — from the Add-to menu, the filter and the manage list | Tag-like lifecycle. Nothing to tidy up by hand. |
+| Photos of one event are **not contiguous** (a screenshot lands in the middle) | The banner splits into two bands around it | Honest rather than hidden. Moving the stray shot out is a cull decision, not something the grid should paper over. |
+| You add photos to a **second** event while they are already in one | They join both; the banner still shows the FIRST event | First-in wins for display. Use `Clear metadata… ▸ Events` then re-add if you want to switch. |
 | A photo goes **missing** and is later relinked | Its event membership survives both | Membership moves with the file in `move_media_entries`. |
 
 ### Known limits
@@ -188,7 +210,25 @@ grid, carrying its full ratings, labels, tags and events. Right-click:
 | The drive is **offline** at launch | ⚠️ Every tracked file looks missing | The scan flags rather than deletes, so plugging the drive back in and re-checking resolves it. Nothing is lost — but do not hit *Forget* on a disconnected drive. |
 
 The last row is the one that could actually hurt you. **Never use Forget in bulk
-without checking the drive is mounted.**
+without checking the drive is mounted.** The Forget-all button says so too.
+
+### Finding them
+
+`Filters ▸ Catalog` shows a count while anything is missing; click it for the
+list, with each entry's old path. Clicking a row opens the folder it used to live
+in, so its "?" tile is on screen with its right-click actions. (Before
+nightly.4 the count was a dead end — it told you a number and nothing else, and
+the "?" tile only appeared if you happened to open the right folder.)
+
+### A defect worth knowing about, now fixed
+
+Until nightly.4, the **first visit to a new drive cloned the previously-open
+drive's catalog**. Catalog keys are paths relative to the drive root, so every
+cloned row described a file that had never existed on the new drive — and the
+integrity scan dutifully reported them missing. That is where the phantom
+"1 file could not be found" on D: and E: came from: a single trim row belonging
+to a video that only exists on F:. A drive FoxCull has not seen before now starts
+empty. If your D:/E: catalogs still carry clones, a hard reset clears them.
 
 ---
 

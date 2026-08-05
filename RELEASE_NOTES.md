@@ -1,48 +1,68 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
-## Video stills are no longer washed out
+Your feedback on the last nightly, worked through — plus a data bug your
+"phantom missing file" report turned out to be hiding.
 
-Your read was right that something was off before playback started, and right
-that it wasn't a paused state — colour came back on play and never went washed
-out again on pause.
+## Events are now a banner inside the timeline
 
-That is the fingerprint of the still image FoxCull paints while the video is
-still opening. Your footage is BT.709, but JPEG means BT.601, and the still was
-being *labelled* BT.601 without actually being converted. FoxCull was showing
-BT.709 colours decoded with the wrong maths; the video player then decoded the
-same clip correctly, which is why it snapped.
+You were right that the album-style blocks were heavier than you wanted. Events
+no longer reorder anything. Your date order stays the spine, and an event paints
+as a continuous coloured bar down the left of exactly the rows its photos occupy
+— where it ends mid-row, the next photos simply carry on.
 
-Measured on your own Note 10+ footage against a reference decode, the fix is
-worth ~2.8 dB and a visible lift in saturation. It applies to grid thumbnails
-too — they were wrong as well, just too small for it to read.
+- Turn it on at **Arrange ▸ Events ▸ Show event banners**.
+- It **disables itself** when you sort by name, size or type. A "continuous" bar
+  only means something along a time axis.
+- The colour comes from the event's name, so the same trip is the same colour in
+  every folder, every session.
+- A bar crossing a month header splits into two bands — the separator wins and
+  the event resumes underneath.
+- The old block view with cover art is still there under **Group ▸ Event** if you
+  ever want the album read.
 
-One caveat: **stills already in the cache keep the old colour.** The cache is
-keyed on the file, and the file hasn't changed. New clips are correct
-immediately; to rebuild everything, delete `<drive>\_FoxCull\thumbs` and it
-regenerates.
+**Events now behave like tags**: remove the last photo from one and it's gone,
+from the menu, the filter and the manage list. That's why "Dubai" kept appearing
+after you'd emptied it — it was a real record with no photos, and the list could
+only ever grow.
 
-## A paused video now looks paused
+## Tags: removing is finally a bulk action
 
-A play button sits over the frame whenever a clip is stopped, the way YouTube
-does it. It gets out of the way while you scrub or Glimpse.
+Adding a tag worked on a selection; removing only ever worked on one photo. Now
+the bar shows the tags **every** selected photo has, and × removes it from all of
+them.
 
-## New: a written guide to Events, moving files, and relinking
+## Clear metadata is one checklist
 
-`docs/EVENTS-MOVES-AND-RELINK.md` in the repo covers all three features
-end-to-end — what to do, what happens in the awkward cases, and a blunt list of
-where they don't work. Three things in it are worth knowing before you plan a
-workflow:
+Instead of six one-shot menu items that each closed the menu, **Clear ▸ Choose
+what to clear…** (also on right-click) opens a dialog with tick boxes for stars,
+colour labels, pick/reject, tags and events, applied in one pass. Boxes come
+pre-ticked for whatever the selection actually has.
 
-- **Moving and renaming a file in the same pass cannot be recovered** by the
-  relink pass. Both stages of matching key on the filename.
-- **Marks don't cross drives.** Catalogs are per-drive.
-- **Don't use "Forget" while a drive is disconnected** — every file on it looks
-  missing, and Forget is the one action that deletes marks.
+## You can now find a missing file
 
-It also proposes a command-line adapter so an external agent can tell FoxCull
-what it moved or tagged, and a rework of the Trash into a visible folder you can
-browse and play from. Both are waiting on your go-ahead.
+"1 file missing · Re-check" told you a number and nothing else. It's now a button
+that lists them with their old paths — click one and it takes you to the folder,
+where its "?" tile is waiting with Locate and Forget.
+
+## …which uncovered a real bug
+
+That phantom missing file on E: was never on E:. **The first visit to a new drive
+was cloning the previously-open drive's catalog.** Since marks are keyed by path
+relative to the drive root, every cloned row described a file that had never
+existed there — so a single trim on a video that lives on F: made both D: and E:
+permanently claim a missing file. All three drives were also carrying the same
+7,254-entry cache.
+
+New drives now start empty. Existing clones on D: and E: are cleared by the hard
+reset we discussed.
+
+## Smaller
+
+- The duplicate FoxCull icon and name under the title bar is gone; the sidebar
+  header is just actions now.
+- That "double border" you asked about is deliberate — the outer ring marks the
+  **active** photo (the one keys act on) within a wider selection. I've left it.
 
 ---
 

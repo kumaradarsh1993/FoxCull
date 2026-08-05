@@ -39,8 +39,12 @@ export interface AppSettings {
    *  toggle that sets it is disabled in every other grouping. */
   eventOrder: EventOrder;
   /** Show each event block behind a cover image ("album art") instead of a
-   *  plain text header. */
+   *  plain text header. Only applies to the (legacy) event GROUPING. */
   eventCovers: boolean;
+  /** Paint events as a continuous banner down the left of the rows they occupy,
+   *  inside the normal date-ordered grid — the lightweight read of an event.
+   *  Self-disables under name/size ordering, where a run isn't meaningful. */
+  eventRail: boolean;
   /** Verify the catalog against the disk when the app opens a library, and
    *  auto-reconnect anything that moved. Costs a few seconds on a big catalog;
    *  turning it off means moved files silently keep showing as "?". */
@@ -107,6 +111,7 @@ const DEFAULTS: AppSettings = {
   subgroupBy: "none",
   eventOrder: "date",
   eventCovers: true,
+  eventRail: true,
   scanOnLaunch: true,
   typeFilter: "all",
   includeSub: true,

@@ -209,6 +209,22 @@ impl Catalog {
 
     // ── events (virtual collections) ─────────────────────────────────────────
 
+    /// Delete every event that has no members left.
+    ///
+    /// Events are meant to feel like tags, and a tag is not a record — it is the
+    /// existence of rows referencing it, so removing the last one makes the tag
+    /// disappear on its own. An event IS a record, so without this it lingers
+    /// forever in the "Add to…" menu after its last photo is removed, and the
+    /// list only ever grows. Called after any removal and before any listing.
+    pub fn prune_empty_events(&self) {
+        let conn = self.conn.lock();
+        let _ = conn.execute(
+            "DELETE FROM events
+             WHERE NOT EXISTS (SELECT 1 FROM event_members m WHERE m.event_id = events.id)",
+            [],
+        );
+    }
+
     /// Every event with its member count, newest-used ordering left to the UI.
     /// Ordered by id so "primary event" (the one a multi-membership item groups
     /// under) is stable and equals the first event the item was added to.
@@ -217,7 +233,9 @@ impl Catalog {
         let mut stmt = match conn.prepare(
             "SELECT e.id, e.name, e.created_at, e.cover_rel,
                     (SELECT COUNT(*) FROM event_members m WHERE m.event_id = e.id)
-             FROM events e ORDER BY e.id",
+             FROM events e
+             WHERE EXISTS (SELECT 1 FROM event_members m WHERE m.event_id = e.id)
+             ORDER BY e.id",
         ) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
@@ -298,6 +316,13 @@ impl Catalog {
             for rel in rels {
                 stmt.execute(params![id, rel])?;
             }
+            // Tag-like lifecycle: removing the last photo removes the event.
+            tx.execute(
+                "DELETE FROM events
+                 WHERE id = ?1
+                   AND NOT EXISTS (SELECT 1 FROM event_members m WHERE m.event_id = ?1)",
+                params![id],
+            )?;
         }
         tx.commit()
     }

@@ -569,6 +569,47 @@
   let eventByName = $derived(new Map(allEvents.map((e) => [e.name, e])));
   let groupingByEvent = $derived(settings.s.groupBy === "event" || settings.s.subgroupBy === "event");
 
+  // ── the event rail ────────────────────────────────────────────────────────
+  // Events do NOT reorder the grid. The timeline (month/week/year) stays the
+  // spine, and an event paints as a continuous banner down the left of exactly
+  // the rows its photos occupy — the way Google Photos surfaces an album inside
+  // a date feed. Anything not in the event simply carries on in the same flow.
+  //
+  // This is why it can be a decoration rather than a grouping: a trip's shots
+  // are contiguous in capture order anyway, so a run over the ALREADY-SORTED
+  // view is the event. A stray photo in the middle (a screenshot, something
+  // someone sent) just splits the run in two, which is honest — and moving it
+  // out of the way is a cull decision, not something the grid should hide.
+  type EventRun = { name: string; start: number; end: number };
+
+  /** Rails only make sense along a time axis. Under name/size/type ordering the
+   *  photos of one trip are scattered, so a "continuous" banner would be a lie —
+   *  the toggle disables itself rather than drawing nonsense. */
+  let eventRailPossible = $derived(
+    settings.s.sortBy === "capture" ||
+      settings.s.sortBy === "date" ||
+      DATE_GROUPS.has(settings.s.groupBy) ||
+      DATE_GROUPS.has(settings.s.subgroupBy),
+  );
+  let eventRailOn = $derived(settings.s.eventRail && eventRailPossible && viewMode === "grid");
+
+  let eventRuns = $derived.by(() => {
+    if (!eventRailOn) return [] as EventRun[];
+    const runs: EventRun[] = [];
+    let cur: EventRun | null = null;
+    for (let i = 0; i < view.length; i++) {
+      const name = eventOf(view[i]);
+      if (cur && name === cur.name) {
+        cur.end = i;
+        continue;
+      }
+      if (cur) runs.push(cur);
+      cur = name ? { name, start: i, end: i } : null;
+    }
+    if (cur) runs.push(cur);
+    return runs;
+  });
+
   type RelatedBadge = "RAW+JPEG" | "Subclip" | "Crop/Edit" | "Burst" | "Motion";
   type RelatedRole = "mother" | "derivative" | "sidecar" | "burst";
   type StemRelation = "original" | "subclip" | "edit" | "burst";
@@ -2001,6 +2042,67 @@
     await clearTagsOnTargets();
   }
 
+  /** Remove every event membership from the selection (part of Clear metadata). */
+  async function clearEventsOnTargets() {
+    const ts = targets();
+    if (!ts.length) return;
+    const names = [...new Set(ts.flatMap((i) => i.events))];
+    if (!names.length) return;
+    const paths = ts.map((i) => i.path);
+    for (const it of ts) it.events = [];
+    for (const name of names) {
+      const ev = eventByName.get(name);
+      if (ev) await api.removeFromEvent(ev.id, paths).catch(() => {});
+    }
+    if (eventFilter && !items.some((i) => i.events.includes(eventFilter!))) eventFilter = null;
+    await refreshEvents();
+  }
+
+  // ── Clear metadata dialog ─────────────────────────────────────────────────
+  // Clearing used to be six one-shot menu items that each dismissed the popover,
+  // so "drop the stars AND the colour AND the tags off these forty" was three
+  // round trips. It is now one checklist applied in a single pass, and it is on
+  // the right-click menu too, where a bulk selection actually lives.
+  type ClearWhat = { stars: boolean; colors: boolean; flags: boolean; tags: boolean; events: boolean };
+  let clearDialog = $state<ClearWhat | null>(null);
+  let clearBusy = $state(false);
+  let clearAny = $derived(
+    !!clearDialog &&
+      (clearDialog.stars || clearDialog.colors || clearDialog.flags || clearDialog.tags || clearDialog.events),
+  );
+
+  function openClearDialog() {
+    if (!actionTargets.length) return;
+    clearOpen = false;
+    // Pre-tick only what the selection actually carries, so the default action
+    // is "clear what is there" rather than a blank form.
+    const ts = actionTargets;
+    clearDialog = {
+      stars: ts.some((i) => i.rating > 0),
+      colors: ts.some((i) => i.label !== null),
+      flags: ts.some((i) => i.flag !== null),
+      tags: ts.some((i) => i.tags.length > 0),
+      events: ts.some((i) => i.events.length > 0),
+    };
+  }
+
+  async function runClearDialog() {
+    const what = clearDialog;
+    if (!what || clearBusy) return;
+    clearBusy = true;
+    try {
+      // Marks first (they share one undo snapshot), then the many-to-many tables.
+      if (what.stars) clearRatings();
+      if (what.colors) clearLabels();
+      if (what.flags) clearFlags();
+      if (what.tags) await clearTagsOnTargets();
+      if (what.events) await clearEventsOnTargets();
+    } finally {
+      clearBusy = false;
+      clearDialog = null;
+    }
+  }
+
   // ── tags ──────────────────────────────────────────────────────────────────
   async function addTagToTargets() {
     const tag = tagInput.trim();
@@ -2013,13 +2115,32 @@
     refreshTags();
     commitUndo(`Tag "${tag}"`, before);
   }
-  async function removeTagFromActive(tag: string) {
-    if (!active) return;
-    const before = snapMarks([active]);
-    active.tags = active.tags.filter((t) => t !== tag);
-    await api.removeTag([active.path], tag).catch(() => {});
+  /** Tags shown on the info bar. For a multi-selection this is the INTERSECTION
+   *  — the tags every selected photo carries — so the × next to one always means
+   *  the same thing: remove it from everything you have selected. Showing the
+   *  union would offer to remove a tag from photos that never had it. */
+  let targetTags = $derived.by(() => {
+    const ts = actionTargets;
+    if (!ts.length) return [] as string[];
+    let acc = [...ts[0].tags];
+    for (let i = 1; i < ts.length && acc.length; i++) {
+      const s = new Set(ts[i].tags);
+      acc = acc.filter((t) => s.has(t));
+    }
+    return acc;
+  });
+
+  /** Remove a tag from the whole selection. Adding was already bulk; removal was
+   *  not, which made "tag these forty, then untag them" a forty-click undo. */
+  async function removeTagFromTargets(tag: string) {
+    const ts = targets();
+    if (!ts.length) return;
+    const before = snapMarks(ts);
+    for (const it of ts) it.tags = it.tags.filter((t) => t !== tag);
+    await api.removeTag(ts.map((i) => i.path), tag).catch(() => {});
     refreshTags();
-    commitUndo(`Untag "${tag}"`, before);
+    if (tagFilter === tag && !items.some((i) => i.tags.includes(tag))) tagFilter = null;
+    commitUndo(`Untag "${tag}"${ts.length > 1 ? ` (${ts.length})` : ""}`, before);
   }
 
   // ── events (virtual collections) ──────────────────────────────────────────
@@ -2193,6 +2314,27 @@
     } finally {
       scanning = false;
     }
+  }
+
+  // ── the missing-files list ────────────────────────────────────────────────
+  // "1 file missing · Re-check" was a dead end: it named a count and offered no
+  // way to find out WHICH file, and the "?" tile only appears if you happen to
+  // open the folder the file used to be in. This lists them with their old
+  // paths and takes you there.
+  let missingOpen = $state(false);
+  async function openMissingList() {
+    missingRels = await api.listMissing().catch(() => []);
+    missingOpen = true;
+  }
+  /** Jump to the folder a missing entry used to live in, so its "?" tile is on
+   *  screen with its right-click actions. */
+  async function goToMissing(rel: string) {
+    const root = libInfo?.root;
+    if (!root) return;
+    const dir = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
+    const abs = (root.replace(/[\\/]+$/, "") + "\\" + dir.replace(/\//g, "\\")).replace(/\\+$/, "");
+    missingOpen = false;
+    await openFolder(abs || root);
   }
 
   /** Point one "?" entry at the real file. */
@@ -2410,7 +2552,7 @@
         on: allReject,
         action: () => flag("reject"),
       },
-      { label: "Clear rating & marks" + sfx, icon: "⟲", action: () => unset() },
+      { label: "Clear metadata…" + sfx, icon: "⟲", action: openClearDialog },
       { separator: true },
       ...evEntries,
       {
@@ -3191,10 +3333,11 @@
           <!-- Standard "sidebar panel" glyph: rounded frame + left-panel divider. -->
           <svg class="panelGlyph" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><line x1="9.4" y1="4.6" x2="9.4" y2="19.4"/></svg>
         </button>
-        <span class="sidebarIdentity">
-          <img src="/favicon.png" alt="" width="26" height="26" />
-          <span class="brandLockup"><strong>FoxCull</strong><small>{currentDir ? basename(currentDir) : "Library"}</small></span>
-        </span>
+        <!-- No brand lockup here. The window's own title bar already says
+             FoxCull and names the folder; repeating both under it spent a third
+             of the sidebar header on information the user was already looking
+             at. The header is now purely actions. -->
+        <span class="headSpacer"></span>
         <div class="tree-actions">
           <button
             class="ico sm"
@@ -3327,31 +3470,38 @@
                 <option value="week">Week</option>
               </select>
             </div>
-            <!-- Event-block controls. Only meaningful while an event grouping is
-                 active, so they are disabled (not hidden) everywhere else — the
-                 option stays discoverable without pretending to do something. -->
-            <div class="fm-row evtRow" class:off={!groupingByEvent}>
+            <!-- The event rail: events as a banner INSIDE the timeline, not as
+                 a competing grouping. Self-disables under name/size/type
+                 ordering, where one trip's photos are scattered and a
+                 "continuous" band would be a lie. -->
+            <div class="fm-row evtRow" class:off={!eventRailPossible}>
               <span class="fm-lbl"><span class="fm-ico">✦</span>Events</span>
-              <label class="chk" title={groupingByEvent ? "Order event blocks by their earliest photo instead of alphabetically. The ↑↓ button above flips ascending/descending either way." : "Set Group (or Subgroup) to Event to use this"}>
+              <label
+                class="chk"
+                title={eventRailPossible
+                  ? "Draw each event as a continuous banner down the left of the photos it covers, inside the normal date order."
+                  : "Needs a date order — sort by Capture date or Modified, or group by Year/Month/Week."}
+              >
                 <input
                   type="checkbox"
-                  disabled={!groupingByEvent}
-                  checked={settings.s.eventOrder === "date"}
-                  onchange={(e) => settings.set({ eventOrder: (e.currentTarget as HTMLInputElement).checked ? "date" : "name" })}
+                  disabled={!eventRailPossible}
+                  checked={settings.s.eventRail}
+                  onchange={(e) => settings.set({ eventRail: (e.currentTarget as HTMLInputElement).checked })}
                 />
-                <span>Order by date</span>
+                <span>Show event banners</span>
               </label>
-              <label class="chk" title="Front each event block with a cover photo instead of a plain header">
-                <input
-                  type="checkbox"
-                  disabled={!groupingByEvent}
-                  checked={settings.s.eventCovers}
-                  onchange={(e) => settings.set({ eventCovers: (e.currentTarget as HTMLInputElement).checked })}
-                />
-                <span>Cover art</span>
-              </label>
+              {#if groupingByEvent}
+                <label class="chk" title="Order event blocks by their earliest photo instead of alphabetically.">
+                  <input
+                    type="checkbox"
+                    checked={settings.s.eventOrder === "date"}
+                    onchange={(e) => settings.set({ eventOrder: (e.currentTarget as HTMLInputElement).checked ? "date" : "name" })}
+                  />
+                  <span>Order by date</span>
+                </label>
+              {/if}
             </div>
-            {#if groupingByEvent && allEvents.length}
+            {#if allEvents.length}
               <div class="evtList">
                 {#each allEvents as ev (ev.id)}
                   <div class="evtManageRow">
@@ -3469,9 +3619,9 @@
               {@const n = Math.max(missingRels.length, missingInView)}
               <div class="fm-row">
                 <span class="fm-lbl">Catalog</span>
-                <span class="missingNote" title="Catalog entries whose file was not found on disk. Their marks are intact — right-click a “?” tile to relink it.">
-                  ⚠ {n} missing file{n === 1 ? "" : "s"}
-                </span>
+                <button class="missingNote" title="Catalog entries whose file was not found on disk. Their marks are intact — click to see which." onclick={openMissingList}>
+                  ⚠ {n} missing file{n === 1 ? "" : "s"} — show
+                </button>
                 <button class="chip" disabled={scanning} onclick={() => runCatalogScan({ announce: true })}>Re-check</button>
               </div>
             {/if}
@@ -3545,12 +3695,13 @@
           </button>
           {#if clearOpen}
             <div class="clearMenu">
-              <button onclick={() => { unset(); clearOpen = false; }}>Marks only</button>
+              <button onclick={openClearDialog}>Choose what to clear…</button>
+              <div class="cmSep"></div>
               <button onclick={() => { clearRatings(); clearOpen = false; }}>Stars</button>
               <button onclick={() => { clearLabels(); clearOpen = false; }}>Color</button>
               <button onclick={() => { clearFlags(); clearOpen = false; }}>Pick/Reject</button>
               <button onclick={() => { void clearTagsOnTargets(); clearOpen = false; }}>Tags</button>
-              <button class="dangerText" onclick={() => { void clearAllMarks(); clearOpen = false; }}>All marks and tags</button>
+              <button onclick={() => { void clearEventsOnTargets(); clearOpen = false; }}>Events</button>
             </div>
           {/if}
         </div>
@@ -3842,6 +3993,88 @@
       <div class="undoToast" aria-live="polite">{undoToast}</div>
     {/if}
 
+    <!-- Which files are missing, and where they used to be. -->
+    {#if missingOpen}
+      <button class="kbBackdrop" aria-label="Close" onclick={() => (missingOpen = false)}></button>
+      <div class="askBox wide" role="dialog" aria-label="Missing files">
+        <div class="askTitle">{missingRels.length} file{missingRels.length === 1 ? "" : "s"} the catalog can't find</div>
+        <div class="askBody">
+          Every rating, label, tag and event on {missingRels.length === 1 ? "it" : "them"} is still here. Go to one to relink or forget it.
+          {#if libInfo}<br />Paths are relative to <code>{libInfo.root}</code>.{/if}
+        </div>
+        {#if missingRels.length}
+          <div class="missList">
+            {#each missingRels as rel (rel)}
+              <button class="missRow" onclick={() => goToMissing(rel)} title="Open the folder it used to be in">
+                <span class="missName">{rel.split("/").pop()}</span>
+                <span class="missPath">{rel}</span>
+              </button>
+            {/each}
+          </div>
+        {:else}
+          <p class="tagempty">Nothing is missing on this drive.</p>
+        {/if}
+        <div class="askRow">
+          <button
+            class="askBtn"
+            disabled={!missingRels.length}
+            onclick={() => {
+              const gone = missingRels;
+              missingOpen = false;
+              openAsk({
+                title: `Forget all ${gone.length} missing file${gone.length === 1 ? "" : "s"}?`,
+                body: "Their ratings, labels, tags and events are deleted from the catalog. Nothing on disk changes.\n\nCheck the drive is actually connected first — an unplugged drive makes every file on it look missing.",
+                confirmLabel: "Forget all",
+                onconfirm: async () => {
+                  await api.forgetMissing(gone).catch(() => {});
+                  missingRels = await api.listMissing().catch(() => []);
+                  if (currentDir) await openFolder(currentDir, { selectIndex: activeIndex });
+                },
+              });
+            }}
+          >Forget all…</button>
+          <button class="askBtn primary" onclick={() => (missingOpen = false)}>Close</button>
+        </div>
+      </div>
+    {/if}
+
+    <!-- Clear metadata: one checklist, applied in a single pass to the whole
+         selection. Nothing here touches the files themselves. -->
+    {#if clearDialog}
+      {@const n = actionTargets.length}
+      <button class="kbBackdrop" aria-label="Close" onclick={() => (clearDialog = null)}></button>
+      <div class="askBox" role="dialog" aria-label="Clear metadata">
+        <div class="askTitle">Clear metadata from {n} item{n === 1 ? "" : "s"}</div>
+        <div class="askBody">Tick what should go. The photos and videos themselves are untouched.</div>
+        <div class="clearList">
+          {#each [
+            ["stars", "Star ratings"],
+            ["colors", "Colour labels"],
+            ["flags", "Pick / Reject"],
+            ["tags", "Tags"],
+            ["events", "Events"],
+          ] as [key, label]}
+            <label class="chk">
+              <input
+                type="checkbox"
+                checked={clearDialog[key as keyof ClearWhat]}
+                onchange={(e) => {
+                  if (clearDialog) clearDialog = { ...clearDialog, [key]: (e.currentTarget as HTMLInputElement).checked };
+                }}
+              />
+              <span>{label}</span>
+            </label>
+          {/each}
+        </div>
+        <div class="askRow">
+          <button class="askBtn" onclick={() => (clearDialog = null)}>Cancel</button>
+          <button class="askBtn primary" disabled={!clearAny || clearBusy} onclick={runClearDialog}>
+            {clearBusy ? "Clearing…" : "Clear"}
+          </button>
+        </div>
+      </div>
+    {/if}
+
     <!-- Confirm/notice modal: filesystem actions that undo can trigger, and
          delete failures whose real reason doesn't fit in the activity chip. -->
     {#if ask}
@@ -3956,12 +4189,13 @@
             items={view}
             groups={sections}
             {activeIndex}
+            {eventRuns}
             cellMin={settings.s.gridSize}
             bind:this={gridComp}
             cell={gridCell}
           />
         {:else}
-          <VirtualGrid items={view} {activeIndex} cellMin={settings.s.gridSize} bind:this={gridComp} cell={gridCell} />
+          <VirtualGrid items={view} {activeIndex} {eventRuns} cellMin={settings.s.gridSize} bind:this={gridComp} cell={gridCell} />
         {/if}
       </div>
 
@@ -4006,8 +4240,10 @@
           </div>
         {/if}
         <div class="tags">
-          {#each active.tags as t}
-            <span class="tag">{t}<button class="tagx" onclick={() => removeTagFromActive(t)} aria-label="Remove tag">×</button></span>
+          {#each targetTags as t}
+            <span class="tag" title={actionTargets.length > 1 ? `On all ${actionTargets.length} selected — × removes it from every one` : t}>
+              {t}<button class="tagx" onclick={() => removeTagFromTargets(t)} aria-label="Remove tag">×</button>
+            </span>
           {/each}
           <input
             class="taginput"
@@ -4282,7 +4518,21 @@
   .tagrow .cnt { color: var(--text-faint); }
   .tagrow.on .cnt { color: var(--accent-on); }
   .tagempty { padding: 8px 9px; color: var(--text-faint); font-size: 12px; margin: 0; }
-  .missingNote { font-size: 12px; color: color-mix(in srgb, var(--warn, #d9a441) 85%, var(--text)); }
+  .missingNote {
+    font-size: 12px;
+    padding: 3px 7px;
+    border-radius: 6px;
+    color: color-mix(in srgb, var(--warn, #d9a441) 85%, var(--text));
+    text-align: left;
+  }
+  .missingNote:hover { background: color-mix(in srgb, var(--warn, #d9a441) 16%, transparent); }
+  /* Missing-file list inside the dialog. */
+  .askBox.wide { width: min(680px, 92vw); }
+  .missList { display: flex; flex-direction: column; gap: 2px; max-height: 44vh; overflow-y: auto; margin-top: 12px; }
+  .missRow { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 7px 9px; border-radius: 7px; }
+  .missRow:hover { background: var(--bg-hover); }
+  .missName { font-size: 12.5px; color: var(--text); }
+  .missPath { font-size: 11px; color: var(--text-faint); word-break: break-all; }
 
   /* Arrange ▸ Events: the ordering toggles plus a compact manage list. */
   .evtRow { flex-wrap: wrap; }
@@ -4307,7 +4557,10 @@
   .clearMenu { position: absolute; top: 32px; right: 0; z-index: 35; width: 170px; padding: 6px; display: grid; gap: 2px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-elev); box-shadow: var(--shadow); }
   .clearMenu button { text-align: left; padding: 7px 9px; border-radius: 6px; color: var(--text-dim); font-size: 12px; }
   .clearMenu button:hover { background: var(--bg-hover); color: var(--text); }
-  .clearMenu .dangerText { color: var(--reject); }
+  .clearMenu .cmSep { height: 1px; margin: 3px 5px; background: var(--border-soft); }
+  /* Clear-metadata dialog checklist. */
+  .clearList { display: flex; flex-direction: column; gap: 9px; margin-top: 13px; }
+  .clearList .chk { font-size: 13px; color: var(--text); }
   /* Prepare split button: primary action + a caret for the scope menu. */
   .prepWrap { position: relative; display: flex; }
   .prepWrap .prep { border-top-right-radius: 0; border-bottom-right-radius: 0; }
@@ -4901,11 +5154,6 @@
     padding: 8px 10px;
     border-bottom-color: var(--border-soft);
   }
-  .sidebarIdentity { min-width: 0; display: flex; align-items: center; gap: 8px; margin-right: auto; }
-  .sidebarIdentity img { flex: 0 0 auto; border-radius: 7px; box-shadow: 0 4px 14px rgba(0,0,0,.28); }
-  .brandLockup { min-width: 0; display: flex; flex-direction: column; line-height: 1.05; }
-  .brandLockup strong { font-family: var(--font-display); font-size: 13px; font-weight: 720; letter-spacing: -.01em; }
-  .brandLockup small { max-width: 95px; margin-top: 4px; overflow: hidden; color: var(--text-faint); font-size: 9.5px; font-weight: 620; letter-spacing: .075em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
   .tree-actions { gap: 5px; }
   .tree-body { padding: 8px 7px 10px; }
   .hint { margin: 0; padding: 18px 10px; line-height: 1.5; }

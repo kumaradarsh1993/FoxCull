@@ -1,5 +1,53 @@
 # Agent Handover: FoxCull
 
+## 2026-08-04 (night): event banners, bulk clear, and a catalog CLONE bug
+
+Shipped as `v1.5.0-nightly.4`. Ledger:
+`docs/changes/2026-08-04-event-rail-bulk-clear-catalog-clone.md`.
+
+**THE FIND: `set_library_root` was cloning another drive's catalog.** The owner
+reported a confusing symptom — "1 file could not be found" on E: with no "?" tile
+anywhere. Reading all four catalogs directly showed D: and E: both flagging
+`Movies _ Final Exports_bak/Chaos Day 1 Drone shots.mp4`, a file that exists only
+on **F:**. The first visit to a new drive copied whatever catalog was open; keys
+are paths relative to the drive root, so every cloned row described a file that
+had never been there. All three drives also carried an identical 7,254-row
+capture cache. Fixed: only a drive's own legacy `fox-cull.catalog` is adopted.
+**Existing clones are not retro-cleaned** — the pending hard reset clears them.
+The lesson is the usual one for this repo: a confusing symptom was a real data
+bug, and reading the actual rows beat theorising about the UI.
+
+**Events were re-specified by the owner and are now a BANNER, not a grouping.**
+The timeline stays the spine; an event paints as a continuous bar down the left
+gutter of the rows it occupies. `EventRail.svelte` + an `eventRuns` prop on both
+virtual grids. Key constraints, all deliberate:
+- The 30 px gutter is reserved for the WHOLE grid whenever any event is in view,
+  never per-row — a gutter appearing mid-scroll would reflow every tile.
+- Self-disables under name/size/type ordering; a "continuous run" is only a
+  meaningful claim along a time axis.
+- A run crossing a section header splits into two bands: the separator wins.
+- The old `Group ▸ Event` cover-band view is kept for the album read.
+
+**Events now have a tag-like lifecycle** — removing the last member deletes the
+event. Empty events used to linger in the Add-to menu forever.
+
+**Grid layout math changed, so read this before blaming the rail:** cells now
+offset by the gutter and column fitting uses `vpWidth - rail`. Verified on a
+throwaway `/rail-check` route by reading computed DOM positions (run `[4..22]` →
+top 0, height 578 = rows 0–3; run `[31..34]` → top 730, height 140 = row 5).
+**A ~10 px horizontal overflow exists and is PRE-EXISTING** — `vpWidth` is
+measured before the scrollbar appears and ResizeObserver does not re-fire for a
+scrollbar-only change. Re-tested with `eventRuns: []` and it is identical. Do not
+attribute it to the rail; fix it separately if it ever matters.
+
+Also: bulk tag removal with intersection semantics (adding was bulk, removing was
+not); Clear-metadata as one checklist dialog (stars/colours/flags/tags/events);
+the missing-file count is now a clickable list that navigates to each entry's old
+folder; the duplicate brand lockup in the sidebar header is gone.
+
+**Still blocked on the owner** (unchanged): the ~19 GB of orphaned Trash, the
+hard reset, the Trash rework, and the CLI adapter. Nothing deleted.
+
 ## 2026-08-04 (late): video still colour, paused overlay, and the workflow doc
 
 Shipped as `v1.5.0-nightly.3`. Ledger:
