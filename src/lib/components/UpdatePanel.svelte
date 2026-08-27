@@ -259,9 +259,13 @@
   {/if}
 
   <div class="fxu-links">
+    <!-- The URL comes from Rust, which owns the repo constant. Deliberately no
+         hard-coded fallback here: a literal would be the ONE thing in this file
+         that differs between the four apps, and a wrong one would be silent. -->
     <button
       class="fxu-btn ghost"
-      onclick={() => openUrl(status?.releases_url ?? "https://github.com/kumaradarsh1993/FoxCull/releases")}
+      disabled={!status}
+      onclick={() => status && openUrl(status.releases_url)}
     >All releases</button>
   </div>
 </div>

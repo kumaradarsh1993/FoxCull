@@ -80,6 +80,18 @@ D:/Python312/python.exe extract.py && cargo test
 pass is evidence about the shipped code and a drifting module breaks extraction
 loudly instead of quietly testing nothing.
 
+And to prove the four copies have not drifted apart — which is otherwise
+invisible, because a fix applied to three of four looks exactly like a fix
+applied to four:
+
+```
+D:/Python312/python.exe md-reader/tools/check-updater-parity.py
+```
+
+It exits non-zero with a diff on the first mismatch. `updates.rs` may differ
+only in the three documented constants; the two frontend files must match byte
+for byte.
+
 ## Files
 
 | File | What |
