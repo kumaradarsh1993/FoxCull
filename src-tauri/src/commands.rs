@@ -744,7 +744,16 @@ pub fn list_tree(dir: String) -> Result<Vec<TreeDir>, String> {
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') || name.to_ascii_lowercase().starts_with("_foxcull") {
+            let lower = name.to_ascii_lowercase();
+            // Same exclusions the media walk uses, so the tree cannot offer a
+            // folder that would scan to nothing (or worse, to a few thousand
+            // app icons). Keeping the two in sync matters: a visible folder the
+            // scanner silently skips reads as a broken scan.
+            if name.starts_with('.')
+                || lower.starts_with("_foxcull")
+                || is_skippable_dir(&lower)
+                || is_macos_bundle_dir(&lower)
+            {
                 return None;
             }
             Some(TreeDir {
@@ -766,9 +775,15 @@ pub fn list_tree(dir: String) -> Result<Vec<TreeDir>, String> {
 ///
 /// Deliberately conservative — only names that are unambiguously machine-owned.
 /// Anything a person might plausibly have dropped photos in is NOT listed.
+///
+/// The list was originally Windows-only, which left macOS wide open: opening a
+/// disk there walked straight into `/Applications`, `/System` and `~/Library`
+/// and surfaced every icon and UI asset shipped inside them as "photos to
+/// cull". macOS entries are below alongside the Windows ones.
 fn is_skippable_dir(lower: &str) -> bool {
     matches!(
         lower,
+        // ── Windows ──────────────────────────────────────────────────────
         "$recycle.bin"
             | "system volume information"
             | "node_modules"
@@ -783,7 +798,97 @@ fn is_skippable_dir(lower: &str) -> bool {
             | "recovery"
             | "steamlibrary"
             | "steamapps"
+            // ── macOS ────────────────────────────────────────────────────
+            // `library` covers BOTH /Library and ~/Library — caches, app
+            // support and container folders, none of which hold a photo the
+            // user put there on purpose.
+            | "library"
+            | "system"
+            | "applications"
+            | "private"
+            | "usr"
+            | "bin"
+            | "sbin"
+            | "opt"
+            | "cores"
+            | "developer"
+            | "xcode.app"
+            | ".trashes"
+            | ".spotlight-v100"
+            | ".fseventsd"
+            | ".documentrevisions-v100"
+            | ".temporaryitems"
     )
+}
+
+/// macOS bundles are ordinary DIRECTORIES with a known suffix, so a plain
+/// recursive walk descends into them and scrapes out every icon, toolbar image
+/// and asset the developer shipped. That is the bulk of the junk seen when
+/// opening a Mac disk: `Something.app/Contents/Resources` is full of `.png`
+/// and `.tiff` files that match the media filter perfectly.
+///
+/// Matching on the suffix rather than a name list is what makes this work —
+/// there is no finite set of app names to enumerate.
+///
+/// `.photoslibrary` is deliberately NOT here: that one genuinely holds the
+/// user's own photos, and silently hiding it would lose real work.
+fn is_macos_bundle_dir(lower: &str) -> bool {
+    const BUNDLE_SUFFIXES: [&str; 9] = [
+        ".app",
+        ".framework",
+        ".bundle",
+        ".plugin",
+        ".kext",
+        ".xpc",
+        ".appex",
+        ".lproj",
+        ".xcassets",
+    ];
+    BUNDLE_SUFFIXES.iter().any(|suf| lower.ends_with(suf))
+}
+
+#[cfg(test)]
+mod scan_filter_tests {
+    use super::{is_macos_bundle_dir, is_skippable_dir};
+
+    #[test]
+    fn skips_macos_system_dirs() {
+        for d in ["library", "system", "applications", "private", "usr"] {
+            assert!(is_skippable_dir(d), "{d} should be skipped");
+        }
+    }
+
+    #[test]
+    fn still_skips_windows_dirs() {
+        for d in ["windows", "program files", "programdata", "$recycle.bin"] {
+            assert!(is_skippable_dir(d), "{d} should be skipped");
+        }
+    }
+
+    #[test]
+    fn skips_app_bundles_by_suffix() {
+        // The whole point: there is no finite list of app names.
+        for d in ["photos.app", "some random thing.app", "webkit.framework", "x.bundle"] {
+            assert!(is_macos_bundle_dir(d), "{d} should be skipped");
+        }
+    }
+
+    #[test]
+    fn keeps_real_photo_folders() {
+        // Regression guard: these are user folders and must survive both filters.
+        for d in [
+            "pictures",
+            "photos",
+            "dcim",
+            "my library of shots", // contains "library" but is not "library"
+            "screenshots",
+            "holiday.app.photos",  // ends in .photos, not .app
+            "2026-goa.photoslibrary", // user's real photo library, deliberately kept
+        ] {
+            assert!(!is_skippable_dir(d), "{d} must NOT be skipped");
+            assert!(!is_macos_bundle_dir(d), "{d} must NOT be skipped");
+        }
+    }
 }
 
 /// Recursively gather media file paths under `dir`. Uses `file_type()` (free on
@@ -822,6 +927,7 @@ fn collect_cancellable(
                 || dname.to_ascii_lowercase().starts_with("_foxcull")
                 || is_trash_dirname(&dname)
                 || is_skippable_dir(&dname.to_ascii_lowercase())
+                || is_macos_bundle_dir(&dname.to_ascii_lowercase())
             {
                 continue;
             }
