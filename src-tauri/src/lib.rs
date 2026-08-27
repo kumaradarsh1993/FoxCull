@@ -6,6 +6,7 @@ mod log;
 mod media;
 mod raw;
 mod thumbs;
+mod updates;
 mod video;
 
 use std::path::PathBuf;
@@ -141,6 +142,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            updates::update_status,
+            updates::download_and_install,
             commands::set_library_root,
             commands::list_drives,
             commands::list_tree,

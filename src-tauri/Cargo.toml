@@ -63,6 +63,15 @@ tiny_http = "0.12"
 # toolchain, which the local gnu check setup doesn't have.
 native-tls = "0.2"
 
+# ── In-app updates (src/updates.rs) ─────────────────────────────────────────
+# `rustls-tls` rather than the native stack this file uses for CASTV2: the
+# Linux CI runner then needs no OpenSSL development package, and it is what the
+# other three Fox apps carry, so the shared updates.rs compiles identically in
+# all of them. `stream` is what lets the download report real progress instead
+# of a spinner. Deliberately not tauri-plugin-updater — see the module docs.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2", "stream"] }
+tokio = { version = "1", features = ["time"] }
+
 [target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
 tauri-plugin-single-instance = "2"
 

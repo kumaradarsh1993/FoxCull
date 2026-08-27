@@ -1,5 +1,29 @@
 # Agent Handover: FoxCull
 
+## 2026-08-27 — one update module, shared across all four Fox desktop apps
+
+`docs/UPDATES.md` is the contract; **the same `src-tauri/src/updates.rs` and the
+same `UpdatePanel.svelte` now ship in wispr-fox, FoxCull, Fox MD and Fox Mark**,
+differing only in three constants. Fix a bug in one, copy it to the other three.
+
+What it buys: two channels visible at once, and on Windows an Install button
+that downloads, runs the NSIS installer **silently** (`/S /R`) and relaunches —
+no wizard, no uninstall/reinstall. macOS and Linux download and open, which is as
+far as an unsigned build can honestly go.
+
+Three things that will silently break it, all documented in `docs/UPDATES.md`:
+a nightly published as a **draft** is invisible to the API; a **renamed CI
+artifact** degrades Install to "no installer for this platform" rather than
+erroring; and a **string-compare** version check sorts `nightly.10` below
+`nightly.9`. The last two are pinned by `md-reader/tools/updates-selftest`, which
+slices the real `updates.rs` rather than restating it — 9/9 passing.
+
+Local to this repo: FoxCull had **no** update path at all before this — the gear
+now has a *Version* row opening an About & updates dialog, and `reqwest` +
+`tokio` are new dependencies (rustls, so the Linux CI runner needs no OpenSSL
+dev package).
+
+
 ## 2026-08-05: the visible Trash, and the settings trap that hid the event banner
 
 Shipped as `v1.5.0-nightly.5`. Ledger:

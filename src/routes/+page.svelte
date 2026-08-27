@@ -27,6 +27,8 @@
   import ActivityBar from "$lib/components/ActivityBar.svelte";
   import EditStudio from "$lib/components/EditStudio.svelte";
   import ControllerPanel from "$lib/components/ControllerPanel.svelte";
+  import UpdatePanel from "$lib/components/UpdatePanel.svelte";
+  import { updates, primeUpdateCheck } from "$lib/updates.svelte";
   import { pad, PAD_ACTIONS, buttonName, type PadActionId } from "$lib/gamepad.svelte";
 
   type FlagFilter = "all" | "pick" | "reject" | "unflagged";
@@ -422,6 +424,7 @@
   let controllerOpen = $state(false);
   let padHelpOpen = $state(false);
   let shortcutsOpen = $state(false);
+  let aboutOpen = $state(false);
 
   /** True while any toolbar popover/menu is open (they share light-dismiss). */
   function anyPopoverOpen(): boolean {
@@ -1034,6 +1037,11 @@
       import("$lib/scrub-probe").then((m) => m.maybeRunScrubProbe());
     }
     await settings.init();
+    // One unauthenticated GitHub call per app run, so the gear can show a dot
+    // when a newer build exists. Failures are silent on purpose - being offline
+    // is not news, and a settings button that shouts because GitHub was
+    // unreachable trains you to ignore it.
+    void primeUpdateCheck();
     try {
       drives = await api.listDrives();
     } catch {
@@ -2911,6 +2919,10 @@
       shortcutsOpen = false;
       return;
     }
+    if (e.key === "Escape" && aboutOpen) {
+      aboutOpen = false;
+      return;
+    }
     if (e.key === "Escape" && padHelpOpen) {
       padHelpOpen = false;
       return;
@@ -3886,6 +3898,11 @@
             {scanning ? "Checking…" : "🔎 Check now"}
           </button>
         </div>
+        <div class="row"><span>Version</span>
+          <button class="btn sm" onclick={() => { settingsOpen = false; aboutOpen = true; }} title="What you're running, what's available, and one button to move between them">
+            {updates.available ? "● Update available…" : "About & updates…"}
+          </button>
+        </div>
         <div class="row"><span>Library</span>
           {#if libInfo}
             <button class="btn sm" onclick={() => libInfo && api.reveal(libInfo.catalog)} title="Show the library folder in your file manager">Reveal</button>
@@ -3967,6 +3984,17 @@
           {/if}
         {/each}
         <div class="pgFoot">Remap in Settings → Controller</div>
+      </div>
+    {/if}
+
+    <!-- About & updates. The panel is byte-identical in wispr-fox, Fox MD and
+         Fox Mark - one implementation of "check, download, install silently,
+         relaunch" rather than four that drift. -->
+    {#if aboutOpen}
+      <button class="kbBackdrop" aria-label="Close" onclick={() => (aboutOpen = false)}></button>
+      <div class="aboutBox" role="dialog" aria-label="About and updates">
+        <div class="kbHead"><span>About &amp; updates</span><button class="kbClose" onclick={() => (aboutOpen = false)} title="Close (Esc)">✕</button></div>
+        <div class="aboutBody"><UpdatePanel title="FoxCull" /></div>
       </div>
     {/if}
 
@@ -4699,6 +4727,23 @@
     border: none;
     cursor: default;
   }
+  .aboutBox {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 295;
+    width: min(680px, calc(100vw - 60px));
+    max-height: calc(100vh - 80px);
+    overflow-y: auto;
+    padding: 16px 20px 18px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--bg-elev);
+    box-shadow: var(--shadow);
+  }
+  .aboutBody { margin-top: 12px; }
+
   .kbGuide {
     position: fixed;
     left: 50%;
