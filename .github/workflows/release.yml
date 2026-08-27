@@ -103,8 +103,11 @@ jobs:
               '',
               '## First-time install',
               '**Windows:** click through SmartScreen ("More info" -> "Run anyway") — not code-signed yet.',
-              '**macOS:** not notarized — right-click the app -> Open, or run',
+              '**macOS:** signed ad-hoc but not notarized. Double-click, click **Done** on',
+              '"Apple could not verify...", then open **System Settings -> Privacy & Security**',
+              'and click **Open Anyway**. Terminal equivalent:',
               '`xattr -dr com.apple.quarantine "/Applications/FoxCull.app"`.',
+              'Right-click -> Open no longer bypasses Gatekeeper on macOS 15 (Sequoia) and newer.',
             ].join('\n');
             const { data } = await github.rest.repos.createRelease({
               owner: context.repo.owner,
@@ -213,6 +216,34 @@ jobs:
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
+      # macOS equivalent of the Windows runtime check below. tauri-bundler only
+      # signs the .app when bundle.macOS.signingIdentity is set; without it
+      # Contents/_CodeSignature is missing, the embedded signature still claims
+      # sealed resources, and macOS reports "FoxCull is damaged and can't be
+      # opened" - a hard block with no "Open Anyway" escape hatch. Also assert
+      # the ffmpeg sidecar is present and valid, since a nested binary that
+      # fails to validate takes the whole bundle down with it.
+      - name: Verify macOS bundle signature
+        if: matrix.platform == 'macos-latest'
+        run: |
+          set -euo pipefail
+          APP=$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos \
+                  -maxdepth 1 -name '*.app' | head -1)
+          if [ -z "$APP" ]; then
+            echo "::error::No .app bundle produced by the build"; exit 1
+          fi
+          echo "Verifying $APP"
+          if [ ! -f "$APP/Contents/_CodeSignature/CodeResources" ]; then
+            echo "::error::Missing Contents/_CodeSignature/CodeResources - Gatekeeper will call this app damaged"
+            exit 1
+          fi
+          if [ ! -x "$APP/Contents/MacOS/ffmpeg" ]; then
+            echo "::error::ffmpeg sidecar missing from the .app bundle"; exit 1
+          fi
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign --verify --strict "$APP/Contents/MacOS/ffmpeg"
+          echo "Bundle signature and ffmpeg sidecar verified."
+
       # A successful compile is not enough on Windows. A local GNU build once
       # produced an installer that immediately failed with
       # "WebView2Loader.dll was not found", and the portable package omitted

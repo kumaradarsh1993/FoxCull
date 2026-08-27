@@ -36,8 +36,14 @@ Current stable `v0.6.3` assets:
 - macOS Apple Silicon: `FoxCull_0.6.3_aarch64.dmg`
 - Linux: `FoxCull_0.6.3_amd64.AppImage` or `.deb`
 
-Windows and macOS builds are not code-signed/notarized yet, so first launch may
-show SmartScreen or Gatekeeper warnings.
+Builds are not notarized, so each OS warns once on first launch:
+
+- **Windows** — SmartScreen: **More info → Run anyway**.
+- **macOS** — *"Apple could not verify FoxCull is free of malware"*: click **Done**, then open
+  **System Settings → Privacy & Security** and click **Open Anyway** next to FoxCull.
+  Terminal equivalent: `xattr -dr com.apple.quarantine "/Applications/FoxCull.app"`
+
+  > Right-click → Open stopped bypassing Gatekeeper in macOS 15 (Sequoia). Use **Open Anyway**.
 
 ## Prepare And Pre-Caching
 
