@@ -653,35 +653,45 @@ mod tests {
     /// verbatim rather than described.
     #[test]
     fn every_repos_real_artifact_set_yields_an_installer() {
+        // Refreshed 2026-08-28 from the newest release of each repo. These are
+        // real names, copied from `gh release view`, not invented shapes. Two
+        // things changed since they were first pinned and neither broke the
+        // picker: macOS went from a universal .dmg to an aarch64 one on three
+        // of the four apps, and every repo now also publishes an
+        // `.app.tar.gz`, which must never be mistaken for an installer.
         let sets: [&[&str]; 4] = [
             &[
-                "wispr-fox-3.4.0-nightly.2-1.x86_64.rpm",
-                "wispr-fox_3.4.0-nightly.2_aarch64.dmg",
-                "wispr-fox_3.4.0-nightly.2_amd64.AppImage",
-                "wispr-fox_3.4.0-nightly.2_amd64.deb",
-                "wispr-fox_3.4.0-nightly.2_x64-setup.exe",
+                "wispr-fox-3.4.0-nightly.6-1.x86_64.rpm",
+                "wispr-fox_3.4.0-nightly.6_aarch64.dmg",
+                "wispr-fox_3.4.0-nightly.6_amd64.AppImage",
+                "wispr-fox_3.4.0-nightly.6_amd64.deb",
+                "wispr-fox_3.4.0-nightly.6_x64-setup.exe",
+                "wispr-fox_aarch64.app.tar.gz",
             ],
             &[
-                "FoxCull_1.5.0-nightly.5_aarch64.dmg",
-                "FoxCull_1.5.0-nightly.5_amd64.AppImage",
-                "FoxCull_1.5.0-nightly.5_amd64.deb",
-                "FoxCull_1.5.0-nightly.5_x64-setup.exe",
-                "foxcull_1.5.0-nightly.5_x64_portable.zip",
+                "FoxCull_1.5.0-nightly.7_aarch64.dmg",
+                "FoxCull_1.5.0-nightly.7_amd64.AppImage",
+                "FoxCull_1.5.0-nightly.7_amd64.deb",
+                "FoxCull_1.5.0-nightly.7_x64-setup.exe",
+                "foxcull_1.5.0-nightly.7_x64_portable.zip",
+                "FoxCull_aarch64.app.tar.gz",
             ],
             &[
-                "fox-mark_0.5.0-nightly.1_x64_portable.zip",
-                "Fox.Mark_0.5.0-nightly.1_aarch64.dmg",
-                "Fox.Mark_0.5.0-nightly.1_amd64.AppImage",
-                "Fox.Mark_0.5.0-nightly.1_amd64.deb",
-                "Fox.Mark_0.5.0-nightly.1_x64-setup.exe",
+                "fox-mark_0.5.0-nightly.3_x64_portable.zip",
+                "Fox.Mark_0.5.0-nightly.3_aarch64.dmg",
+                "Fox.Mark_0.5.0-nightly.3_amd64.AppImage",
+                "Fox.Mark_0.5.0-nightly.3_amd64.deb",
+                "Fox.Mark_0.5.0-nightly.3_x64-setup.exe",
+                "Fox.Mark_aarch64.app.tar.gz",
             ],
             &[
-                "Fox.MD-0.9.0-1.x86_64.rpm",
-                "Fox.MD_0.9.0_amd64.AppImage",
-                "Fox.MD_0.9.0_amd64.deb",
-                "Fox.MD_0.9.0_universal.dmg",
-                "Fox.MD_0.9.0_x64-setup.exe",
-                "Fox.MD_0.9.0_x64_en-US.msi",
+                "Fox.MD-0.11.0-1-1.x86_64.rpm",
+                "Fox.MD_0.11.0-1_amd64.AppImage",
+                "Fox.MD_0.11.0-1_amd64.deb",
+                "Fox.MD_0.11.0-1_universal.dmg",
+                "Fox.MD_0.11.0-1_x64-setup.exe",
+                "Fox.MD_0.11.0-1_x64_en-US.msi",
+                "Fox.MD_universal.app.tar.gz",
             ],
         ];
         for names in sets {
