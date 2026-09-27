@@ -23,10 +23,15 @@
     size = 320,
     armed = false,
     deferUntilVisible = false,
+    badge = true,
   }: {
     item: MediaItem;
     size?: number;
     armed?: boolean;
+    /** Draw the RAW corner badge. Off where the host already labels the kind:
+     *  the grid and filmstrip draw their own RAW/JPG tag, and two badges
+     *  stacked (with the rating on top of one) was the result. */
+    badge?: boolean;
     /** For genuinely unvirtualized lists only. Virtual grids already mount just
      *  the viewport and must not depend on a second visibility observer. */
     deferUntilVisible?: boolean;
@@ -433,7 +438,7 @@
   {:else}
     <div class="ph dim">.</div>
   {/if}
-  {#if item.kind === "raw"}<span class="badge">RAW</span>{/if}
+  {#if badge && item.kind === "raw"}<span class="badge">RAW</span>{/if}
 </div>
 
 <style>

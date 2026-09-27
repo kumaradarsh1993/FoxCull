@@ -192,8 +192,8 @@
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    width: min(680px, calc(100vw / var(--ui-scale) - 32px));
-    max-height: calc(100vh / var(--ui-scale) - 48px);
+    width: min(680px, calc(100vw - 32px));
+    max-height: calc(100vh - 48px);
     z-index: 101;
     display: flex;
     flex-direction: column;

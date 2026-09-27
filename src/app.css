@@ -145,11 +145,7 @@
   --radius-lg: 15px;
   --radius-xl: 20px;
   --control-h: 30px;
-  --ui-scale: 1;
 }
-
-:root[data-ui-scale="compact"] { --ui-scale: 0.90; }
-:root[data-ui-scale="distance"] { --ui-scale: 1.22; }
 
 * { box-sizing: border-box; }
 
@@ -170,25 +166,13 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Standard mode must have no transformed ancestor: WebView2 can stop painting
-   virtualized image layers inside a transformed scrolling surface. Apply the
-   one whole-interface transform only when the user actually requests scaling.
-   (`.app` must not apply a second transform.) */
-:root:not([data-ui-scale]),
-:root[data-ui-scale="comfortable"] { --ui-scale: 1; }
-
-body > div:first-child {
-  width: 100vw;
-  height: 100vh;
-}
-
-:root[data-ui-scale="compact"] body > div:first-child,
-:root[data-ui-scale="distance"] body > div:first-child {
-  width: calc(100vw / var(--ui-scale));
-  height: calc(100vh / var(--ui-scale));
-  transform: scale(var(--ui-scale));
-  transform-origin: top left;
-}
+/* Interface size (Compact / Standard / TV) is the webview's own page zoom, set
+   from +layout.svelte, not CSS. From 2026-08-01 it was a transform on
+   `body > div:first-child`, but SvelteKit's wrapper there is
+   `display: contents`, which has no box to transform: the sizes silently did
+   nothing, while panels that divided by the intended scale came out the wrong
+   size. Page zoom reflows the layout and keeps media queries, pointer
+   coordinates and measurements consistent, so nothing below needs to know. */
 
 button,
 input,
@@ -222,6 +206,17 @@ button:disabled { cursor: not-allowed; }
 }
 ::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--text-dim) 62%, transparent); }
 ::-webkit-scrollbar-track { background: transparent; }
+/* Floating panels positioned by `keepInView` (src/lib/keep-in-view.ts). When a
+   panel is taller than the window it scrolls, and a height-capped flex column
+   shrinks its children by default. A row with an explicit min-height then
+   drops to that minimum and its content spills over the next row: the
+   Settings "Theme" chips sat on top of "Interface size" on a 820px-tall Mac
+   window. Rows never shrink; the panel scrolls instead. */
+[data-keep-in-view] > * { flex-shrink: 0; }
+
+/* Where a horizontal and a vertical scrollbar meet (the Details table). The
+   default corner is opaque white, a bright square on every dark theme. */
+::-webkit-scrollbar-corner { background: transparent; }
 
 .btn {
   min-height: var(--control-h);

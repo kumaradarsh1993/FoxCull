@@ -114,6 +114,13 @@ npm run build          # vite build (static adapter)
 npm run tauri dev      # full app, port 1460 — prefer the workspace launch config
 ```
 
+**Layout QA without Tauri:** `npm run dev` and open `http://localhost:1460` in
+a plain browser. A dev-only fake backend (`src/lib/dev/mock-ipc.ts`) supplies a
+realistic library, and `await __sweep()` in the console audits every view, menu
+and dialog for overlaps, clipping and off-screen content. Run it at each size in
+`docs/UX-AUDIT-2026-08.md` → September re-audit before shipping UI changes: the
+Windows-only QA of August missed overlaps a Mac window showed immediately.
+
 Backend (from `src-tauri/`):
 
 ```

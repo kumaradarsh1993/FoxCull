@@ -250,6 +250,49 @@
   let sourcePanelW = $state(360);
   let inspectorPanelW = $state(320);
   let timelinePanelH = $state(260);
+  /** Width of the whole studio, for sharing it out below. */
+  let shellW = $state(0);
+
+  // The side panels keep the widths the user dragged them to while there is
+  // room, and give way proportionally when there isn't, so the work pane
+  // (preview, format bar, Export) always gets at least WORK_MIN. With fixed
+  // 360 + 320 px panels a 1280 px Mac window with the folder tree open left
+  // the work pane ~318 px, and its toolbar painted over the Look panel.
+  const WORK_MIN = 460;
+  const PANEL_MIN = 230;
+  let panelW = $derived.by(() => {
+    let src = sourceCollapsed ? 0 : sourcePanelW;
+    let insp = inspectorCollapsed ? 0 : inspectorPanelW;
+    const gutters = (src ? 6 : 0) + (insp ? 6 : 0);
+    const over = src + insp + gutters + WORK_MIN - shellW;
+    if (shellW > 0 && over > 0) {
+      const give = (w: number) => (w ? Math.max(0, w - PANEL_MIN) : 0);
+      const slack = give(src) + give(insp);
+      const cut = Math.min(over, slack);
+      if (slack > 0) {
+        src -= (give(src) / slack) * cut;
+        insp -= (give(insp) / slack) * cut;
+      }
+    }
+    return { src: Math.round(src), insp: Math.round(insp) };
+  });
+
+  // Below this width even minimum-width panels on both sides starve the work
+  // pane (a 1024 px window with the folder tree open left it ~280 px, and the
+  // format bar and Export ran over the Look panel). Narrow studios show ONE
+  // side panel: whichever was opened most recently; on entering narrow mode
+  // the media list stays, since it is where clips come from.
+  const NARROW_W = PANEL_MIN * 2 + 12 + WORK_MIN;
+  let prevInspectorOpen = true;
+  $effect(() => {
+    const srcOpen = !sourceCollapsed;
+    const inspOpen = !inspectorCollapsed;
+    if (shellW > 0 && shellW < NARROW_W && srcOpen && inspOpen) {
+      if (!prevInspectorOpen) sourceCollapsed = true;
+      else inspectorCollapsed = true;
+    }
+    prevInspectorOpen = !inspectorCollapsed;
+  });
   let sourceCollapsed = $state(false);
   let inspectorCollapsed = $state(false);
   let timelineCollapsed = $state(false);
@@ -1652,7 +1695,7 @@
     e.preventDefault();
     sourceCollapsed = false;
     const startX = e.clientX;
-    const startW = sourcePanelW;
+    const startW = panelW.src || sourcePanelW; // what is on screen, not the wish
     const move = (ev: PointerEvent) => {
       sourcePanelW = clampPanel(startW + ev.clientX - startX, 260, 560);
     };
@@ -1668,7 +1711,7 @@
     e.preventDefault();
     inspectorCollapsed = false;
     const startX = e.clientX;
-    const startW = inspectorPanelW;
+    const startW = panelW.insp || inspectorPanelW;
     const move = (ev: PointerEvent) => {
       inspectorPanelW = clampPanel(startW - (ev.clientX - startX), 240, 480);
     };
@@ -2369,7 +2412,8 @@
   class:inspectorCollapsed
   class:timelineCollapsed
   class:productionPreviewMode={productionPreview}
-  style={`--source-w:${sourceCollapsed ? 0 : sourcePanelW}px; --source-splitter-w:${sourceCollapsed ? 0 : 6}px; --inspector-w:${inspectorCollapsed ? 0 : inspectorPanelW}px; --inspector-splitter-w:${inspectorCollapsed ? 0 : 6}px; --timeline-h:${timelineCollapsed ? 0 : timelinePanelH}px;`}
+  bind:clientWidth={shellW}
+  style={`--source-w:${panelW.src}px; --source-splitter-w:${sourceCollapsed ? 0 : 6}px; --inspector-w:${panelW.insp}px; --inspector-splitter-w:${inspectorCollapsed ? 0 : 6}px; --timeline-h:${timelineCollapsed ? 0 : timelinePanelH}px;`}
 >
   <aside class="sourcePane">
     <div class="sourceHead">
@@ -3226,6 +3270,16 @@
     flex-direction: column;
     gap: 6px;
   }
+  /* Scrolling columns: rows keep their height and the column scrolls. With the
+     default flex-shrink the list squashed each 76px row to 74px and the rating
+     and tag chips ran into the next clip's name (seen at 1280x820). Same for
+     the Look panel, where the slider labels were squashed. */
+  .sourceList > *,
+  .inspector > *,
+  .block > *,
+  .igDialog > * {
+    flex-shrink: 0;
+  }
   .sourceList.thumbs {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
@@ -3328,7 +3382,8 @@
     align-items: center;
     gap: 4px;
     flex-wrap: wrap;
-    max-height: 36px;
+    /* Two rows of chips exactly (2 × 17.5 + 4 gap); 36px clipped the second. */
+    max-height: 40px;
     overflow: hidden;
   }
   .sourceChips span {
@@ -3352,7 +3407,16 @@
     min-width: 0;
     min-height: 0;
     display: grid;
-    grid-template-rows: auto minmax(180px, 1fr) auto 6px var(--timeline-h, 260px);
+    /* max-content for the top bar: as `auto` it gave up height whenever the
+       column was short (TV size on a 1280x788 Mac window), and the wrapped
+       format presets spilled over the preview. When height is short the
+       timeline yields first (down to 120px), then the preview's 180px floor. */
+    grid-template-rows:
+      max-content
+      minmax(180px, 1fr)
+      auto
+      6px
+      minmax(min(120px, var(--timeline-h, 260px)), var(--timeline-h, 260px));
     position: relative;
     overflow: visible;
     z-index: 2;
@@ -3377,7 +3441,7 @@
     flex-wrap: wrap;
   }
   .timelineCollapsed .workPane {
-    grid-template-rows: auto minmax(180px, 1fr) auto 0 0;
+    grid-template-rows: max-content minmax(180px, 1fr) auto 0 0;
   }
   .timelineCollapsed .timelineResize {
     display: none;
@@ -3719,6 +3783,12 @@
   .scale input {
     flex: 1;
     accent-color: var(--accent);
+  }
+  /* The app-wide slider has a 3px track and a thumb that hangs ~6px either
+     side of it, outside the input's box, so a stacked label's thumb touched the
+     next label's text. Reserve that room inside the row. */
+  label input[type="range"] {
+    margin-block: 6px;
   }
   .play,
   .miniBtn,
@@ -4187,6 +4257,13 @@
     gap: 6px;
     color: var(--text-faint);
     font-size: 12px;
+  }
+  /* A range input keeps its ~130px intrinsic width inside a flex row, so the
+     140px Zoom label overflowed onto the Snap chip. Let it take what's left. */
+  .scale input[type="range"] {
+    flex: 1;
+    min-width: 0;
+    width: auto;
   }
   .snap {
     padding: 3px 7px;

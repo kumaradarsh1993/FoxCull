@@ -28,6 +28,7 @@
   import EditStudio from "$lib/components/EditStudio.svelte";
   import ControllerPanel from "$lib/components/ControllerPanel.svelte";
   import ExcludePanel from "$lib/components/ExcludePanel.svelte";
+  import { keepInView } from "$lib/keep-in-view";
   import Welcome from "$lib/components/Welcome.svelte";
   import UpdatePanel from "$lib/components/UpdatePanel.svelte";
   import { updates, primeUpdateCheck } from "$lib/updates.svelte";
@@ -3317,7 +3318,7 @@
          .stackline CSS. Everything that still needs rounded-corner clipping
          (the thumbnail image, reject dim, badges) moves in here instead. -->
     <div class="cellclip">
-      <Thumb {item} size={gridThumbTier} armed={i === activeIndex} />
+      <Thumb {item} size={gridThumbTier} armed={i === activeIndex} badge={false} />
       <span class="ov">
         {#if rel}
           <span class="rel-badges">
@@ -3380,7 +3381,7 @@
     <!-- Same reasoning as gridCell: keep the stack line out of the clipped
          wrapper so it can bleed into the strip gap between same-stack tiles. -->
     <div class="cellclip">
-      <Thumb {item} size={stripThumbTier} armed={i === activeIndex} />
+      <Thumb {item} size={stripThumbTier} armed={i === activeIndex} badge={false} />
       {#if rel}
         <span class="s-rel">{shortRelatedBadge(rel)}</span>
         <span class="s-role">{relatedRoleLabel(rel).slice(0, 1)}</span>
@@ -3503,7 +3504,7 @@
           <svg class="toolbarIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M4 17h16M4 12h16"/><circle cx="17" cy="7" r="2"/><circle cx="8" cy="17" r="2"/><circle cx="10" cy="12" r="2"/></svg><span class="actionText">Arrange</span>
         </button>
         {#if arrangeOpen}
-          <div class="arrangeMenu">
+          <div class="arrangeMenu" use:keepInView>
             <div class="fm-row">
               <span class="fm-lbl"><span class="fm-ico">⇅</span>Sort</span>
               <select class="sel wide" title="Sort order" bind:value={settings.s.sortBy} onchange={() => { settings.set({ sortBy: settings.s.sortBy }); maybeFetchCaptures(); }}>
@@ -3601,7 +3602,7 @@
           <span class="shown-count" title="Items passing the active filters, out of the whole folder">{baseView.length} of {items.length}</span>
         {/if}
         {#if filtersOpen}
-          <div class="filtermenu">
+          <div class="filtermenu" use:keepInView>
             <div class="fm-row">
               <span class="fm-lbl">Type</span>
               <div class="seg">
@@ -3744,7 +3745,7 @@
             title="Choose what to prepare"
           >▾</button>
           {#if prepMenuOpen}
-            <div class="clearMenu prepMenu">
+            <div class="clearMenu prepMenu" use:keepInView>
               {#each PREP_SCOPES as s}
                 {@const n = prepScopeItems(s.key).length}
                 <button disabled={n === 0} onclick={() => { prepMenuOpen = false; void prepareFolder(s.key); }}>
@@ -3764,7 +3765,7 @@
             <span class="actionText">Clear</span>
           </button>
           {#if clearOpen}
-            <div class="clearMenu">
+            <div class="clearMenu" use:keepInView>
               <button onclick={openClearDialog}>Choose what to clear…</button>
               <div class="cmSep"></div>
               <button onclick={() => { clearRatings(); clearOpen = false; }}>Stars</button>
@@ -3816,7 +3817,7 @@
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 20h.01"/><path d="M2 16.5a3.5 3.5 0 0 1 3.5 3.5"/><path d="M2 13a7 7 0 0 1 7 7"/><path d="M2 9.5V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-8.5"/></svg>
           </button>
           {#if castOpen}
-            <div class="castMenu">
+            <div class="castMenu" use:keepInView>
               {#if castDevice}
                 <div class="castNow">
                   {castStatus.connected ? "Casting" : "Connecting"} to
@@ -3854,7 +3855,7 @@
 
     <!-- settings popover -->
     {#if settingsOpen}
-      <div class="pop">
+      <div class="pop" use:keepInView>
         <!-- Grouped into three plain sections (the user's ask: settings live in
              ONE place, logically bunched, no scattered duplicates). Stacks and
              Live Scrub have no other home — this popover is it. -->
@@ -4455,6 +4456,9 @@
   .hsplit.collapsed { flex-basis: 14px; cursor: default; }
   .hsplit.collapsed:hover { background: var(--bg-panel); }
   .hsplit.collapsed .grip { opacity: 0.22; }
+  /* Collapsed, the rail is the last thing in the window: a 17px toggle centred
+     on a 14px rail hung 2px off the bottom edge. */
+  .hsplit.collapsed .stripToggle { height: 13px; }
   /* Overhangs its 8px rail so it stays a real click target without the rail
      having to grow. */
   .stripToggle {
@@ -5325,12 +5329,16 @@
     top: 58px;
     right: 10px;
     width: 396px;
-    max-height: calc(100vh / var(--ui-scale) - 72px);
+    max-height: calc(100vh - 72px);
     overflow-y: auto;
     padding: 15px;
     gap: 11px;
   }
   .pop .grpHead { margin-top: 5px; padding-bottom: 6px; letter-spacing: .095em; }
+  /* Scrolling lists inside menus: rows keep their height, the list scrolls. */
+  .fm-tags > *,
+  .missList > *,
+  .evtList > * { flex-shrink: 0; }
   .pop .row { min-height: 29px; }
   .appearanceRow { align-items: flex-start !important; }
   .themeSeg { width: 250px; display: grid; grid-template-columns: 1fr 1fr; }
@@ -5415,16 +5423,4 @@
     .tags { display: none; }
   }
 
-  /* Scaling changes the app's effective layout width without changing the
-     browser media-query width. Give TV mode the same two-row command bar a
-     genuinely narrower window receives, so zoom never hides Settings. */
-  :global(html[data-ui-scale="distance"]) .bar {
-    flex-wrap: wrap;
-    align-content: center;
-    min-height: 91px;
-  }
-  :global(html[data-ui-scale="distance"]) .bar > .spacer { display: none; }
-  :global(html[data-ui-scale="distance"]) .rightTools { width: 100%; justify-content: flex-end; }
-  :global(html[data-ui-scale="distance"]) .viewGroup { margin-right: auto; }
-  :global(html[data-ui-scale="distance"]) .pop { top: 94px; }
 </style>

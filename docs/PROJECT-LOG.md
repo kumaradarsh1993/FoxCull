@@ -766,3 +766,34 @@ And the release notes for the last two nightlies had shipped with the text from
 the one before, so nobody reading the release page had been told about the
 update checker or the signing fix.
 
+## 2026-09-27 (later) — Measuring the overlaps instead of looking for them
+
+"The layout overlaps across multiple touchpoints" is a hard bug report to close
+by eye. A screenshot catches what you already suspect. So the audit started by
+making FoxCull run in a plain browser with a pretend library behind it, then
+wrote a probe that measures every piece of text and every control on screen and
+reports any two that collide. It opens each view, menu and dialog in turn, at
+every window size the owner's machines produce.
+
+Most of what it found came from a handful of causes rather than dozens of
+separate bugs. The one behind the Settings overlap the owner had seen is a
+browser layout rule: a scrolling list is allowed to squash its rows. On the
+Windows laptop the Settings panel fit, so nothing was squashed. On the Mac's
+shorter window it didn't fit, and the two-line Theme row was crushed onto the
+line below. The same rule was crushing the clip list in the Edit studio. Menus
+anchored to the left of their buttons ran off the screen once the toolbar
+wrapped. The Edit studio's fixed side panels left the preview a sliver, and its
+toolbar painted over its neighbour.
+
+The surprise was underneath all of that. The TV and Compact interface sizes, a
+pillar of the August redesign, had never worked. They scaled a wrapper element
+the framework renders with no box at all, so there was nothing to scale. They
+now use the window's own zoom, the same thing a browser does on Cmd-plus, and a
+real build on the Mac confirmed the numbers: TV on a 1280-pixel window lays out
+at exactly 1049.
+
+What stayed out of scope is written down too. None of it was run on Windows,
+where the zoom goes through a different engine. And the controller pairing
+guide still tells a Mac user to open Windows Bluetooth settings: that's a
+copy problem, not a layout one.
+

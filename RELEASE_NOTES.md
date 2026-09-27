@@ -1,64 +1,33 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
-## Opening a whole drive no longer drags in the whole computer
+## Nothing overlaps any more
 
-Clicking `C:\` or Macintosh HD used to scan everything on it, including the
-operating system and every installed app. On a Mac that meant 241,000 files,
-more than a minute of waiting, and a few hundred MB of cache built for app icons
-nobody wanted to cull.
+A full pass over every screen at every window size, done on a Mac this time,
+where a shorter window and a different system font had pushed things into each
+other.
 
-- **System and app folders are skipped by default** — `Windows`, `Program Files`,
-  `AppData`, `/System`, `/Library`, `~/Library`, `.app` bundles, `node_modules`,
-  game libraries. The same Mac drive now scans in about 9 seconds.
-- **Only in the places they belong.** A folder of photos *of* windows, or a shoot
-  called "Library" on your SSD, still shows up. Only `C:\Windows` and the Mac's own
-  `/Library` are hidden.
-- **FoxCull won't reopen a whole system drive at launch.** If you left one open,
-  the welcome screen offers it back instead of silently re-scanning it.
+- **Settings**: the Theme buttons no longer sit on top of Interface size.
+- **Arrange and Filters** menus stay inside the window instead of running off
+  its right edge.
+- **Edit studio**: the preview, the media list and the Look panel no longer
+  overlap on a laptop screen. The side panels give way so the preview always
+  has room. In a narrow window only one side panel shows at a time; use
+  **Media** and **Look** to switch.
+- **Edit studio**: clips' ratings and tags no longer run into the next clip's
+  name, the format buttons stay above the preview, and Zoom no longer covers
+  Snap.
+- **RAW photos** show one RAW tag, not two stacked, and the filmstrip's stars
+  are no longer drawn on top of it.
+- No more white square in the corner of the Details list on dark themes.
 
-## Excluded folders, your way
+## TV / large and Compact finally work
 
-**Settings → Excluded folders** lists what's skipped, grouped: Windows system,
-macOS system, app data & bundles, developer folders, game libraries. They're all
-ticked by default, and each one shows exactly which folders it hides. Untick any of them.
-
-Add your own too:
-- **A specific folder**: right-click it in the sidebar → **Exclude from scans**,
-  or use **Add folder…**.
-- **A name, anywhere**: type `Proxy` or `*_cache`.
-
-Your choices are saved on this computer. **Reset to defaults** puts it back.
-
-## A calmer welcome screen
-
-With no folder open, the main panel now simply says where to start: pick a folder
-on the left, or jump straight to a **camera card** FoxCull spotted, Pictures,
-Movies, Desktop or Downloads.
-
-## Fixed
-
-- **Mac: external drives keep their own library again.** Opening an SD card or SSD
-  stored its catalog and thumbnails on the Mac instead of the drive. Each drive
-  now gets its own `_FoxCull` folder, as on Windows.
-- **Mac: the startup disk appears once in the sidebar**, as "Macintosh HD", instead
-  of twice.
-- **Folder counts in the sidebar match what opens.** They used to count files
-  inside skipped folders.
-
-## Also new since 1.4.0
-
-- **Events**: mark a shoot as an event and it shows as a banner down the timeline.
-- **A visible Trash**: `FoxCull Trash` is a normal folder at each drive's root.
-  You can browse it and play clips there, then restore or delete from the
-  right-click menu.
-- **Catalog check**: files you moved or renamed outside FoxCull are found and
-  reconnected automatically. Anything truly missing is flagged.
-- **In-app updates**: Settings → Version shows when a newer build exists and
-  installs it (Windows) or downloads it (Mac, Linux).
-- **Mac**: "FoxCull is damaged and can't be opened" is fixed. Builds are now signed.
-- Video stills show true colour instead of looking washed out, and opening a
-  whole drive no longer freezes the window.
+**Settings → Interface size** now really makes the whole app bigger (TV / large,
+for a screen across the room) or smaller (Compact, for more room on a small
+laptop). It had quietly stopped doing anything in August. If you had TV / large
+selected, everything will look 22% bigger after this update. That's the setting
+working, not a new bug.
 
 ---
 

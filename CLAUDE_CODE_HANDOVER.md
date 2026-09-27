@@ -1,5 +1,27 @@
 # Agent Handover: FoxCull
 
+## 2026-09-27 (later) — layout audit; TV/Compact had never scaled
+
+Ledger: `docs/changes/2026-09-27-layout-audit.md`. Method and matrix:
+`docs/UX-AUDIT-2026-08.md` → September re-audit.
+
+- **Interface size is webview page zoom now** (`+layout.svelte`,
+  `core:webview:allow-set-webview-zoom`). The old transform targeted
+  SvelteKit's `display: contents` wrapper and never did anything. Don't
+  reintroduce `--ui-scale` arithmetic: under page zoom, `vw`, `vh`, rects and
+  pointer coordinates are all already in the zoomed CSS pixels.
+- **Floating panels use `use:keepInView`** (`src/lib/keep-in-view.ts`). Add it
+  to any new menu instead of hand-tuning an anchor per breakpoint.
+- **Scrolling flex columns must not shrink their rows** (`flex-shrink: 0` on
+  children). This one bug caused the Settings overlap, the Edit source-list
+  overlap and more.
+- **Edit studio width is shared** (`panelW` in `EditStudio.svelte`): the work
+  pane keeps ≥460px, and narrow studios show one side panel.
+- **Browser QA harness:** `npm run dev` in a plain browser → fake backend →
+  `await __sweep()`. Use it before shipping UI.
+- Not verified on Windows (WebView2 page zoom, TV/Compact grid).
+
+
 ## 2026-09-27 — welcome screen, Excluded folders, and the whole-drive scan
 
 Shipped as stable **`v1.5.0`** (owner: "update the main"), replacing the unsigned
