@@ -1,5 +1,37 @@
 # Agent Handover: FoxCull
 
+## 2026-09-27 — welcome screen, Excluded folders, and the whole-drive scan
+
+Shipped as stable **`v1.5.0`** (owner: "update the main"), replacing the unsigned
+`v1.4.0` as Latest. Done on the owner's **Mac** (first session there since the signing fix). Ledger:
+`docs/changes/2026-09-27-welcome-screen-and-scan-excludes.md`.
+
+- **One folder-skip rule, `skip_dir(parent, name)` in `commands.rs`,** now used by
+  every walk: tree, scan, relink, edit sources, and badges (`count_media` used to
+  skip almost nothing). Rules are **anchored to a location**: OS names only
+  directly under a drive root / the Mac boot volume, `Library` only in a home
+  folder, machine-owned names (`node_modules`, `AppData`, game libraries,
+  `.app` bundles) anywhere. Don't flatten this back into one name list: that
+  hid a user's `/Volumes/SSD/Library` and photos of windows.
+- **Settings → Excluded folders** (`ExcludePanel.svelte`): five built-in groups
+  (on by default) plus user paths and `*` name patterns, stored as
+  `settings.scanExcludes` and pushed to the backend with `set_scan_excludes`
+  before anything lists. The group lists are duplicated in the panel for
+  display; keep them in step with the Rust matchers.
+- **A system drive root is never reopened at launch** (`is_system_root`); the new
+  `Welcome.svelte` offers it back.
+- **Mac bug fixed in passing:** `rootForDir` took the first matching drive and `/`
+  matches everything, so every external drive used the Mac's app-data `root`
+  library. It now takes the most specific drive. The owner's stray
+  `libraries/root` (234 MB, 0 decisions) is safe to delete.
+- Measured on the Mac: whole-drive walk 9.3 s / 89,726 files with defaults vs
+  37.2 s / 133,965 with every group off. The remainder is his coursework image
+  datasets under `~/Documents/CU`, which is what custom excludes are for.
+- **Release notes were stale for nightly.6 and .7** (both shipped the nightly.5
+  text). `RELEASE_NOTES.md` is refreshed and covers everything since nightly.5.
+- Not verified on Windows this session.
+
+
 ## 2026-08-27 — one update module, shared across all four Fox desktop apps
 
 `docs/UPDATES.md` is the contract; **the same `src-tauri/src/updates.rs` and the

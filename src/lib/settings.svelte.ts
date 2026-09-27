@@ -2,6 +2,7 @@
 // Mirrors the wispr-fox settings-store pattern: a runes-powered class that
 // loads once and writes through to tauri-plugin-store on every change.
 import { Store } from "@tauri-apps/plugin-store";
+import type { ScanExcludes } from "$lib/types";
 
 export type Theme = "light" | "dark" | "neutral" | "warm";
 export type UiScale = "compact" | "comfortable" | "distance";
@@ -86,9 +87,18 @@ export interface AppSettings {
   relatedMode: RelatedMode;
   relatedStrip: boolean;
   deleteMode: DeleteMode;
+  /** Folders every scan skips. System folders are pre-selected; the user can
+   *  untick groups and add their own folders or name patterns. */
+  scanExcludes: ScanExcludes;
   rejectFolder: string | null;
   lastDir: string | null;
   lastActivePath: string | null;
+}
+
+/** Every built-in group on, no custom rules. A function, not a constant, so
+ *  "Reset to defaults" can never hand out a shared array to mutate. */
+export function defaultScanExcludes(): ScanExcludes {
+  return { windowsSystem: true, macosSystem: true, appData: true, developer: true, games: true, paths: [], names: [] };
 }
 
 const DEFAULTS: AppSettings = {
@@ -121,6 +131,7 @@ const DEFAULTS: AppSettings = {
   relatedMode: "expanded",
   relatedStrip: true,
   deleteMode: "folder",
+  scanExcludes: defaultScanExcludes(),
   rejectFolder: null,
   lastDir: null,
   lastActivePath: null,
@@ -181,6 +192,9 @@ class Settings {
           migrated.padBindings = {};
           migrated.padBindingsVersion = PAD_BINDINGS_VERSION;
         }
+        // Fill in any exclude group added after this store was written, so a
+        // new built-in group arrives switched on rather than undefined.
+        migrated.scanExcludes = { ...defaultScanExcludes(), ...(loaded.scanExcludes ?? {}) };
         this.s = { ...DEFAULTS, ...migrated };
       }
     } catch {

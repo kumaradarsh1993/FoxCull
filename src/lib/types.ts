@@ -4,6 +4,28 @@ export interface TreeDir {
   has_children: boolean;
 }
 
+/** Folders every scan skips (Settings → Excluded folders). The five groups are
+ *  built-in rule sets; `paths` and `names` are the user's own. Mirrors the Rust
+ *  `ScanExcludes` — the backend applies it to the tree, scans and badges. */
+export interface ScanExcludes {
+  windowsSystem: boolean;
+  macosSystem: boolean;
+  appData: boolean;
+  developer: boolean;
+  games: boolean;
+  /** Specific folders (absolute paths), including everything inside them. */
+  paths: string[];
+  /** Folder names skipped wherever they appear; `*` is a wildcard. */
+  names: string[];
+}
+
+/** A starting point offered on the welcome screen. */
+export interface SuggestedFolder {
+  label: string;
+  path: string;
+  kind: "pictures" | "videos" | "desktop" | "downloads" | "card";
+}
+
 export interface MediaItem {
   name: string;
   path: string;

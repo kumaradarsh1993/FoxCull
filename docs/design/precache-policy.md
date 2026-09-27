@@ -395,6 +395,15 @@ cancel_on:
 
 ## 9. Known gaps (honest list)
 
+- **Where caches land depends on the folder walk's exclude rules** (2026-09-27).
+  Every walk (tree, scan, badges, relink) goes through `skip_dir` in
+  `commands.rs`, driven by Settings → Excluded folders. Opening a whole system
+  drive used to warm thumbnails for app icons and cache capture dates for
+  241,138 files on a Mac; with the built-in groups on, `/` walks the user's own
+  folders only. A system drive root is also never reopened automatically at
+  launch. No cache is evicted when a rule is added: entries for newly excluded
+  folders stay until the library is cleared.
+
 - **Prepare has no resume.** Re-running it re-walks the folder; every already
   cached item is a cheap `exists()` check, so it's fast, but there is no
   progress persistence across a restart.

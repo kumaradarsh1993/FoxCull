@@ -44,6 +44,14 @@ If a drive root is not writable, FoxCull stores the library under app data:
 Ratings and culling still work there. Delete sweeps are disabled when the media
 drive itself cannot be written.
 
+The system drive usually lands here (`C:\` and a Mac's `/` are not writable by a
+normal user). **External drives on macOS must not**: until 2026-09-27 the
+frontend matched every path to the `/` entry first, so an SD card or SSD under
+`/Volumes` got the Mac's app-data `root` library instead of its own `_FoxCull`
+folder. Fixed by picking the most specific drive (`rootForDir` in `+page.svelte`).
+Anything already cached under `libraries/root/` from that period is safe to
+delete: it holds cache, and ratings only if you marked files while it was wrong.
+
 ## Portable Mode
 
 The Windows portable build keeps app settings and default data beside the EXE

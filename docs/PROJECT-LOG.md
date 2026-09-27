@@ -732,3 +732,37 @@ unrecoverable. Marks do not cross drives, because catalogs are per drive. And
 "Forget" on a disconnected drive would cheerfully delete the marks for every file
 that is merely unplugged. None of those are new bugs; all three were invisible
 until someone had to write them down for a user.
+
+## 2026-09-27 — The Mac that scanned itself
+
+The owner got FoxCull running on a Mac and asked two sensible things: a real
+welcome screen for the first open, and a guarantee that clicking the system drive
+would not crawl and cache the operating system. Then, mid-session, a better
+version of the second one: a proper exclude list in Settings, with system folders
+pre-ticked and the user's own additions kept on the machine.
+
+The Mac's log had already told the story. A month earlier, one click on Macintosh
+HD had walked 241,138 files in 71 seconds and left 234 MB of cache behind: a
+catalog full of capture dates for app icons, and not a single rating. On the
+morning of this session, the app relaunched into the same drive and started the
+walk again. The build he had installed was tagged one commit before the Mac
+skip-list fix, so it had no defence at all.
+
+The interesting decision was where a rule applies, not which names go on the list.
+The earlier fix skipped `library`, `system` and `windows` wherever they appeared,
+which is right for `C:\Windows` and wrong for a folder of photos of windows, or
+an SSD whose shoots live in `Library`. The rules are now tied to a place: OS
+folders only at the top of the system drive, `Library` only inside a home folder,
+and only the unmistakably machine-made names (`node_modules`, `AppData`, `.app`
+bundles, game libraries) everywhere. The same Mac drive now walks in about nine
+seconds. What's left is almost entirely his coursework image datasets. Those are
+real photos, and deciding to hide them is his call, which is what the exclude
+list is for.
+
+Two smaller truths surfaced along the way. On macOS every external drive had
+been quietly filing its catalog and thumbnails on the Mac instead of on itself,
+because the lookup took the first drive that matched and `/` matches everything.
+And the release notes for the last two nightlies had shipped with the text from
+the one before, so nobody reading the release page had been told about the
+update checker or the signing fix.
+

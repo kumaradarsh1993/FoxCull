@@ -1,47 +1,58 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
-Both things you called out on nightly.4, fixed.
+## Opening a whole drive no longer drags in the whole computer
 
-## The Trash is a real folder now
+Clicking `C:\` or Macintosh HD used to scan everything on it, including the
+operating system and every installed app. On a Mac that meant 241,000 files,
+more than a minute of waiting, and a few hundred MB of cache built for app icons
+nobody wanted to cull.
 
-`FoxCull Trash` sits at the root of each drive, visible in the folder tree like
-anything else. Click it and you get the **normal grid** — thumbnails, file sizes,
-sorting, Focus view, full playback. So you can actually watch the clip before
-deciding whether it deserved deleting.
+- **System and app folders are skipped by default** — `Windows`, `Program Files`,
+  `AppData`, `/System`, `/Library`, `~/Library`, `.app` bundles, `node_modules`,
+  game libraries. The same Mac drive now scans in about 9 seconds.
+- **Only in the places they belong.** A folder of photos *of* windows, or a shoot
+  called "Library" on your SSD, still shows up. Only `C:\Windows` and the Mac's own
+  `/Library` are hidden.
+- **FoxCull won't reopen a whole system drive at launch.** If you left one open,
+  the welcome screen offers it back instead of silently re-scanning it.
 
-- **The popup window is gone.** Restore and Delete permanently are right-click
-  actions inside the folder.
-- Where each file came from shows in the info bar (`🗑 from …`) and in the
-  right-click menu.
-- It's flat — no twenty-deep folder tree to click through for three rejects.
-- Trashed files never leak back into the library: the folder is skipped when
-  scanning a parent, and only listed when you open it directly.
+## Excluded folders, your way
 
-**Your existing trash moves itself on first launch, per drive.** Same volume, so
-it's an instant rename even for the 18 GB clip — nothing is copied and nothing is
-deleted. The orphaned files that had no Trash entry get one on the way, so the
-~19 GB on E: and P: becomes visible and restorable.
+**Settings → Excluded folders** lists what's skipped, grouped: Windows system,
+macOS system, app data & bundles, developer folders, game libraries. They're all
+ticked by default, and each one shows exactly which folders it hides. Untick any of them.
 
-There's also a small `_trash-index.json` in the folder recording where everything
-came from. That's the belt-and-braces fix for how those orphans happened: even if
-the catalog is lost again, the files still know where they belong.
+Add your own too:
+- **A specific folder**: right-click it in the sidebar → **Exclude from scans**,
+  or use **Add folder…**.
+- **A name, anywhere**: type `Proxy` or `*_cache`.
 
-## The event banner — why you never saw it
+Your choices are saved on this computer. **Reset to defaults** puts it back.
 
-Not a rendering bug. Your saved settings had `Group by: Event` and `Sort by:
-Name`. The first kept you on the old cover-art blocks; the second suppressed the
-banner, which needs a time order to mean anything. Nothing on screen told you.
+## A calmer welcome screen
 
-That's my fault for keeping both modes. **The event grouping is now removed** —
-events are only the banner. Your settings migrate automatically: the grouping is
-cleared and you're switched to capture-date order, which is where the banner
-actually draws.
+With no folder open, the main panel now simply says where to start: pick a folder
+on the left, or jump straight to a **camera card** FoxCull spotted, Pictures,
+Movies, Desktop or Downloads.
 
-- If a sort ever makes it impossible again, the Arrange panel now says so with a
-  one-click fix.
-- Creating a new event turns the banner on and switches sort if needed, so you
-  see the result immediately.
+## Fixed
+
+- **Mac: external drives keep their own library again.** Opening an SD card or SSD
+  stored its catalog and thumbnails on the Mac instead of the drive. Each drive
+  now gets its own `_FoxCull` folder, as on Windows.
+- **Mac: the startup disk appears once in the sidebar**, as "Macintosh HD", instead
+  of twice.
+- **Folder counts in the sidebar match what opens.** They used to count files
+  inside skipped folders.
+
+## Also since nightly.5
+
+The notes for nightly.6 and nightly.7 were never refreshed, so here's what they added:
+- **In-app updates** — Settings → Version shows when a newer build exists and
+  installs it (Windows) or downloads it (Mac, Linux).
+- **Mac: "FoxCull is damaged and can't be opened" is fixed.** Builds are now
+  properly signed.
 
 ---
 
@@ -51,4 +62,6 @@ actually draws.
 - **Linux:** `*.AppImage` or `*.deb`
 
 **Windows:** the app is not code-signed yet; use "More info" → "Run anyway".
-**macOS:** the app is not notarized yet; right-click it → Open on first launch.
+**macOS:** the app is not notarized yet. On first launch macOS says it "could not
+verify" FoxCull: open **System Settings → Privacy & Security** and click **Open
+Anyway**. (Right-click → Open no longer works for this on macOS 15.)

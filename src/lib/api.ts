@@ -3,6 +3,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type {
   TreeDir,
+  ScanExcludes,
+  SuggestedFolder,
   MediaItem,
   TrashOutcome,
   TrashItem,
@@ -34,6 +36,13 @@ export const api = {
     invoke<LibraryInfo>("set_library_root", { root }),
   listDrives: () => invoke<TreeDir[]>("list_drives"),
   listTree: (dir: string) => invoke<TreeDir[]>("list_tree", { dir }),
+  /** Push the exclude rules the backend applies to every folder walk. */
+  setScanExcludes: (excludes: ScanExcludes) =>
+    invoke<void>("set_scan_excludes", { excludes }).catch(() => {}),
+  /** Is `dir` the root of the drive the OS runs from (`C:\`, `/`)? */
+  isSystemRoot: (dir: string) => invoke<boolean>("is_system_root", { dir }).catch(() => false),
+  /** Pictures/Movies/Desktop/Downloads plus camera cards, for the welcome screen. */
+  suggestedFolders: () => invoke<SuggestedFolder[]>("suggested_folders").catch(() => [] as SuggestedFolder[]),
   /** Recursive media counts for the given folders (cached; left-pane badges). */
   folderCounts: (paths: string[], recompute = false) =>
     invoke<{ path: string; count: number }[]>("folder_counts", { paths, recompute }),

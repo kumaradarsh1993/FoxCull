@@ -27,6 +27,8 @@
   import ActivityBar from "$lib/components/ActivityBar.svelte";
   import EditStudio from "$lib/components/EditStudio.svelte";
   import ControllerPanel from "$lib/components/ControllerPanel.svelte";
+  import ExcludePanel from "$lib/components/ExcludePanel.svelte";
+  import Welcome from "$lib/components/Welcome.svelte";
   import UpdatePanel from "$lib/components/UpdatePanel.svelte";
   import { updates, primeUpdateCheck } from "$lib/updates.svelte";
   import { pad, PAD_ACTIONS, buttonName, type PadActionId } from "$lib/gamepad.svelte";
@@ -422,6 +424,16 @@
     return trashByName.get(basename(it.path).toLowerCase());
   }
   let controllerOpen = $state(false);
+  let excludesOpen = $state(false);
+  /** The exclude rules as they were when the panel opened, to tell on close
+   *  whether anything needs re-scanning. */
+  let excludesBefore = "";
+  /** Bumped when the exclude rules change: re-mounts the folder tree so every
+   *  expanded node re-lists its children under the new rules. */
+  let treeGen = $state(0);
+  /** A system drive root that was open last session and deliberately NOT
+   *  reopened at launch (see onMount). The welcome screen offers it back. */
+  let resumeDir = $state<string | null>(null);
   let padHelpOpen = $state(false);
   let shortcutsOpen = $state(false);
   let aboutOpen = $state(false);
@@ -1037,6 +1049,9 @@
       import("$lib/scrub-probe").then((m) => m.maybeRunScrubProbe());
     }
     await settings.init();
+    // Before anything lists a folder: the exclude rules decide what the tree,
+    // the scan and the badges may enter.
+    await api.setScanExcludes($state.snapshot(settings.s.scanExcludes));
     // One unauthenticated GitHub call per app run, so the gear can show a dot
     // when a newer build exists. Failures are silent on purpose - being offline
     // is not news, and a settings button that shouts because GitHub was
@@ -1060,8 +1075,13 @@
     } catch {
       // not inside Tauri (tests) — the awaited result still finalises the job
     }
-    // Reopen the last folder AND land on the last photo we were looking at.
-    if (settings.s.lastDir) {
+    // Reopen the last folder AND land on the last photo we were looking at —
+    // unless it was a whole system drive (C:\ or the Mac's startup disk). That
+    // is the one folder whose scan costs minutes, so it is never re-run
+    // silently at launch; the welcome screen offers it back instead.
+    if (settings.s.lastDir && (await api.isSystemRoot(settings.s.lastDir))) {
+      resumeDir = settings.s.lastDir;
+    } else if (settings.s.lastDir) {
       await openFolder(settings.s.lastDir, { selectPath: settings.s.lastActivePath });
       // Then verify the catalog still matches the disk. Deliberately AFTER the
       // folder is on screen — the user should never wait on it to start work,
@@ -1109,7 +1129,17 @@
   });
 
   function rootForDir(dir: string): string {
-    const d = drives.find((dr) => dir.toLowerCase().startsWith(dr.path.toLowerCase()));
+    // The MOST specific drive that contains `dir`. On macOS the list holds `/`
+    // before `/Volumes/SD_Card`, and every path starts with `/` — taking the
+    // first match sent every external drive's catalog and thumbnail cache to
+    // the Mac's own disk instead of the drive itself.
+    const lower = dir.toLowerCase();
+    const d = drives
+      .filter((dr) => {
+        const root = dr.path.toLowerCase();
+        return lower === root || lower.startsWith(/[\\/]$/.test(root) ? root : root + (root.includes("\\") ? "\\" : "/"));
+      })
+      .sort((a, b) => b.path.length - a.path.length)[0];
     if (d) return d.path;
     const m = dir.match(/^[A-Za-z]:[\\/]/);
     return m ? m[0] : dir;
@@ -1186,6 +1216,7 @@
   ) {
     const gen = ++openGen;
     currentDir = dir;
+    resumeDir = null;
     loading = true;
     resetThumbs();
     selected = new Set();
@@ -2560,6 +2591,34 @@
     }
   }
 
+  function openExcludes() {
+    excludesBefore = JSON.stringify(settings.s.scanExcludes);
+    excludesOpen = true;
+  }
+  function closeExcludes() {
+    excludesOpen = false;
+    if (JSON.stringify(settings.s.scanExcludes) !== excludesBefore) void applyScanExcludes();
+  }
+
+  /** Push the rules to the backend and redo everything they affect: the tree
+   *  re-lists, the badges recount, and the open folder re-scans. */
+  async function applyScanExcludes() {
+    await api.setScanExcludes($state.snapshot(settings.s.scanExcludes));
+    await api.clearFolderCounts();
+    treeGen++;
+    if (currentDir) await openFolder(currentDir, { selectPath: active?.path ?? null, selectIndex: activeIndex });
+  }
+
+  async function excludeFolder(path: string) {
+    const ex = settings.s.scanExcludes;
+    if (!ex.paths.some((p) => samePath(p, path))) {
+      await settings.set({ scanExcludes: { ...ex, paths: [...ex.paths, path] } });
+    }
+    activity.local("exclude", `Excluded ${basename(path)} from scans`, 1, 1);
+    // The open folder itself can't vanish under the user; only its insides can.
+    await applyScanExcludes();
+  }
+
   function openFolderContextMenu(e: MouseEvent, path: string) {
     e.preventDefault();
     e.stopPropagation();
@@ -2592,6 +2651,13 @@
         { label: revealLabel, icon: "↗", action: () => api.reveal(path) },
         { label: "Copy folder path", icon: "⧉", action: () => copyPath(path) },
         { separator: true },
+        {
+          label: "Exclude from scans",
+          icon: "⊘",
+          // A whole drive can't be excluded from itself; untick groups instead.
+          disabled: drives.some((d) => samePath(d.path, path)),
+          action: () => excludeFolder(path),
+        },
         {
           label: settings.s.includeSub ? "Stop including subfolders" : "Include subfolders",
           icon: "⊞",
@@ -3375,9 +3441,11 @@
       </div>
       <div class="tree-body">
         {#if drives.length}
-          {#each drives as d (d.path)}
-            <TreeNode node={d} {currentDir} onselect={openFolder} onmove={(dest) => movePathsTo(draggingPaths, dest)} onfoldercontext={openFolderContextMenu} {countsGen} />
-          {/each}
+          {#key treeGen}
+            {#each drives as d (d.path)}
+              <TreeNode node={d} {currentDir} onselect={openFolder} onmove={(dest) => movePathsTo(draggingPaths, dest)} onfoldercontext={openFolderContextMenu} {countsGen} />
+            {/each}
+          {/key}
         {:else}
           <p class="hint">No drives detected.</p>
         {/if}
@@ -3887,6 +3955,13 @@
         <div class="row"><span>Trash</span>
           <button class="btn sm" onclick={() => { settingsOpen = false; void openTrash(); }} title="Opens the visible FoxCull Trash folder in the library — preview and play anything before deciding">🗑 Open Trash folder</button>
         </div>
+        <div class="row"><span>Excluded folders</span>
+          <button class="btn sm" onclick={() => { settingsOpen = false; openExcludes(); }} title="Folders FoxCull never scans, counts or shows — system folders are pre-selected">
+            ⊘ {settings.s.scanExcludes.paths.length + settings.s.scanExcludes.names.length
+              ? `Manage… (${settings.s.scanExcludes.paths.length + settings.s.scanExcludes.names.length} custom)`
+              : "Manage…"}
+          </button>
+        </div>
         <div class="row"><span>Check catalog on launch</span>
           <div class="seg" title="Verify every rated/tagged file is still where the catalog expects it, and auto-reconnect anything that moved or was renamed outside FoxCull. Runs after the folder is on screen; costs nothing unless something is actually missing.">
             <button class="chip" class:on={settings.s.scanOnLaunch} onclick={() => settings.set({ scanOnLaunch: true })}>On</button>
@@ -3920,6 +3995,9 @@
 
     {#if controllerOpen}
       <ControllerPanel onclose={() => (controllerOpen = false)} />
+    {/if}
+    {#if excludesOpen}
+      <ExcludePanel onclose={closeExcludes} />
     {/if}
 
     <!-- Keyboard shortcut guide (?): the one place every key lives, grouped the
@@ -4145,21 +4223,14 @@
             {/if}
           </div>
         {:else if !currentDir}
-          <div class="welcome">
-            <div class="welcomeMark"><img class="wIcon" src="/favicon.png" alt="" width="74" height="74" /></div>
-            <div class="welcomeCopy">
-              <span class="welcomeEyebrow">Photo &amp; video review studio</span>
-              <h1>Make the keepers obvious.</h1>
-              <p>Open any folder and start culling in place. Nothing is imported, duplicated or changed until you ask.</p>
-            </div>
-            <button class="btn accent welcomeOpen" onclick={openFolderPicker}>
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5h6l2 2h10v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 8V5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2.5"/></svg>
-              Open a folder
-            </button>
-            <div class="welcomeHints">
-              <span><kbd>P</kbd> Pick</span><span><kbd>X</kbd> Reject</span><span><kbd>Enter</kbd> Focus</span><span><kbd>?</kbd> All shortcuts</span>
-            </div>
-          </div>
+          <Welcome
+            treeVisible={!treeCollapsed}
+            {resumeDir}
+            onopen={(p) => openFolder(p)}
+            onpick={openFolderPicker}
+            onshowtree={() => (treeCollapsed = false)}
+            onexcludes={openExcludes}
+          />
         {:else if editOpen}
           <EditStudio {active} {selectedItems} sourceItems={items} currentDir={currentDir} recursive={settings.s.includeSub} refreshKey={folderRefreshKey} onexported={() => void refreshAfterMediaOutput()} bind:this={editComp} />
         {:else if view.length === 0}
@@ -4916,25 +4987,10 @@
   }
 
   .welcome { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--text-dim); text-align: center; padding: 24px; }
-  .welcome h1 { font-size: 28px; margin: 0; }
   .welcome.scanning { gap: 7px; }
   .scanTitle { margin: 0; font-size: 15px; color: var(--text); }
   .scanCount { margin: 0; font-size: 12.5px; color: var(--accent); font-variant-numeric: tabular-nums; }
   .scanHint { margin: 4px 0 0; font-size: 12px; max-width: 380px; color: var(--text-faint); line-height: 1.5; }
-  .welcome .wIcon { border-radius: 16px; opacity: 0.95; }
-  .welcome kbd {
-    display: inline-block;
-    min-width: 16px;
-    padding: 0 4px;
-    border: 1px solid var(--border);
-    border-bottom-width: 2px;
-    border-radius: 4px;
-    background: var(--bg-panel);
-    font-family: inherit;
-    font-size: 10.5px;
-    line-height: 1.6;
-    text-align: center;
-  }
 
   /* Every tile reserves a thin top band so the golden stack line (when present)
      sits above the thumbnail without shrinking it unevenly across a row.
@@ -5292,16 +5348,7 @@
       var(--viewport-bg);
   }
   .welcome { gap: 0; padding: 42px; }
-  .welcomeMark { display: grid; place-items: center; width: 94px; height: 94px; margin-bottom: 22px; border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border-soft)); border-radius: 26px; background: color-mix(in srgb, var(--bg-elev) 36%, transparent); box-shadow: 0 22px 60px rgba(0,0,0,.28), inset 0 1px rgba(255,255,255,.06); }
-  .welcome .wIcon { border-radius: 18px; filter: drop-shadow(0 8px 16px rgba(0,0,0,.32)); }
-  .welcomeCopy { max-width: 610px; }
-  .welcomeEyebrow { color: var(--accent); font-size: 10.5px; font-weight: 720; letter-spacing: .14em; text-transform: uppercase; }
-  .welcome h1 { margin-top: 8px; color: var(--text); font-family: var(--font-display); font-size: clamp(30px, 3.2vw, 47px); font-weight: 690; letter-spacing: -.035em; line-height: 1.04; }
   .welcome p { max-width: 560px; margin: 13px auto 0; font-size: 14px; line-height: 1.65; }
-  .welcomeOpen { min-height: 39px; margin-top: 23px; padding: 8px 18px; border-radius: 10px; font-weight: 680; }
-  .welcomeHints { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 18px; margin-top: 24px; color: var(--text-faint); font-size: 11.5px; }
-  .welcomeHints span { display: inline-flex; align-items: center; gap: 6px; }
-  .welcome kbd { min-width: 21px; padding: 1px 6px; border-color: var(--border-strong); border-radius: 6px; background: color-mix(in srgb, var(--bg-elev) 75%, transparent); box-shadow: 0 2px 0 rgba(0,0,0,.24); }
 
   .cell { padding-top: 9px; border-radius: 10px; transition: border-color 100ms ease, background 100ms ease, transform 100ms ease; }
   .cellclip { border-radius: 8px; background: #060708; box-shadow: 0 2px 7px rgba(0,0,0,.28); }

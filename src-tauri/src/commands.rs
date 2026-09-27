@@ -744,16 +744,8 @@ pub fn list_tree(dir: String) -> Result<Vec<TreeDir>, String> {
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            let lower = name.to_ascii_lowercase();
-            // Same exclusions the media walk uses, so the tree cannot offer a
-            // folder that would scan to nothing (or worse, to a few thousand
-            // app icons). Keeping the two in sync matters: a visible folder the
-            // scanner silently skips reads as a broken scan.
-            if name.starts_with('.')
-                || lower.starts_with("_foxcull")
-                || is_skippable_dir(&lower)
-                || is_macos_bundle_dir(&lower)
-            {
+            // Same rule the media walk uses (see `skip_dir`).
+            if skip_dir(p, &name) {
                 return None;
             }
             Some(TreeDir {
@@ -767,43 +759,204 @@ pub fn list_tree(dir: String) -> Result<Vec<TreeDir>, String> {
     Ok(out)
 }
 
-/// Directories that can never hold the user's photos but CAN hold hundreds of
-/// thousands of files, so walking into them turns "open this drive" into a
-/// multi-minute crawl. Opening `D:\` on the owner's machine hit exactly this:
-/// `node_modules`, a shared cargo target dir and a Steam library between them
-/// dwarf the entire photo collection.
+/// The user's scan exclusions (Settings → Excluded folders), pushed from the
+/// frontend whenever they change and persisted there. The built-in groups
+/// default ON so a walk that starts before the frontend has pushed anything is
+/// still safe — the unsafe direction is the one that costs minutes.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanExcludes {
+    pub windows_system: bool,
+    pub macos_system: bool,
+    pub app_data: bool,
+    pub developer: bool,
+    pub games: bool,
+    /// Specific folders (absolute paths). The folder and everything inside it.
+    pub paths: Vec<String>,
+    /// Folder names skipped wherever they appear; `*` matches any run of
+    /// characters. Case-insensitive.
+    pub names: Vec<String>,
+}
+
+impl Default for ScanExcludes {
+    fn default() -> Self {
+        Self {
+            windows_system: true,
+            macos_system: true,
+            app_data: true,
+            developer: true,
+            games: true,
+            paths: Vec::new(),
+            names: Vec::new(),
+        }
+    }
+}
+
+impl ScanExcludes {
+    /// Paths/names pre-normalised once here, not per directory in the walk.
+    fn normalised(mut self) -> Self {
+        self.paths = self.paths.iter().map(|p| norm_path(p)).filter(|p| !p.is_empty()).collect();
+        self.names = self
+            .names
+            .iter()
+            .map(|n| n.trim().to_ascii_lowercase())
+            .filter(|n| !n.is_empty())
+            .collect();
+        self
+    }
+}
+
+fn scan_excludes() -> &'static parking_lot::RwLock<ScanExcludes> {
+    static EX: std::sync::OnceLock<parking_lot::RwLock<ScanExcludes>> = std::sync::OnceLock::new();
+    EX.get_or_init(|| parking_lot::RwLock::new(ScanExcludes::default()))
+}
+
+#[tauri::command]
+pub fn set_scan_excludes(excludes: ScanExcludes) {
+    *scan_excludes().write() = excludes.normalised();
+}
+
+/// Case-folded, separator-trimmed form used to compare exclude paths. Both
+/// Windows and macOS filesystems are case-insensitive by default.
+fn norm_path(p: &str) -> String {
+    let mut s = p.trim().to_lowercase();
+    if cfg!(windows) {
+        s = s.replace('/', "\\");
+    }
+    while s.len() > 1 && (s.ends_with('/') || s.ends_with('\\')) && !s.ends_with(":\\") {
+        s.pop();
+    }
+    s
+}
+
+/// `*` wildcard match, nothing else special — the whole syntax an exclude
+/// rule needs, and small enough to explain in one line of the UI.
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return pattern == text;
+    }
+    let mut rest = text;
+    for (i, part) in parts.iter().enumerate() {
+        if i == 0 {
+            match rest.strip_prefix(part) {
+                Some(r) => rest = r,
+                None => return false,
+            }
+        } else if i == parts.len() - 1 {
+            return rest.ends_with(part);
+        } else if let Some(at) = rest.find(part) {
+            rest = &rest[at + part.len()..];
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+/// The one rule every folder walk uses — the tree, the media scan, the folder
+/// badges and the relink pass. One function so they cannot drift: a folder the
+/// tree offers but the scanner skips reads as a broken scan, and badges that
+/// count what the scan skips promise photos that never appear.
+fn skip_dir(parent: &Path, name: &str) -> bool {
+    skip_dir_with(parent, name, &scan_excludes().read())
+}
+
+/// Why this is not one flat name list: the names that matter are only
+/// unambiguous in a particular PLACE. `C:\Windows` and `/System` are the OS;
+/// `D:\Shoots\Architecture\Windows` and `/Volumes/SSD/Library` are someone's
+/// photos. So the built-in rules come in three shapes:
 ///
-/// Deliberately conservative — only names that are unambiguously machine-owned.
-/// Anything a person might plausibly have dropped photos in is NOT listed.
+///   * machine-owned names, skipped wherever they appear (`node_modules`,
+///     `AppData`, game libraries, bundles like `Foo.app`);
+///   * OS folders, skipped only directly under a drive root (Windows) or the
+///     boot volume root (macOS);
+///   * the per-user app folders, skipped only directly inside a home folder
+///     (`~/Library`).
 ///
-/// The list was originally Windows-only, which left macOS wide open: opening a
-/// disk there walked straight into `/Applications`, `/System` and `~/Library`
-/// and surfaced every icon and UI asset shipped inside them as "photos to
-/// cull". macOS entries are below alongside the Windows ones.
-fn is_skippable_dir(lower: &str) -> bool {
+/// Opening the boot drive on a Mac used to walk 241,138 files in 71 s, almost
+/// all of them icons and UI assets inside `/System`, `/Library` and `.app`
+/// bundles, and left a 234 MB cache behind for nothing.
+fn skip_dir_with(parent: &Path, name: &str, ex: &ScanExcludes) -> bool {
+    let lower = name.to_ascii_lowercase();
+    // Always, whatever the settings say: hidden folders, FoxCull's own library,
+    // OS bookkeeping nobody can open anyway, and the boot volume's mount points.
+    // `/Volumes` holds every other drive (each already has its own tree entry)
+    // and `/System/Volumes/Data` is the user's data a SECOND time, so walking
+    // either turns one drive into all of them.
+    if name.starts_with('.')
+        || lower.starts_with("_foxcull")
+        || matches!(lower.as_str(), "$recycle.bin" | "system volume information")
+        || (lower == "volumes" && (is_boot_root(parent) || parent == Path::new("/System")))
+    {
+        return true;
+    }
+    (ex.windows_system && (is_windows_setup_dir(&lower) || (is_drive_root(parent) && is_windows_root_dir(&lower))))
+        || (ex.macos_system && is_boot_root(parent) && is_macos_root_dir(&lower))
+        || (ex.app_data
+            && (is_app_data_dir(&lower) || is_macos_bundle_dir(&lower) || (is_home_dir(parent) && is_home_app_dir(&lower))))
+        || (ex.developer && is_developer_dir(&lower))
+        || (ex.games && is_game_dir(&lower))
+        || ex.names.iter().any(|pat| wildcard_match(pat, &lower))
+        || (!ex.paths.is_empty() && {
+            let full = norm_path(&parent.join(name).to_string_lossy());
+            ex.paths.iter().any(|p| *p == full)
+        })
+}
+
+/// Leftovers of Windows setup, upgrades and resets. Always at a drive root in
+/// practice, but the names are unambiguous anywhere.
+fn is_windows_setup_dir(lower: &str) -> bool {
     matches!(
         lower,
-        // ── Windows ──────────────────────────────────────────────────────
-        "$recycle.bin"
-            | "system volume information"
-            | "node_modules"
-            | "$windows.~ws"
-            | "$windows.~bt"
-            | "windows"
+        "windows.old" | "$windows.~bt" | "$windows.~ws" | "$sysreset" | "$winreagent" | "$getcurrent" | "config.msi" | "msocache"
+    )
+}
+
+/// Per-user application data on Windows. (macOS's `~/Library` is anchored to
+/// the home folder instead — see `is_home_app_dir`.)
+fn is_app_data_dir(lower: &str) -> bool {
+    matches!(lower, "appdata" | "windowsapps")
+}
+
+/// Developer tooling: hundreds of thousands of files, never a photo.
+fn is_developer_dir(lower: &str) -> bool {
+    matches!(lower, "node_modules" | "bower_components" | "__pycache__" | "site-packages" | "venv" | "deriveddata")
+}
+
+/// Game libraries: tens of thousands of textures that match the image filter
+/// exactly.
+fn is_game_dir(lower: &str) -> bool {
+    matches!(lower, "steamapps" | "steamlibrary" | "xboxgames" | "epic games" | "riot games" | "gog games")
+}
+
+/// Windows OS folders, skipped only directly under a drive root (`C:\`, `D:\`).
+fn is_windows_root_dir(lower: &str) -> bool {
+    matches!(
+        lower,
+        "windows"
             | "program files"
             | "program files (x86)"
             | "programdata"
-            | "appdata"
-            | "$sysreset"
             | "recovery"
-            | "steamlibrary"
-            | "steamapps"
-            // ── macOS ────────────────────────────────────────────────────
-            // `library` covers BOTH /Library and ~/Library — caches, app
-            // support and container folders, none of which hold a photo the
-            // user put there on purpose.
+            | "perflogs"
+            | "intel"
+            | "amd"
+            | "nvidia"
+            | "drivers"
+            | "onedrivetemp"
+            | "inetpub"
+    )
+}
+
+/// macOS OS folders, skipped only directly under the boot volume (`/`). An
+/// external disk's `Library` or `Applications` folder is left alone — there is
+/// no OS on it, so the folder is far more likely to be the user's.
+fn is_macos_root_dir(lower: &str) -> bool {
+    matches!(
+        lower,
+        "system"
             | "library"
-            | "system"
             | "applications"
             | "private"
             | "usr"
@@ -811,14 +964,45 @@ fn is_skippable_dir(lower: &str) -> bool {
             | "sbin"
             | "opt"
             | "cores"
+            | "dev"
+            | "etc"
+            | "var"
+            | "tmp"
+            | "network"
             | "developer"
-            | "xcode.app"
-            | ".trashes"
-            | ".spotlight-v100"
-            | ".fseventsd"
-            | ".documentrevisions-v100"
-            | ".temporaryitems"
     )
+}
+
+/// App folders inside a home folder: `~/Library` (caches, app support,
+/// containers) and `~/Applications`. Windows' equivalent, `AppData`, matches
+/// anywhere because the name is unambiguous.
+fn is_home_app_dir(lower: &str) -> bool {
+    matches!(lower, "library" | "applications")
+}
+
+/// `C:\` or `/` — a path with no parent.
+fn is_drive_root(p: &Path) -> bool {
+    p.parent().is_none()
+}
+
+/// The root of the volume the OS boots from. On macOS that is `/`, and also
+/// `/Volumes/Macintosh HD`, which is a symlink straight back to `/` (the tree
+/// used to list it as a second drive, and opening it walked the whole system).
+fn is_boot_root(p: &Path) -> bool {
+    if p == Path::new("/") {
+        return true;
+    }
+    cfg!(target_os = "macos")
+        && p.parent() == Some(Path::new("/Volumes"))
+        && std::fs::read_link(p).map(|t| t == Path::new("/")).unwrap_or(false)
+}
+
+/// `C:\Users\<you>` or `/Users/<you>`.
+fn is_home_dir(p: &Path) -> bool {
+    p.parent()
+        .and_then(|g| g.file_name())
+        .map(|n| n.eq_ignore_ascii_case("users"))
+        .unwrap_or(false)
 }
 
 /// macOS bundles are ordinary DIRECTORIES with a known suffix, so a plain
@@ -847,46 +1031,202 @@ fn is_macos_bundle_dir(lower: &str) -> bool {
     BUNDLE_SUFFIXES.iter().any(|suf| lower.ends_with(suf))
 }
 
+/// Is `dir` the root of the drive the OS runs from — `C:\` (really
+/// `%SystemDrive%`), `/`, or macOS's `/Volumes/Macintosh HD` alias? The app will
+/// not silently reopen one of these at launch: it is the one folder whose scan
+/// costs minutes, and landing in it by accident is how the 241k-file walk
+/// happened. Other drive roots (an SSD, a camera card) reopen as normal.
+#[tauri::command]
+pub fn is_system_root(dir: String) -> bool {
+    #[cfg(windows)]
+    {
+        let sys = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+        let trim = |s: &str| s.trim_end_matches(['\\', '/']).to_string();
+        trim(&dir).eq_ignore_ascii_case(&trim(&sys))
+    }
+    #[cfg(not(windows))]
+    {
+        is_boot_root(Path::new(&dir))
+    }
+}
+
+#[derive(Serialize)]
+pub struct SuggestedFolder {
+    pub label: String,
+    pub path: String,
+    /// "pictures" | "videos" | "desktop" | "downloads" | "card" — picks the icon.
+    pub kind: &'static str,
+}
+
+/// Starting points for the welcome screen: the OS's own media folders (resolved
+/// through the platform's known-folder APIs, so a relocated or localised
+/// Pictures folder is still found), plus any drive with a camera `DCIM` folder
+/// at its root. Only folders that exist are returned.
+#[tauri::command]
+pub fn suggested_folders(app: AppHandle) -> Vec<SuggestedFolder> {
+    let mut out: Vec<SuggestedFolder> = Vec::new();
+    let paths = app.path();
+    let videos = if cfg!(target_os = "macos") { "Movies" } else { "Videos" };
+    for (label, kind, p) in [
+        ("Pictures", "pictures", paths.picture_dir().ok()),
+        (videos, "videos", paths.video_dir().ok()),
+        ("Desktop", "desktop", paths.desktop_dir().ok()),
+        ("Downloads", "downloads", paths.download_dir().ok()),
+    ] {
+        if let Some(p) = p.filter(|p| p.is_dir()) {
+            out.push(SuggestedFolder {
+                label: label.into(),
+                path: p.to_string_lossy().to_string(),
+                kind,
+            });
+        }
+    }
+    for d in list_drives() {
+        if d.name == "Home" || is_system_root(d.path.clone()) {
+            continue;
+        }
+        let dcim = Path::new(&d.path).join("DCIM");
+        if dcim.is_dir() {
+            out.push(SuggestedFolder {
+                label: d.name.trim_end_matches(['\\', '/']).to_string(),
+                path: dcim.to_string_lossy().to_string(),
+                kind: "card",
+            });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod scan_filter_tests {
-    use super::{is_macos_bundle_dir, is_skippable_dir};
+    use super::{skip_dir_with, wildcard_match, ScanExcludes};
+    use std::path::Path;
 
-    #[test]
-    fn skips_macos_system_dirs() {
-        for d in ["library", "system", "applications", "private", "usr"] {
-            assert!(is_skippable_dir(d), "{d} should be skipped");
+    fn skipped(parent: &str, name: &str) -> bool {
+        skip_dir_with(Path::new(parent), name, &ScanExcludes::default())
+    }
+
+    fn none() -> ScanExcludes {
+        ScanExcludes {
+            windows_system: false,
+            macos_system: false,
+            app_data: false,
+            developer: false,
+            games: false,
+            paths: vec![],
+            names: vec![],
         }
     }
 
     #[test]
-    fn still_skips_windows_dirs() {
-        for d in ["windows", "program files", "programdata", "$recycle.bin"] {
-            assert!(is_skippable_dir(d), "{d} should be skipped");
+    fn skips_macos_system_dirs_at_boot_root() {
+        for d in ["System", "Library", "Applications", "private", "usr", "opt", "Volumes"] {
+            assert!(skipped("/", d), "/{d} should be skipped");
+        }
+    }
+
+    #[test]
+    fn skips_library_in_home_only() {
+        assert!(skipped("/Users/alex", "Library"));
+        assert!(skipped("/Users/alex", "Applications"));
+        // A photo folder that happens to be called Library, on an external disk.
+        assert!(!skipped("/Volumes/SSD", "Library"));
+        assert!(!skipped("/Users/alex/Pictures", "Library"));
+    }
+
+    #[test]
+    fn os_names_deeper_in_a_tree_are_kept() {
+        // Photos OF windows, a shoot called "System", a PhotoRec-style "Recovery".
+        for (parent, d) in [
+            ("/Volumes/SSD/Architecture", "Windows"),
+            ("/Users/alex/Pictures", "System"),
+            ("/Volumes/SSD", "Recovery"),
+            ("/Users/alex/Pictures", "Private"),
+        ] {
+            assert!(!skipped(parent, d), "{parent}/{d} must NOT be skipped");
+        }
+    }
+
+    #[test]
+    fn skips_machine_dirs_anywhere() {
+        for d in ["node_modules", "AppData", "steamapps", "SteamLibrary", "XboxGames", "Windows.old"] {
+            assert!(skipped("/Volumes/SSD/deep/folder", d), "{d} should be skipped");
         }
     }
 
     #[test]
     fn skips_app_bundles_by_suffix() {
         // The whole point: there is no finite list of app names.
-        for d in ["photos.app", "some random thing.app", "webkit.framework", "x.bundle"] {
-            assert!(is_macos_bundle_dir(d), "{d} should be skipped");
+        for d in ["Photos.app", "some random thing.app", "WebKit.framework", "x.bundle"] {
+            assert!(skipped("/Users/alex/Downloads", d), "{d} should be skipped");
         }
     }
 
     #[test]
     fn keeps_real_photo_folders() {
-        // Regression guard: these are user folders and must survive both filters.
         for d in [
-            "pictures",
-            "photos",
-            "dcim",
-            "my library of shots", // contains "library" but is not "library"
-            "screenshots",
+            "Pictures",
+            "DCIM",
+            "My Library of shots", // contains "library" but is not it
             "holiday.app.photos",  // ends in .photos, not .app
-            "2026-goa.photoslibrary", // user's real photo library, deliberately kept
+            "2026-goa.photoslibrary", // the user's real photo library
         ] {
-            assert!(!is_skippable_dir(d), "{d} must NOT be skipped");
-            assert!(!is_macos_bundle_dir(d), "{d} must NOT be skipped");
+            assert!(!skipped("/", d), "{d} must NOT be skipped");
+            assert!(!skipped("/Users/alex", d), "{d} must NOT be skipped");
+        }
+    }
+
+    #[test]
+    fn groups_switch_off_independently() {
+        let mut ex = none();
+        ex.games = true;
+        assert!(skip_dir_with(Path::new("/x"), "steamapps", &ex));
+        assert!(!skip_dir_with(Path::new("/"), "Library", &ex));
+        assert!(!skip_dir_with(Path::new("/x"), "node_modules", &ex));
+        assert!(!skip_dir_with(Path::new("/x"), "Photos.app", &ex));
+    }
+
+    #[test]
+    fn internals_are_skipped_even_with_every_group_off() {
+        let ex = none();
+        let root = Path::new("/");
+        assert!(skip_dir_with(root, ".Spotlight-V100", &ex));
+        assert!(skip_dir_with(root, "_FoxCull", &ex));
+        assert!(skip_dir_with(root, "Volumes", &ex));
+        assert!(skip_dir_with(root, "$RECYCLE.BIN", &ex));
+    }
+
+    #[test]
+    fn custom_names_and_paths() {
+        let ex = ScanExcludes {
+            names: vec!["proxy".into(), "*_cache".into()],
+            paths: vec!["/Volumes/SSD/Old Exports/".into()],
+            ..none()
+        }
+        .normalised();
+        assert!(skip_dir_with(Path::new("/Volumes/SSD/shoot"), "Proxy", &ex));
+        assert!(skip_dir_with(Path::new("/Volumes/SSD/shoot"), "render_cache", &ex));
+        assert!(!skip_dir_with(Path::new("/Volumes/SSD/shoot"), "proxy shots", &ex));
+        assert!(skip_dir_with(Path::new("/Volumes/SSD"), "old exports", &ex));
+        assert!(!skip_dir_with(Path::new("/Volumes/SSD"), "Old Exports 2", &ex));
+    }
+
+    #[test]
+    fn wildcards() {
+        assert!(wildcard_match("*", "anything"));
+        assert!(wildcard_match("raw*", "raw_backup"));
+        assert!(wildcard_match("*backup", "raw_backup"));
+        assert!(wildcard_match("a*c*e", "abcde"));
+        assert!(!wildcard_match("a*c*e", "abcd"));
+        assert!(!wildcard_match("raw", "raw_backup"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn skips_windows_system_dirs_at_drive_root_only() {
+        for d in ["Windows", "Program Files", "Program Files (x86)", "ProgramData", "PerfLogs"] {
+            assert!(skipped("C:\\", d), "C:\\{d} should be skipped");
+            assert!(!skipped("D:\\Shoots", d), "D:\\Shoots\\{d} must NOT be skipped");
         }
     }
 }
@@ -919,16 +1259,10 @@ fn collect_cancellable(
         };
         if ft.is_dir() {
             let dname = entry.file_name().to_string_lossy().to_string();
-            // Skip dotfolders and our own folders (the SSD cache + recycle bin),
-            // so cached posters/thumbnails and discarded files never appear as
-            // photos to cull.
-            if !recursive
-                || dname.starts_with('.')
-                || dname.to_ascii_lowercase().starts_with("_foxcull")
-                || is_trash_dirname(&dname)
-                || is_skippable_dir(&dname.to_ascii_lowercase())
-                || is_macos_bundle_dir(&dname.to_ascii_lowercase())
-            {
+            // Skip our own folders (the SSD cache + Trash), so cached
+            // posters/thumbnails and discarded files never appear as photos to
+            // cull, plus everything `skip_dir` rules out.
+            if !recursive || is_trash_dirname(&dname) || skip_dir(dir, &dname) {
                 continue;
             }
             // Skip Windows junctions / reparse points so browsing a whole drive
@@ -973,8 +1307,9 @@ fn collect(dir: &Path, recursive: bool, out: &mut Vec<(PathBuf, i64, u64)>) {
 }
 
 /// Recursively count media files under `dir` (extension classification only — no
-/// metadata reads), skipping dotfolders, our own `_FoxCull` library and Windows
-/// reparse points, exactly like `collect`. Powers the left-pane folder badges.
+/// metadata reads), skipping the same folders as `collect` and Windows reparse
+/// points. Powers the left-pane folder badges. It used to skip only dotfolders
+/// and `_FoxCull`, so a drive's badge counted every icon in every app bundle.
 fn count_media(dir: &Path) -> usize {
     let rd = match std::fs::read_dir(dir) {
         Ok(r) => r,
@@ -988,7 +1323,7 @@ fn count_media(dir: &Path) -> usize {
         };
         if ft.is_dir() {
             let dname = entry.file_name().to_string_lossy().to_string();
-            if dname.starts_with('.') || dname.to_ascii_lowercase().starts_with("_foxcull") {
+            if is_trash_dirname(&dname) || skip_dir(dir, &dname) {
                 continue;
             }
             #[cfg(windows)]
@@ -1094,22 +1429,33 @@ pub fn list_drives() -> Vec<TreeDir> {
                 has_children: true,
             });
         }
-        out.push(TreeDir {
-            name: "/".into(),
-            path: "/".into(),
-            has_children: true,
-        });
+        let mut root_name = "/".to_string();
+        let mut volumes: Vec<TreeDir> = Vec::new();
         if let Ok(rd) = std::fs::read_dir("/Volumes") {
             for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                // The boot volume shows up here as a symlink back to `/`. Listing
+                // it too put the same disk in the tree twice; instead it lends
+                // its name ("Macintosh HD") to the `/` entry.
+                if is_boot_root(&e.path()) {
+                    root_name = name;
+                    continue;
+                }
                 if e.path().is_dir() {
-                    out.push(TreeDir {
-                        name: e.file_name().to_string_lossy().to_string(),
+                    volumes.push(TreeDir {
+                        name,
                         path: e.path().to_string_lossy().to_string(),
                         has_children: true,
                     });
                 }
             }
         }
+        out.push(TreeDir {
+            name: root_name,
+            path: "/".into(),
+            has_children: true,
+        });
+        out.extend(volumes);
     }
     out
 }
