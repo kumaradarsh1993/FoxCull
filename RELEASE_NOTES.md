@@ -46,13 +46,19 @@ Movies, Desktop or Downloads.
 - **Folder counts in the sidebar match what opens.** They used to count files
   inside skipped folders.
 
-## Also since nightly.5
+## Also new since 1.4.0
 
-The notes for nightly.6 and nightly.7 were never refreshed, so here's what they added:
-- **In-app updates** — Settings → Version shows when a newer build exists and
+- **Events**: mark a shoot as an event and it shows as a banner down the timeline.
+- **A visible Trash**: `FoxCull Trash` is a normal folder at each drive's root.
+  You can browse it and play clips there, then restore or delete from the
+  right-click menu.
+- **Catalog check**: files you moved or renamed outside FoxCull are found and
+  reconnected automatically. Anything truly missing is flagged.
+- **In-app updates**: Settings → Version shows when a newer build exists and
   installs it (Windows) or downloads it (Mac, Linux).
-- **Mac: "FoxCull is damaged and can't be opened" is fixed.** Builds are now
-  properly signed.
+- **Mac**: "FoxCull is damaged and can't be opened" is fixed. Builds are now signed.
+- Video stills show true colour instead of looking washed out, and opening a
+  whole drive no longer freezes the window.
 
 ---
 
