@@ -1,5 +1,14 @@
 # Agent Handover: FoxCull
 
+## 2026-09-29 — merge window redesigned to the owner's spec
+
+Ledger: `docs/changes/2026-09-29-merge-window-redesign.md`. **The owner's rule:
+never drop anything silently.** The window lists every selected item, flags each
+mismatching attribute against the dominant format, and makes them remove items
+themselves. Merge stays disabled until nothing is flagged. It never closes on a
+backdrop click or Escape. Keep it that way. Shipped as `v1.5.1-nightly.1` for
+the owner to try a real merge before stable.
+
 ## 2026-09-28 — lossless Merge videos, tile lengths, selection totals
 
 Ledger: `docs/changes/2026-09-28-durations-selection-merge.md`.

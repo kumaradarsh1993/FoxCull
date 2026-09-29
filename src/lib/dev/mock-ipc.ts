@@ -199,9 +199,10 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
   // Mostly the Osmo main set; every 7th clip 29.97 fps 8-bit, every 11th vertical.
   merge_probe: (a) =>
     (a.paths as string[])
-      .filter((p) => byPath.get(p)?.kind === "video")
       .map((p, i) => {
         const it = byPath.get(p)!;
+        if (it.kind !== "video")
+          return { path: p, name: it.name, kind: "photo", size: it.size, duration: 0, captured: it.mtime, width: 0, height: 0, fps: 0, rotation: 0, vcodec: "", profile: "", pix_fmt: "", acodec: null, arate: 0, alayout: "", signature: "", error: null };
         const slow = i % 7 === 6;
         const vert = i % 11 === 10;
         const [w, h] = vert ? [1728, 3072] : [3840, 2160];
@@ -211,6 +212,7 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
         return {
           path: p,
           name: it.name,
+          kind: "video",
           size: it.size,
           duration: 20 + ((it.seed * 37) % 300),
           captured: it.mtime,
@@ -227,7 +229,8 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
           signature: `hevc|${profile}|${pix}|${w}x${h}|${fps}|0|aac|48000|stereo`,
           error: null,
         };
-      }),
+      })
+      .sort((x, y) => (x.captured ?? 0) - (y.captured ?? 0) || x.name.localeCompare(y.name)),
   // The card is nearly full, so the dialog's not-enough-space state shows.
   disk_free: (a) => (a.path.startsWith("/Users") ? 76e9 : a.path === SD ? 9e9 : 1.2e12),
   merge_videos: async (a) => {

@@ -4,18 +4,23 @@
 ## Merge a trip's videos into one, at full quality
 
 Select your clips, right-click, **Merge N videos into one…**. FoxCull joins
-them end to end in the order they were shot, **without re-encoding**: the file
-is exactly the camera's video and audio, so it's the best thing you can upload
-to YouTube, and it takes about as long as copying the files.
+them end to end **without re-encoding**: the file is exactly the camera's video
+and audio, so it's the best thing you can upload to YouTube, and it takes about
+as long as copying the files.
 
-- **It checks that the clips can be joined.** A lossless merge only works when
-  every clip was shot the same way. If your selection mixes 60 and 30 fps, 8-
-  and 10-bit, or vertical clips, FoxCull shows each set with its length and
-  leaves the odd ones out, with the reason next to each.
-- **Photos in the selection are left out automatically.**
-- **It tells you the size before it starts**, and which drives have room: the
-  clips' own folder, your computer, or any plugged-in drive. It won't start if
-  the file won't fit.
+- **Everything you selected is listed, oldest first**, with each clip's length,
+  frame size, frame rate, codec and audio in columns.
+- **FoxCull works out the main format and highlights what doesn't match** — a
+  30 fps night sequence among 60 fps clips, a vertical clip, a photo — with the
+  reason. Nothing is dropped behind your back; you remove things yourself: the
+  **−** button, right-click → Remove, or select rows and press **Delete**.
+- **Drag rows to change the order**, or put it back with **Sort by time shot**.
+- **Click any row to preview it** on the right: hover a video to scrub through
+  it, or press Play.
+- **It tells you the length and size before you start**, and which drives have
+  room: the clips' own folder, your computer, or any plugged-in drive. Merge
+  only lights up once nothing is left to fix.
+- The window only closes when you say so. A stray click outside won't lose your list.
 - When it's done: **Show in folder** or **Open YouTube upload**.
 
 ## Video lengths and selection totals

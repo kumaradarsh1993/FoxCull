@@ -436,8 +436,9 @@
   /** A system drive root that was open last session and deliberately NOT
    *  reopened at launch (see onMount). The welcome screen offers it back. */
   let resumeDir = $state<string | null>(null);
-  /** Open "Merge videos" dialog: the selected videos and what was left out. */
-  let mergeReq = $state<{ paths: string[]; skippedPhotos: number; sourceDir: string } | null>(null);
+  /** Open "Merge videos" window: everything selected (photos too; the window
+   *  flags what can't be merged rather than FoxCull dropping it silently). */
+  let mergeReq = $state<{ items: MediaItem[]; sourceDir: string } | null>(null);
   /** Video lengths (seconds) by path: the tile badge and the selection summary.
    *  Filled per folder from the per-drive cache (MP4/MOV headers, so cheap). */
   let durations = $state<Record<string, number>>({});
@@ -1347,12 +1348,12 @@
   });
 
   function openMerge() {
-    const ts = targets();
-    const vids = ts.filter((i) => i.kind === "video" && !i.missing);
+    const ts = targets().filter((i) => !i.missing);
+    const vids = ts.filter((i) => i.kind === "video");
     if (vids.length < 2 || !currentDir) return;
     const first = vids[0].path;
     const sourceDir = first.slice(0, Math.max(first.lastIndexOf("/"), first.lastIndexOf("\\"))) || currentDir;
-    mergeReq = { paths: vids.map((i) => i.path), skippedPhotos: ts.length - vids.length, sourceDir };
+    mergeReq = { items: ts, sourceDir };
   }
 
   /** Whether the current view depends on real capture dates. */
@@ -3062,6 +3063,9 @@
   }
 
   async function onkeydown(e: KeyboardEvent) {
+    // The merge window owns the keyboard while it's open: its Delete removes
+    // rows from the merge list and must never reach the grid behind it.
+    if (mergeReq) return;
     const t = e.target as HTMLElement;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
     const k = e.key.toLowerCase();
@@ -4112,8 +4116,7 @@
     {/if}
     {#if mergeReq}
       <MergeDialog
-        paths={mergeReq.paths}
-        skippedPhotos={mergeReq.skippedPhotos}
+        items={mergeReq.items}
         sourceDir={mergeReq.sourceDir}
         {drives}
         onclose={() => (mergeReq = null)}

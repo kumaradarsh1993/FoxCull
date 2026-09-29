@@ -1,28 +1,35 @@
 <script lang="ts">
-  // Merge videos: a trip's clips joined end to end, in shooting order, with no
-  // re-encoding: the "dump the Osmo clips into one file for YouTube" workflow.
-  // Deliberately NOT the Edit studio: no timeline, no trims, nothing to set up.
-  // It lists the clips, keeps the ones that can be joined losslessly (same
-  // codec, frame size, frame rate, bit depth, audio), shows how long and how
-  // big the result will be, and checks the chosen drive can hold it before
-  // anything is written.
+  // Merge videos: a trip's clips joined end to end with no re-encoding, the
+  // "dump the Osmo clips into one file for YouTube" workflow. Deliberately not
+  // the Edit studio (that's the Instagram crop/trim/grade flow).
+  //
+  // The owner's rules for this window, which the code follows:
+  //   * Nothing is dropped silently. Everything selected is listed, photos
+  //     included. The dominant format is worked out from the list, and every
+  //     cell that doesn't match it is highlighted with the reason. A night
+  //     sequence shot at 30 fps must be visible, not quietly missing.
+  //   * The owner removes items: the row's − button, right-click → Remove, or
+  //     select rows and press Delete. Merge stays disabled until nothing is
+  //     flagged.
+  //   * Chronological (oldest first) by default; rows can be dragged to reorder.
+  //   * Clicking a row previews it on the right (photo, or video with hover
+  //     scrub and Play). Clicking outside never closes the window.
   import { onDestroy, onMount } from "svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { api } from "$lib/api";
-  import type { MergeClip, TreeDir } from "$lib/types";
+  import type { MediaItem, MergeClip, TreeDir } from "$lib/types";
+  import Thumb from "./Thumb.svelte";
+  import ContextMenu, { type MenuEntry } from "./ContextMenu.svelte";
 
   let {
-    paths,
-    skippedPhotos = 0,
+    items,
     sourceDir,
     drives,
     onclose,
     ondone,
   }: {
-    /** The selected videos (any order; the probe returns shooting order). */
-    paths: string[];
-    /** Photos that were in the selection and were left out. */
-    skippedPhotos?: number;
+    /** Everything that was selected, photos included. */
+    items: MediaItem[];
     /** Folder the clips live in: the default place to save. */
     sourceDir: string;
     drives: TreeDir[];
@@ -32,9 +39,17 @@
 
   type Phase = "probing" | "ready" | "merging" | "done" | "error";
   let phase = $state<Phase>("probing");
-  let clips = $state<MergeClip[]>([]);
-  let chosenSig = $state("");
-  let excluded = $state<Set<string>>(new Set());
+  let byPath = $state<Record<string, MergeClip>>({});
+  /** The merge sequence, as paths, in play order. */
+  let order = $state<string[]>([]);
+  let chronological: string[] = [];
+  let sel = $state<Set<string>>(new Set());
+  let anchor: string | null = null;
+  let previewPath = $state<string | null>(null);
+  let playing = $state(false);
+  let playFailed = $state(false);
+  let photoSrc = $state<string | null>(null);
+  let menu = $state<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
   let name = $state("");
   let destDir = $state("");
   let error = $state("");
@@ -42,73 +57,96 @@
   let startedAt = 0;
   let now = $state(Date.now());
   let result = $state<{ path: string; bytes: number } | null>(null);
+  let listEl = $state<HTMLDivElement | null>(null);
 
   type Dest = { label: string; path: string; free: number | null };
   let dests = $state<Dest[]>([]);
-  let customDest = $state<Dest | null>(null);
 
-  // ── grouping: clips that can share one lossless file ─────────────────────
-  type Group = { sig: string; clips: MergeClip[]; secs: number; label: string };
+  const itemFor = (p: string) => items.find((i) => i.path === p);
+
+  // ── what "compatible" means ─────────────────────────────────────────────
   const bitDepth = (c: MergeClip) => (/10|12/.test(c.pix_fmt) ? "10-bit" : "8-bit");
-  const codecName = (c: MergeClip) => ({ hevc: "HEVC", h264: "H.264", prores: "ProRes", av1: "AV1" })[c.vcodec] ?? c.vcodec.toUpperCase();
-  function sizeLabel(c: MergeClip) {
+  const codecName = (c: MergeClip) =>
+    ({ hevc: "HEVC", h264: "H.264", prores: "ProRes", av1: "AV1", vp9: "VP9" })[c.vcodec] ?? c.vcodec.toUpperCase();
+  const codecLabel = (c: MergeClip) => `${codecName(c)} ${bitDepth(c)}`;
+  function frameLabel(c: MergeClip) {
     const w = c.rotation % 180 ? c.height : c.width;
     const h = c.rotation % 180 ? c.width : c.height;
-    if (h > w) return `Vertical ${w}×${h}`;
-    if (h === w) return `Square ${w}×${h}`;
+    if (h > w) return "Vertical";
+    if (h === w) return "Square";
     if (w >= 3840) return "4K";
-    if (w >= 2560) return "2.7K";
+    if (w >= 2688) return "2.7K";
     if (w >= 1920) return "1080p";
+    if (w >= 1280) return "720p";
     return `${w}×${h}`;
   }
-  const fpsLabel = (f: number) => `${Number.isInteger(f) ? f : f.toFixed(2)} fps`;
-  const groupLabel = (c: MergeClip) => `${sizeLabel(c)} · ${fpsLabel(c.fps)} · ${codecName(c)} ${bitDepth(c)}`;
+  const fpsLabel = (f: number) => (f ? (Number.isInteger(f) ? `${f}` : f.toFixed(2)) : "—");
+  const audioLabel = (c: MergeClip) =>
+    c.acodec ? `${c.acodec.toUpperCase()} ${c.arate ? Math.round(c.arate / 1000) + "k" : ""}${c.alayout && c.alayout !== "stereo" ? " " + c.alayout : ""}`.trim() : "None";
 
-  let groups = $derived.by(() => {
-    const m = new Map<string, Group>();
-    for (const c of clips) {
-      if (c.error) continue;
-      const g = m.get(c.signature) ?? { sig: c.signature, clips: [], secs: 0, label: groupLabel(c) };
-      g.clips.push(c);
+  let list = $derived(order.map((p) => byPath[p]).filter(Boolean));
+
+  /** The format most of the running time shares: what the merge will be. */
+  let dominant = $derived.by(() => {
+    const secs = new Map<string, { clip: MergeClip; secs: number; n: number }>();
+    for (const c of list) {
+      if (c.kind !== "video" || c.error) continue;
+      const g = secs.get(c.signature) ?? { clip: c, secs: 0, n: 0 };
       g.secs += c.duration;
-      m.set(c.signature, g);
+      g.n += 1;
+      secs.set(c.signature, g);
     }
-    return [...m.values()].sort((a, b) => b.secs - a.secs);
+    let best: { clip: MergeClip; secs: number; n: number } | null = null;
+    for (const g of secs.values()) if (!best || g.secs > best.secs || (g.secs === best.secs && g.n > best.n)) best = g;
+    return best?.clip ?? null;
   });
-  let chosen = $derived(groups.find((g) => g.sig === chosenSig) ?? groups[0]);
 
-  /** Why a clip can't join the chosen set, in words. */
-  function mismatch(c: MergeClip): string | null {
-    if (c.error) return c.error;
-    const ref = chosen?.clips[0];
-    if (!ref || c.signature === ref.signature) return null;
-    const why: string[] = [];
-    if (sizeLabel(c) !== sizeLabel(ref) || c.width !== ref.width || c.height !== ref.height) why.push(sizeLabel(c));
-    if (Math.abs(c.fps - ref.fps) > 0.01) why.push(fpsLabel(c.fps));
-    if (c.vcodec !== ref.vcodec) why.push(codecName(c));
-    else if (bitDepth(c) !== bitDepth(ref)) why.push(bitDepth(c));
-    else if (c.profile !== ref.profile || c.pix_fmt !== ref.pix_fmt) why.push(`${codecName(c)} ${c.profile}`);
-    if (c.acodec !== ref.acodec || c.arate !== ref.arate || c.alayout !== ref.alayout) why.push(c.acodec ? "different audio" : "no audio");
-    return why.join(" · ") || "shot with different settings";
+  type Issues = { frame?: string; fps?: string; codec?: string; audio?: string; kind?: string };
+  /** Which attributes of this item stop it joining the merge, in words. */
+  function issuesOf(c: MergeClip): Issues | null {
+    if (c.kind === "photo") return { kind: "Photo: only videos can be merged" };
+    if (c.kind !== "video") return { kind: "Not a video" };
+    if (c.error) return { kind: c.error };
+    const d = dominant;
+    if (!d || c.signature === d.signature) return null;
+    const out: Issues = {};
+    if (c.width !== d.width || c.height !== d.height || c.rotation !== d.rotation)
+      out.frame = `${c.width}×${c.height}; the rest are ${d.width}×${d.height}`;
+    if (Math.abs(c.fps - d.fps) > 0.01) out.fps = `${fpsLabel(c.fps)} fps; the rest are ${fpsLabel(d.fps)} fps`;
+    if (c.vcodec !== d.vcodec || c.profile !== d.profile || c.pix_fmt !== d.pix_fmt)
+      out.codec = `${codecLabel(c)} (${c.profile || c.vcodec}); the rest are ${codecLabel(d)} (${d.profile || d.vcodec})`;
+    if (c.acodec !== d.acodec || c.arate !== d.arate || c.alayout !== d.alayout) out.audio = `${audioLabel(c)}; the rest are ${audioLabel(d)}`;
+    if (!Object.keys(out).length) out.codec = "Encoded differently from the rest";
+    return out;
   }
-
-  let joinable = $derived(clips.filter((c) => !mismatch(c)));
-  let included = $derived(joinable.filter((c) => !excluded.has(c.path)));
-  let totalSecs = $derived(included.reduce((s, c) => s + c.duration, 0));
-  // DJI clips carry a ~5 Mbps debug track the merge drops; estimate with the
-  // plain sum and call it approximate rather than under-promise the space.
-  let totalBytes = $derived(included.reduce((s, c) => s + c.size, 0));
-  let dest = $derived(customDest?.path === destDir ? customDest : dests.find((d) => d.path === destDir));
-  const MARGIN = 1024 ** 3; // matches the backend's 1 GB margin
+  let issues = $derived(Object.fromEntries(list.map((c) => [c.path, issuesOf(c)])) as Record<string, Issues | null>);
+  let flagged = $derived(list.filter((c) => issues[c.path]));
+  let clean = $derived(list.filter((c) => !issues[c.path]));
+  let totalSecs = $derived(clean.reduce((s, c) => s + c.duration, 0));
+  // DJI clips carry a ~5 Mbps debug track the merge drops, so the plain sum
+  // slightly over-estimates: fine for a space check.
+  let totalBytes = $derived(clean.reduce((s, c) => s + c.size, 0));
+  let dest = $derived(dests.find((d) => d.path === destDir));
+  const MARGIN = 1024 ** 3; // the backend's 1 GB margin
   const fits = (d: Dest | undefined) => !!d && (d.free === null || d.free >= totalBytes + MARGIN);
+
+  /** The one thing still in the way of merging, or null when it can run. */
+  let blocker = $derived.by(() => {
+    if (flagged.length) return `Remove the ${flagged.length} highlighted item${flagged.length === 1 ? "" : "s"} to merge`;
+    if (clean.length < 2) return "Add at least two videos";
+    if (!name.trim()) return "Give the file a name";
+    if (!destDir) return "Choose where to save it";
+    if (dest && dest.free !== null && !fits(dest)) return "Not enough space there: pick another drive";
+    return null;
+  });
 
   // ── formatting ────────────────────────────────────────────────────────────
   function fmtDur(s: number) {
     s = Math.round(s);
     const h = Math.floor(s / 3600);
     const m = Math.floor((s % 3600) / 60);
-    const sec = s % 60;
-    return h ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}` : `${m}:${String(sec).padStart(2, "0")}`;
+    const sec = String(s % 60).padStart(2, "0");
+    return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
   }
   function fmtLong(s: number) {
     const h = Math.floor(s / 3600);
@@ -116,36 +154,39 @@
     return h ? `${h} h ${m} min` : `${m} min`;
   }
   const gb = (b: number) =>
-    b >= 1e12 ? `${(b / 1e12).toFixed(1)} TB` : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`;
+    b >= 1e12 ? `${(b / 1e12).toFixed(1)} TB` : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`;
   const when = (t: number | null) =>
-    t ? new Date(t * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+    t ? new Date(t * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "—";
   const baseName = (p: string) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
 
-  function defaultName(list: MergeClip[]) {
-    const ts = list.map((c) => c.captured).filter((t): t is number => !!t);
+  function defaultName(clips: MergeClip[]) {
+    const ts = clips.map((c) => c.captured).filter((t): t is number => !!t);
     if (!ts.length) return "Merged video";
     const a = new Date(Math.min(...ts) * 1000);
     const b = new Date(Math.max(...ts) * 1000);
     const mon = (d: Date) => d.toLocaleString(undefined, { month: "short" });
     if (a.toDateString() === b.toDateString()) return `Merged ${a.getDate()} ${mon(a)} ${a.getFullYear()}`;
-    if (a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear())
-      return `Merged ${a.getDate()}-${b.getDate()} ${mon(a)} ${a.getFullYear()}`;
+    if (a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear()) return `Merged ${a.getDate()}-${b.getDate()} ${mon(a)} ${a.getFullYear()}`;
     return `Merged ${a.getDate()} ${mon(a)} - ${b.getDate()} ${mon(b)} ${b.getFullYear()}`;
   }
 
   // ── lifecycle ─────────────────────────────────────────────────────────────
   onMount(async () => {
+    let clips: MergeClip[];
     try {
-      clips = await api.mergeProbe(paths);
+      clips = await api.mergeProbe(items.map((i) => i.path));
     } catch (e) {
       error = String(e);
       phase = "error";
       return;
     }
-    chosenSig = groups[0]?.sig ?? "";
-    name = defaultName(groups[0]?.clips ?? clips);
+    byPath = Object.fromEntries(clips.map((c) => [c.path, c]));
+    chronological = clips.map((c) => c.path);
+    order = [...chronological];
+    name = defaultName(clips.filter((c) => c.kind === "video"));
+    previewPath = order[0] ?? null;
     phase = "ready";
-    await loadDestinations();
+    void loadDestinations();
   });
 
   async function loadDestinations() {
@@ -155,36 +196,202 @@
     if (movies) list.push({ label: `This computer: ${movies.label}`, path: movies.path, free: null });
     for (const d of drives) {
       if (d.name === "Home" || (await api.isSystemRoot(d.path))) continue;
-      if (sourceDir.toLowerCase().startsWith(d.path.toLowerCase())) continue; // same drive as the clips
+      if (sourceDir.toLowerCase().startsWith(d.path.toLowerCase())) continue; // the clips' own drive is option 1
       list.push({ label: `${d.name.replace(/[\\/]+$/, "")} (drive)`, path: d.path, free: null });
     }
     dests = list;
     destDir = sourceDir;
-    for (const d of list) {
-      api.diskFree(d.path).then(
-        (free) => (dests = dests.map((x) => (x.path === d.path ? { ...x, free } : x))),
-        () => {},
-      );
+    for (const d of list) void refreshFree(d.path);
+  }
+
+  async function refreshFree(path: string) {
+    try {
+      const free = await api.diskFree(path);
+      dests = dests.map((x) => (x.path === path ? { ...x, free } : x));
+    } catch {
+      /* unknown: the backend checks again before writing */
     }
   }
 
   async function chooseFolder() {
     const picked = await api.pickFolder();
     if (!picked) return;
-    customDest = { label: picked, path: picked, free: null };
+    if (!dests.some((d) => d.path === picked)) dests = [...dests, { label: picked, path: picked, free: null }];
     destDir = picked;
-    try {
-      const free = await api.diskFree(picked);
-      customDest = { ...customDest, free };
-    } catch {
-      /* unknown: the backend still checks */
+    void refreshFree(picked);
+  }
+
+  // Preview: photos get the sharp Focus-size JPEG; videos show as a large
+  // tile (hover to scrub) until Play swaps in a real player.
+  $effect(() => {
+    const p = previewPath;
+    playing = false;
+    playFailed = false;
+    photoSrc = null;
+    const c = p ? byPath[p] : undefined;
+    if (c?.kind === "photo") {
+      api.loupeSrc(c.path).then(
+        (src) => previewPath === p && (photoSrc = api.fileSrc(src)),
+        () => {},
+      );
+    }
+  });
+
+  // ── list editing ──────────────────────────────────────────────────────────
+  function removePaths(paths: Iterable<string>) {
+    const gone = new Set(paths);
+    if (!gone.size) return;
+    const idx = order.findIndex((p) => gone.has(p));
+    order = order.filter((p) => !gone.has(p));
+    sel = new Set([...sel].filter((p) => !gone.has(p)));
+    if (previewPath && gone.has(previewPath)) {
+      previewPath = order[Math.min(Math.max(0, idx), order.length - 1)] ?? null;
+      if (previewPath) sel = new Set([previewPath]);
     }
   }
 
+  function clickRow(e: MouseEvent, path: string) {
+    if (e.shiftKey && anchor) {
+      const a = order.indexOf(anchor);
+      const b = order.indexOf(path);
+      const range = order.slice(Math.min(a, b), Math.max(a, b) + 1);
+      sel = new Set(e.metaKey || e.ctrlKey ? [...sel, ...range] : range);
+    } else if (e.metaKey || e.ctrlKey) {
+      const next = new Set(sel);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      sel = next;
+      anchor = path;
+    } else {
+      sel = new Set([path]);
+      anchor = path;
+    }
+    previewPath = path;
+  }
+
+  function moveSelected(delta: number) {
+    if (!sel.size) return;
+    const next = [...order];
+    const idxs = next.map((p, i) => (sel.has(p) ? i : -1)).filter((i) => i >= 0);
+    if (delta < 0 && idxs[0] === 0) return;
+    if (delta > 0 && idxs[idxs.length - 1] === next.length - 1) return;
+    for (const i of delta < 0 ? idxs : [...idxs].reverse()) {
+      [next[i], next[i + delta]] = [next[i + delta], next[i]];
+    }
+    order = next;
+  }
+
+  function moveTo(paths: string[], edge: "top" | "bottom") {
+    const moving = order.filter((p) => paths.includes(p));
+    const rest = order.filter((p) => !paths.includes(p));
+    order = edge === "top" ? [...moving, ...rest] : [...rest, ...moving];
+  }
+
+  function rowMenu(e: MouseEvent, path: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!sel.has(path)) {
+      sel = new Set([path]);
+      anchor = path;
+      previewPath = path;
+    }
+    const targets = order.filter((p) => sel.has(p));
+    const n = targets.length > 1 ? ` (${targets.length})` : "";
+    menu = {
+      x: e.clientX,
+      y: e.clientY,
+      entries: [
+        { label: `Remove from merge${n}`, icon: "−", danger: true, action: () => removePaths(targets) },
+        { separator: true },
+        { label: `Move to start${n}`, icon: "⤒", action: () => moveTo(targets, "top") },
+        { label: `Move to end${n}`, icon: "⤓", action: () => moveTo(targets, "bottom") },
+        { separator: true },
+        { label: "Show in folder", icon: "⤴", action: () => api.reveal(path) },
+      ],
+    };
+  }
+
+  // Drag to reorder. A row that's part of a multi-selection drags the whole
+  // selection with it, keeping their relative order.
+  let dragging: string[] = [];
+  let dropAt = $state<{ path: string; after: boolean } | null>(null);
+  function dragStart(e: DragEvent, path: string) {
+    dragging = sel.has(path) ? order.filter((p) => sel.has(p)) : [path];
+    e.dataTransfer?.setData("text/x-foxcull-merge-row", path);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+    e.stopPropagation();
+  }
+  function dragOver(e: DragEvent, path: string) {
+    if (!dragging.length) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    dropAt = { path, after: e.clientY > r.top + r.height / 2 };
+  }
+  function drop(e: DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const at = dropAt;
+    const moving = dragging;
+    dragging = [];
+    dropAt = null;
+    if (!at || !moving.length || moving.includes(at.path)) return;
+    const rest = order.filter((p) => !moving.includes(p));
+    let i = rest.indexOf(at.path);
+    if (at.after) i += 1;
+    order = [...rest.slice(0, i), ...moving, ...rest.slice(i)];
+  }
+
+  function onkeydown(e: KeyboardEvent) {
+    // This window owns the keyboard while it's open (the page ignores keys
+    // then), and it never closes on Escape: only Cancel / ✕ close it.
+    if (menu) return; // the context menu handles its own keys
+    const t = e.target as HTMLElement;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+    if (phase !== "ready") return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (playing) playing = false;
+      else sel = new Set();
+      return;
+    }
+    if (e.key === "Delete" || e.key === "Backspace") {
+      e.preventDefault();
+      removePaths(sel);
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
+      e.preventDefault();
+      sel = new Set(order);
+      return;
+    }
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      const d = e.key === "ArrowUp" ? -1 : 1;
+      if (e.altKey) {
+        moveSelected(d);
+        return;
+      }
+      const cur = previewPath ? order.indexOf(previewPath) : -1;
+      const next = order[Math.max(0, Math.min(order.length - 1, cur + d))];
+      if (!next) return;
+      if (e.shiftKey) sel = new Set([...sel, next]);
+      else {
+        sel = new Set([next]);
+        anchor = next;
+      }
+      previewPath = next;
+      listEl?.querySelector(`[data-path="${CSS.escape(next)}"]`)?.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  // ── merge ─────────────────────────────────────────────────────────────────
   let unlisten: (() => void) | null = null;
   let ticker: ReturnType<typeof setInterval> | null = null;
   async function start() {
+    if (blocker) return;
     error = "";
+    playing = false;
     phase = "merging";
     pct = 0;
     startedAt = Date.now();
@@ -195,26 +402,18 @@
       /* no progress events outside the app */
     }
     try {
-      result = await api.mergeVideos({ paths: included.map((c) => c.path), destDir, name });
+      result = await api.mergeVideos({ paths: clean.map((c) => c.path), destDir, name });
       phase = "done";
       ondone(result.path, destDir);
     } catch (e) {
       const msg = String(e);
-      if (msg.includes("cancelled")) phase = "ready";
-      else {
-        error = msg;
-        phase = "ready";
-      }
+      phase = "ready";
+      if (!msg.includes("cancelled")) error = msg;
     } finally {
       unlisten?.();
       unlisten = null;
       if (ticker) clearInterval(ticker);
     }
-  }
-
-  function cancel() {
-    if (phase === "merging") void api.cancelEditExport();
-    else onclose();
   }
 
   onDestroy(() => {
@@ -229,193 +428,372 @@
     return left > 90 ? `about ${Math.round(left / 60)} min left` : `about ${Math.max(1, Math.round(left))} s left`;
   });
 
-  function toggle(path: string) {
-    const next = new Set(excluded);
-    if (next.has(path)) next.delete(path);
-    else next.add(path);
-    excluded = next;
-  }
+  let preview = $derived(previewPath ? byPath[previewPath] : undefined);
+  let previewItem = $derived(previewPath ? itemFor(previewPath) : undefined);
+  let reordered = $derived(order.join("\n") !== chronological.filter((p) => order.includes(p)).join("\n"));
 </script>
 
-<svelte:window onkeydown={(e) => e.key === "Escape" && phase !== "merging" && onclose()} />
+<svelte:window {onkeydown} />
 
-<div class="backdrop" onclick={() => phase !== "merging" && onclose()} role="presentation"></div>
-<div class="panel" role="dialog" aria-label="Merge videos">
+<!-- The backdrop is inert on purpose: a stray click must not throw away a
+     half-reviewed list. -->
+<div class="backdrop" role="presentation"></div>
+<div class="panel" role="dialog" aria-label="Merge videos" aria-modal="true">
   <header>
     <div>
       <h2>Merge videos</h2>
-      <p class="sub">Joined end to end in the order they were shot. No re-encoding, so the file keeps the camera's full quality.</p>
+      <p class="sub">Joined end to end with no re-encoding, so the file keeps the camera's full quality.</p>
     </div>
     <span class="grow"></span>
-    {#if phase !== "merging"}<button class="x" onclick={onclose} title="Close (Esc)" aria-label="Close">✕</button>{/if}
+    {#if phase !== "merging"}<button class="x" onclick={onclose} title="Close" aria-label="Close">✕</button>{/if}
   </header>
 
   {#if phase === "probing"}
-    <div class="center">Reading {paths.length} clips…</div>
-  {:else if phase === "error" && !clips.length}
+    <div class="center">Checking {items.length} items…</div>
+  {:else if phase === "error"}
     <div class="center err">{error}</div>
-  {:else if phase === "done" && result}
-    <div class="doneBox">
-      <div class="doneIcon">✓</div>
-      <h3>{baseName(result.path)}</h3>
-      <p>{gb(result.bytes)} · {fmtLong(totalSecs)} · {included.length} clips</p>
-      <p class="hint">
-        To share it, upload this file to YouTube as it is: that gives YouTube the original quality to work from. Your clips are
-        untouched, so once the upload finishes you can delete this merged file to get the space back.
-      </p>
-      <div class="doneActions">
-        <button class="btn" onclick={() => api.reveal(result!.path)}>Show in folder</button>
-        <button class="btn" onclick={() => openUrl("https://www.youtube.com/upload")}>Open YouTube upload</button>
-        <button class="btn accent" onclick={onclose}>Done</button>
-      </div>
-    </div>
   {:else}
-    <div class="scroll">
-      <!-- The plan in one line: what you'll get, how long, how big. -->
-      <div class="summary">
-        <div class="big">{included.length} clips · {fmtLong(totalSecs)}</div>
-        <div class="small">{chosen?.label ?? ""} · about {gb(totalBytes)}</div>
-      </div>
-
-      {#if groups.length > 1}
-        <div class="groups">
-          <span class="lbl">These clips were shot with different settings, and only matching clips can be joined without re-encoding. Merge:</span>
-          <div class="chips">
-            {#each groups as g (g.sig)}
-              <button class="chip" class:on={g.sig === chosen?.sig} onclick={() => { chosenSig = g.sig; excluded = new Set(); }}>
-                {g.label} <em>{g.clips.length} · {fmtLong(g.secs)}</em>
-              </button>
-            {/each}
+    <div class="body">
+      <!-- ░ left: the merge sequence ░ -->
+      <section class="left">
+        {#if dominant}
+          <div class="basis">
+            <span class="basisLabel">Merging as</span>
+            <span class="fmt">{frameLabel(dominant)}</span>
+            <span class="fmt">{fpsLabel(dominant.fps)} fps</span>
+            <span class="fmt">{codecLabel(dominant)}</span>
+            <span class="fmt">{audioLabel(dominant)}</span>
+            <span class="basisNote">the format most of this footage shares</span>
           </div>
-        </div>
-      {/if}
-      {#if skippedPhotos}<p class="note">{skippedPhotos} photo{skippedPhotos === 1 ? " was" : "s were"} in the selection and left out.</p>{/if}
-
-      <ol class="clips">
-        {#each clips as c (c.path)}
-          {@const why = mismatch(c)}
-          <li class:off={!!why || excluded.has(c.path)}>
-            <input type="checkbox" checked={!why && !excluded.has(c.path)} disabled={!!why} onchange={() => toggle(c.path)} aria-label="Include {c.name}" />
-            <span class="t">{when(c.captured)}</span>
-            <span class="n" title={c.path}>{c.name}</span>
-            {#if why}<span class="why">{why}</span>{/if}
-            <span class="d">{fmtDur(c.duration)}</span>
-          </li>
-        {/each}
-      </ol>
-
-      <div class="field">
-        <label for="mergeName">File name</label>
-        <input id="mergeName" type="text" bind:value={name} spellcheck="false" />
-      </div>
-
-      <div class="field">
-        <span class="flabel">Save to</span>
-        <div class="dests">
-          {#each [...dests, ...(customDest ? [customDest] : [])] as d (d.path)}
-            <button class="dest" class:on={destDir === d.path} class:tight={d.free !== null && !fits(d)} onclick={() => (destDir = d.path)} title={d.path}>
-              <span class="dl">{d.label}</span>
-              <span class="df">
-                {#if d.free === null}checking space…{:else if !fits(d)}not enough space · {gb(d.free)} free{:else}{gb(d.free)} free{/if}
-              </span>
-            </button>
-          {/each}
-          <button class="dest choose" onclick={chooseFolder}>Choose another folder…</button>
-        </div>
-        {#if dest && dest.free !== null && !fits(dest)}
-          <p class="warn">
-            This needs about {gb(totalBytes)} and that drive has {gb(dest.free)} free. Pick an external drive, or merge fewer clips.
-          </p>
         {/if}
-      </div>
 
-      {#if error}<p class="warn">{error}</p>{/if}
-    </div>
-
-    <footer>
-      {#if phase === "merging"}
-        <div class="progress" role="progressbar" aria-valuenow={pct} aria-valuemin="0" aria-valuemax="100">
-          <div class="bar"><div class="fill" style="width:{pct}%"></div></div>
-          <span>Merging… {pct}%{eta ? ` · ${eta}` : ""}</span>
+        <div class="toolbar">
+          <span class="count">{list.length} item{list.length === 1 ? "" : "s"}</span>
+          {#if flagged.length}
+            <span class="flagChip" title="Highlighted cells show why each one can't join the merge">{flagged.length} can't be merged</span>
+          {:else if list.length}
+            <span class="okChip">All compatible</span>
+          {/if}
+          <span class="grow"></span>
+          {#if flagged.length}
+            <button class="btn sm" onclick={() => { sel = new Set(flagged.map((c) => c.path)); previewPath = flagged[0].path; }} title="Select every highlighted row, so you can check them and press Delete">Select these</button>
+          {/if}
+          <button class="btn sm" disabled={!sel.size || phase !== "ready"} onclick={() => removePaths(sel)} title="Remove the selected rows (Delete)">Remove selected</button>
+          <button class="btn sm" disabled={!reordered || phase !== "ready"} onclick={() => (order = chronological.filter((p) => order.includes(p)))} title="Put the list back in the order the clips were shot">Sort by time shot</button>
         </div>
-        <button class="btn" onclick={cancel}>Stop</button>
-      {:else}
-        <span class="grow"></span>
-        <button class="btn" onclick={onclose}>Cancel</button>
-        <button class="btn accent" onclick={start} disabled={included.length < 2 || !name.trim() || !destDir || (dest?.free != null && !fits(dest))}>
-          Merge {included.length} clips
-        </button>
-      {/if}
-    </footer>
+
+        <div class="table" bind:this={listEl} role="listbox" aria-multiselectable="true" aria-label="Merge sequence">
+          <div class="row head" aria-hidden="true">
+            <span class="c-idx">#</span>
+            <span class="c-name">Name</span>
+            <span class="c-when">Recorded</span>
+            <span class="c-len">Length</span>
+            <span class="c-frame">Frame</span>
+            <span class="c-fps">FPS</span>
+            <span class="c-codec">Video</span>
+            <span class="c-audio">Audio</span>
+            <span class="c-size">Size</span>
+            <span class="c-rm"></span>
+          </div>
+          {#each list as c, i (c.path)}
+            {@const iss = issues[c.path]}
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <div
+              class="row"
+              class:sel={sel.has(c.path)}
+              class:flag={!!iss}
+              class:previewing={previewPath === c.path}
+              class:dropBefore={dropAt?.path === c.path && !dropAt.after}
+              class:dropAfter={dropAt?.path === c.path && dropAt.after}
+              role="option"
+              aria-selected={sel.has(c.path)}
+              tabindex="-1"
+              data-path={c.path}
+              draggable={phase === "ready"}
+              onclick={(e) => clickRow(e, c.path)}
+              oncontextmenu={(e) => rowMenu(e, c.path)}
+              ondragstart={(e) => dragStart(e, c.path)}
+              ondragover={(e) => dragOver(e, c.path)}
+              ondrop={drop}
+              ondragend={() => { dragging = []; dropAt = null; }}
+            >
+              <span class="c-idx"><span class="grip" aria-hidden="true">⋮⋮</span>{i + 1}</span>
+              <span class="c-name" title={c.path}>
+                <svg class="kind" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  {#if c.kind === "video"}<rect x="3" y="6" width="13" height="12" rx="2.5" /><path d="M16 10.5l5-3v9l-5-3" />{:else}<rect x="3" y="4" width="18" height="16" rx="2.5" /><path d="M3 16l5-5 4 4 3-3 6 6" /><circle cx="16" cy="9" r="1.4" />{/if}
+                </svg><span class="nmA">{c.name.slice(0, -12)}</span><span class="nmB">{c.name.slice(-12)}</span>
+              </span>
+              <span class="c-when">{when(c.captured)}</span>
+              {#if c.kind !== "video" || c.error}
+                <span class="c-span" title={iss?.kind}>
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M6 18L18 6" /></svg>
+                  {iss?.kind}
+                </span>
+              {:else}
+                <span class="c-len">{fmtDur(c.duration)}</span>
+                <span class="c-frame" class:bad={!!iss?.frame} title={iss?.frame ?? `${c.width}×${c.height}`}>{frameLabel(c)}</span>
+                <span class="c-fps" class:bad={!!iss?.fps} title={iss?.fps}>{fpsLabel(c.fps)}</span>
+                <span class="c-codec" class:bad={!!iss?.codec} title={iss?.codec ?? `${codecName(c)} ${c.profile} · ${c.pix_fmt}`}>{codecLabel(c)}</span>
+                <span class="c-audio" class:bad={!!iss?.audio} title={iss?.audio ?? audioLabel(c)}>{audioLabel(c)}</span>
+              {/if}
+              <span class="c-size">{gb(c.size)}</span>
+              <span class="c-rm">
+                <button class="rm" disabled={phase !== "ready"} onclick={(e) => { e.stopPropagation(); removePaths([c.path]); }} title="Remove from the merge (the file itself isn't touched)" aria-label="Remove {c.name} from the merge">
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 12h12" /></svg>
+                </button>
+              </span>
+            </div>
+          {:else}
+            <div class="empty">Nothing left in the list. Close this and select some clips.</div>
+          {/each}
+        </div>
+        <p class="keys">Click a row to preview · drag rows to reorder (or ⌥↑ ⌥↓) · Delete removes the selected rows · the files themselves are never touched</p>
+      </section>
+
+      <!-- ░ right: preview on top, settings + Merge below ░ -->
+      <section class="right">
+        <div class="preview">
+          {#if preview && previewItem}
+            {#if preview.kind === "photo"}
+              {#if photoSrc}<img src={photoSrc} alt={preview.name} />{:else}<div class="stage"><Thumb item={previewItem} size={480} /></div>{/if}
+            {:else if preview.kind === "video" && playing && !playFailed}
+              <!-- svelte-ignore a11y_media_has_caption -->
+              <video src={api.fileSrc(preview.path)} controls autoplay onerror={() => (playFailed = true)}></video>
+            {:else}
+              <div class="stage"><Thumb item={previewItem} size={480} armed /></div>
+              {#if preview.kind === "video"}
+                <div class="playbar">
+                  {#if playFailed}
+                    <span class="pf">This clip can't play in here.</span>
+                    <button class="btn sm" onclick={() => api.openExternal(preview!.path)}>Open in player</button>
+                  {:else}
+                    <span class="hint">Hover to scrub</span>
+                    <button class="btn sm accent" onclick={() => (playing = true)}>▶ Play</button>
+                  {/if}
+                </div>
+              {/if}
+            {/if}
+          {:else}
+            <div class="noPreview">Click a row to preview it</div>
+          {/if}
+        </div>
+        {#if preview}
+          <div class="pcap">
+            <span class="pname" title={preview.path}>{preview.name}</span>
+            <span class="pmeta">
+              {#if preview.kind === "video" && !preview.error}{fmtDur(preview.duration)} · {preview.width}×{preview.height} · {fpsLabel(preview.fps)} fps · {codecLabel(preview)} · {gb(preview.size)}{:else}{preview.kind === "photo" ? "Photo" : "Not a video"} · {gb(preview.size)}{/if}
+            </span>
+          </div>
+        {/if}
+
+        <div class="settings">
+          {#if phase === "done" && result}
+            <div class="doneBox">
+              <div class="doneIcon">✓</div>
+              <h3 title={result.path}>{baseName(result.path)}</h3>
+              <p>{gb(result.bytes)} · {fmtLong(totalSecs)} · {clean.length} clips</p>
+              <p class="hint2">Upload this file to YouTube as it is: that gives YouTube the original quality. Your clips are untouched, so you can delete this file after the upload to get the space back.</p>
+              <div class="doneActions">
+                <button class="btn" onclick={() => api.reveal(result!.path)}>Show in folder</button>
+                <button class="btn" onclick={() => openUrl("https://www.youtube.com/upload")}>Open YouTube upload</button>
+                <button class="btn accent" onclick={onclose}>Done</button>
+              </div>
+            </div>
+          {:else}
+            <div class="summary">
+              <div class="big">{clean.length} clip{clean.length === 1 ? "" : "s"} · {fmtLong(totalSecs)} · about {gb(totalBytes)}</div>
+              {#if flagged.length}<div class="small warnText">Not counting the {flagged.length} highlighted item{flagged.length === 1 ? "" : "s"}.</div>{/if}
+            </div>
+
+            <label class="fl" for="mergeName">File name</label>
+            <input id="mergeName" type="text" bind:value={name} spellcheck="false" disabled={phase === "merging"} />
+
+            <span class="fl">Save to</span>
+            <div class="dests">
+              {#each dests as d (d.path)}
+                <button class="dest" class:on={destDir === d.path} class:tight={d.free !== null && !fits(d)} disabled={phase === "merging"} onclick={() => (destDir = d.path)} title={d.path}>
+                  <span class="dl">{d.label}</span>
+                  <span class="df">{#if d.free === null}checking…{:else if !fits(d)}too small · {gb(d.free)} free{:else}{gb(d.free)} free{/if}</span>
+                </button>
+              {/each}
+              <button class="dest choose" disabled={phase === "merging"} onclick={chooseFolder}>Choose another folder…</button>
+            </div>
+
+            {#if error}<p class="warn">{error}</p>{/if}
+
+            {#if phase === "merging"}
+              <div class="progress" role="progressbar" aria-valuenow={pct} aria-valuemin="0" aria-valuemax="100">
+                <div class="bar"><div class="fill" style="width:{pct}%"></div></div>
+                <span>Merging… {pct}%{eta ? ` · ${eta}` : ""}</span>
+              </div>
+            {/if}
+
+            <div class="actions">
+              {#if phase === "merging"}
+                <span class="grow"></span>
+                <button class="btn" onclick={() => api.cancelEditExport()}>Stop</button>
+              {:else}
+                {#if blocker}<span class="why">{blocker}</span>{/if}
+                <span class="grow"></span>
+                <button class="btn" onclick={onclose}>Cancel</button>
+                <button class="btn accent" disabled={!!blocker} onclick={start}>Merge {clean.length} clips</button>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      </section>
+    </div>
   {/if}
 </div>
+
+{#if menu}
+  <ContextMenu x={menu.x} y={menu.y} entries={menu.entries} onclose={() => (menu = null)} />
+{/if}
 
 <style>
   .backdrop { position: fixed; inset: 0; z-index: 100; background: rgba(0, 0, 0, 0.66); backdrop-filter: blur(6px); }
   .panel {
-    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 101;
-    width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 48px);
+    position: fixed; inset: 16px; z-index: 101; margin: auto;
+    max-width: 1400px; max-height: 900px;
     display: flex; flex-direction: column; overflow: hidden;
     background: color-mix(in srgb, var(--bg-panel) 97%, transparent);
     border: 1px solid var(--border-strong); border-radius: var(--radius-xl); box-shadow: var(--shadow);
   }
-  header, footer { display: flex; align-items: center; gap: 10px; padding: 14px 18px; flex-shrink: 0; }
-  header { border-bottom: 1px solid var(--border-soft); }
-  footer { border-top: 1px solid var(--border-soft); }
+  header { display: flex; align-items: center; gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--border-soft); flex-shrink: 0; }
   h2 { margin: 0; font-family: var(--font-display); font-size: 17px; letter-spacing: -0.015em; }
-  .sub { margin: 3px 0 0; color: var(--text-dim); font-size: 12.5px; }
+  .sub { margin: 2px 0 0; color: var(--text-dim); font-size: 12.5px; }
   .grow { flex: 1; }
   .x { width: 30px; height: 30px; border-radius: 7px; color: var(--text-dim); font-size: 13px; }
   .x:hover { background: var(--bg-hover); color: var(--text); }
-  .center { padding: 48px 18px; text-align: center; color: var(--text-dim); }
+  .center { padding: 60px 18px; text-align: center; color: var(--text-dim); }
   .center.err { color: var(--reject); }
 
-  .scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px 16px; display: flex; flex-direction: column; gap: 14px; }
-  .scroll > * { flex-shrink: 0; }
-  .summary { padding: 12px 14px; border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: color-mix(in srgb, var(--accent) 7%, var(--bg-elev)); }
-  .big { color: var(--text); font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
-  .small { margin-top: 2px; color: var(--text-dim); font-size: 12.5px; }
+  .body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 420px); }
+  @media (max-width: 1150px) {
+    .body { grid-template-columns: minmax(0, 1fr) 330px; }
+  }
+  .left, .right { min-height: 0; display: flex; flex-direction: column; }
+  .left { padding: 12px 14px 10px 18px; gap: 8px; border-right: 1px solid var(--border-soft); container-type: inline-size; }
+  .left > *, .right > * { flex-shrink: 0; }
+  .right { overflow-y: auto; }
 
-  .groups .lbl { display: block; margin-bottom: 7px; color: var(--text-dim); font-size: 12.5px; line-height: 1.5; }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-  .chip { padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev); color: var(--text); font-size: 12px; text-align: left; }
-  .chip em { margin-left: 4px; color: var(--text-faint); font-style: normal; }
-  .chip.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev)); }
-  .chip.on em { color: var(--text-dim); }
-  .note { margin: 0; color: var(--text-faint); font-size: 12px; }
+  .basis { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+  .basisLabel { margin-right: 2px; color: var(--text-faint); font-size: 11px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; }
+  .fmt { padding: 2px 8px; border: 1px solid var(--border-soft); border-radius: 999px; background: color-mix(in srgb, var(--bg-elev) 70%, transparent); color: var(--text); font-size: 12px; font-weight: 560; }
+  .basisNote { margin-left: 4px; color: var(--text-faint); font-size: 11.5px; }
+  .toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .count { color: var(--text-dim); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  .flagChip, .okChip { padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
+  .flagChip { background: color-mix(in srgb, var(--star) 15%, transparent); color: var(--star); }
+  .okChip { background: color-mix(in srgb, var(--pick) 15%, transparent); color: var(--pick); }
+  .warnText { color: var(--star); font-weight: 600; }
 
-  .clips { list-style: none; margin: 0; padding: 4px; max-height: 260px; overflow-y: auto; border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: color-mix(in srgb, var(--bg-elev) 45%, transparent); }
-  .clips li { display: flex; align-items: center; gap: 10px; min-height: 30px; padding: 3px 8px; border-radius: 6px; font-size: 12.5px; }
-  .clips li:hover { background: var(--bg-hover); }
-  .clips li.off { color: var(--text-faint); }
-  .clips input { flex: none; accent-color: var(--accent); }
-  .t { flex: none; width: 118px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
-  .n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-  li.off .n { color: var(--text-faint); }
-  .why { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--star); font-size: 11.5px; }
-  .d { flex: none; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  /* The sequence table. Plain rows (not <table>) so rows can be dragged. */
+  .table { flex: 1 1 auto !important; min-height: 120px; overflow: auto; border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: color-mix(in srgb, var(--bg-elev) 40%, transparent); }
+  .row {
+    position: relative;
+    display: grid;
+    grid-template-columns: 44px minmax(150px, 1fr) 88px 50px 66px 58px 90px 70px 62px 30px;
+    align-items: center; column-gap: 8px;
+    min-height: 30px; padding: 0 6px 0 8px;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 12.5px; color: var(--text); cursor: default; user-select: none;
+  }
+  .row.head { position: sticky; top: 0; z-index: 1; min-height: 28px; background: var(--bg-panel); color: var(--text-faint); font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+  .row:not(.head):hover { background: color-mix(in srgb, var(--bg-hover) 70%, transparent); }
+  .row.flag { background: color-mix(in srgb, var(--star) 3%, transparent); }
+  .row.sel, .row.sel:hover { background: color-mix(in srgb, var(--select) 16%, transparent); }
+  .row.previewing { box-shadow: inset 2px 0 0 var(--accent); }
+  .row.flag { box-shadow: inset 3px 0 0 var(--star); }
+  .row.flag.previewing { box-shadow: inset 3px 0 0 var(--star), inset 5px 0 0 var(--accent); }
+  .row.dropBefore { box-shadow: inset 0 2px 0 var(--accent); }
+  .row.dropAfter { box-shadow: inset 0 -2px 0 var(--accent); }
+  .row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .c-idx { color: var(--text-faint); }
+  .grip { margin-right: 4px; color: var(--text-faint); letter-spacing: -2px; cursor: grab; opacity: 0.5; }
+  .row:hover .grip { opacity: 1; }
+  .kind { flex: none; margin-right: 7px; color: var(--text-faint); }
+  /* Middle truncation, as Finder does: camera names differ at the END
+     (DJI_20260922000747_0004_D.MP4), so that part must stay visible. */
+  .row > .c-name { display: flex; align-items: center; }
+  .nmA { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .nmB { flex: none; white-space: nowrap; }
+  .c-when, .c-len, .c-size { color: var(--text-dim); }
+  .c-span { grid-column: 4 / span 5; display: flex; align-items: center; gap: 6px; color: color-mix(in srgb, var(--reject) 80%, var(--text-dim)); font-size: 12px; }
+  .c-span svg { flex: none; opacity: 0.85; }
+  .bad { justify-self: start; max-width: 100%; padding: 1px 6px; border-radius: 5px; background: color-mix(in srgb, var(--star) 17%, transparent); color: var(--star); font-weight: 620; cursor: help; }
+  .c-rm { display: flex; justify-content: flex-end; }
+  .rm { display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid transparent; border-radius: 6px; color: var(--text-faint); opacity: 0.55; transition: opacity 100ms ease, background 100ms ease, color 100ms ease; }
+  .row:hover .rm, .row.sel .rm, .row.flag .rm { opacity: 1; }
+  .rm:hover:not(:disabled) { border-color: color-mix(in srgb, var(--reject) 40%, transparent); background: color-mix(in srgb, var(--reject) 12%, transparent); color: var(--reject); }
+  .empty { padding: 24px; text-align: center; color: var(--text-faint); font-size: 12.5px; }
+  .keys { margin: 0; color: var(--text-faint); font-size: 11px; }
 
-  .field { display: flex; flex-direction: column; gap: 6px; }
-  .field label, .flabel { color: var(--text-faint); font-size: 11px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; }
-  .field input[type="text"] { min-height: var(--control-h); padding: 5px 10px; font-size: 13px; user-select: text; }
-  .dests { display: flex; flex-direction: column; gap: 5px; }
-  .dest { display: flex; align-items: center; gap: 10px; padding: 8px 11px; border: 1px solid var(--border-soft); border-radius: 8px; background: color-mix(in srgb, var(--bg-elev) 45%, transparent); color: var(--text); font-size: 12.5px; text-align: left; }
-  .dest:hover { border-color: var(--border); }
+  /* Narrow list: drop the columns you can live without (the row's hover
+     titles and the preview caption still carry them), so the name keeps room. */
+  @container (max-width: 760px) {
+    .row { grid-template-columns: 40px minmax(150px, 1fr) 50px 64px 56px 88px 70px 28px; }
+    .c-when, .c-size { display: none; }
+    .c-span { grid-column: 3 / span 5; }
+  }
+  @container (max-width: 600px) {
+    .row { grid-template-columns: 40px minmax(140px, 1fr) 46px 60px 54px 86px 28px; }
+    .c-audio { display: none; }
+    .c-span { grid-column: 3 / span 4; }
+  }
+
+  .preview { position: relative; height: 250px; margin: 12px 14px 0; border-radius: var(--radius-md); overflow: hidden; background: #050607; display: flex; align-items: center; justify-content: center; }
+  .preview img, .preview video { width: 100%; height: 100%; object-fit: contain; background: #050607; }
+  .stage { width: 100%; height: 100%; }
+  .playbar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: linear-gradient(transparent, rgba(0, 0, 0, 0.7)); }
+  .playbar .hint { flex: 1; color: rgba(255, 255, 255, 0.7); font-size: 11.5px; }
+  .playbar .pf { flex: 1; color: #fff; font-size: 12px; }
+  .noPreview { color: var(--text-faint); font-size: 12.5px; }
+  .pcap { display: flex; flex-direction: column; gap: 2px; margin: 8px 14px 0; }
+  .pname { overflow: hidden; color: var(--text); font-size: 12.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+  .pmeta { color: var(--text-dim); font-size: 11.5px; }
+
+  .settings { display: flex; flex-direction: column; gap: 7px; padding: 12px 14px 14px; margin-top: 10px; border-top: 1px solid var(--border-soft); }
+  .settings > * { flex-shrink: 0; }
+  .summary { padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: color-mix(in srgb, var(--accent) 7%, var(--bg-elev)); }
+  .big { color: var(--text); font-size: 14.5px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .small { margin-top: 2px; font-size: 12px; }
+  .fl { margin-top: 4px; color: var(--text-faint); font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+  .settings input[type="text"] { min-height: var(--control-h); padding: 5px 10px; font-size: 13px; user-select: text; }
+  .dests { display: flex; flex-direction: column; gap: 4px; }
+  .dest { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid var(--border-soft); border-radius: 8px; background: color-mix(in srgb, var(--bg-elev) 45%, transparent); color: var(--text); font-size: 12.5px; text-align: left; }
+  .dest:hover:not(:disabled) { border-color: var(--border); }
   .dest.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev)); }
   .dl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .df { flex: none; color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .df { flex: none; color: var(--text-faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
   .dest.tight .df { color: var(--reject); }
-  .dest.choose { color: var(--accent); justify-content: center; }
+  .dest.choose { justify-content: center; color: var(--accent); }
   .warn { margin: 0; color: var(--reject); font-size: 12.5px; line-height: 1.5; }
-
-  .progress { flex: 1; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--text-dim); }
+  .progress { display: flex; flex-direction: column; gap: 6px; color: var(--text-dim); font-size: 12.5px; }
   .bar { height: 6px; border-radius: 999px; background: var(--bg-hover); overflow: hidden; }
   .fill { height: 100%; background: var(--accent); transition: width 300ms ease; }
+  /* Always in view, however short the window: the button is the point. */
+  .actions {
+    position: sticky; bottom: 0; z-index: 1;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    margin: 6px -14px -14px; padding: 10px 14px 14px;
+    border-top: 1px solid var(--border-soft);
+    background: var(--bg-panel);
+    box-shadow: 0 -8px 16px color-mix(in srgb, var(--bg-panel) 85%, transparent);
+  }
+  /* What's still in the way, on its own line above the buttons. */
+  .actions .why { flex: 1 0 100%; color: var(--star); font-size: 12px; line-height: 1.4; }
 
-  .doneBox { padding: 28px 24px 22px; text-align: center; overflow-y: auto; }
-  .doneIcon { display: inline-grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: color-mix(in srgb, var(--pick) 18%, transparent); color: var(--pick); font-size: 22px; }
-  .doneBox h3 { margin: 12px 0 4px; color: var(--text); font-size: 15px; word-break: break-all; }
+  .doneBox { padding: 14px 4px 4px; text-align: center; }
+  .doneIcon { display: inline-grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; background: color-mix(in srgb, var(--pick) 18%, transparent); color: var(--pick); font-size: 20px; }
+  .doneBox h3 { margin: 10px 0 4px; overflow: hidden; color: var(--text); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
   .doneBox p { margin: 0; color: var(--text-dim); font-size: 12.5px; }
-  .doneBox .hint { max-width: 520px; margin: 14px auto 0; line-height: 1.6; }
-  .doneActions { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+  .doneBox .hint2 { margin-top: 10px; line-height: 1.55; }
+  .doneActions { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 14px; }
+
+  /* Short windows (TV size on a laptop): the list and the settings need the
+     height more than a big preview does. */
+  @media (max-height: 700px) {
+    .preview { height: 170px; }
+  }
 </style>

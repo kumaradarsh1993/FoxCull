@@ -2620,6 +2620,10 @@ pub async fn video_durations(
 pub struct MergeClip {
     pub path: String,
     pub name: String,
+    /// "video", "photo" or "other". Everything selected is listed, photos
+    /// included, so the owner sees what can't go in and why, rather than
+    /// FoxCull silently leaving things out.
+    pub kind: String,
     pub size: u64,
     pub duration: f64,
     /// Recording time (the container's creation_time), for chronological order.
@@ -2741,8 +2745,10 @@ fn parse_merge_streams(err: &str, clip: &mut MergeClip) {
     );
 }
 
-/// Probe clips for a lossless merge: stream signature, length and recording
-/// time for each, returned in shooting order (recording time, then name).
+/// Describe every selected item for the merge list: videos get their stream
+/// signature, length and recording time; photos and anything else are listed
+/// with their kind and capture date so they sort into place and can be
+/// flagged. Returned in shooting order (recording time, then name).
 #[tauri::command]
 pub async fn merge_probe(state: State<'_, AppState>, paths: Vec<String>) -> Result<Vec<MergeClip>, String> {
     let root = canonical_active_root(&state.root.lock().clone())?;
@@ -2750,22 +2756,30 @@ pub async fn merge_probe(state: State<'_, AppState>, paths: Vec<String>) -> Resu
     let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg not available")?;
     let mut files: Vec<PathBuf> = Vec::with_capacity(paths.len());
     for p in &paths {
-        let src = validate_active_media_file(&root, lib.as_ref(), p)?;
-        if matches!(media::classify(&src), Kind::Video) {
-            files.push(src);
-        }
+        files.push(validate_active_media_file(&root, lib.as_ref(), p)?);
     }
     let mut clips: Vec<MergeClip> = tauri::async_runtime::spawn_blocking(move || {
         warm_pool().install(|| {
             files
                 .par_iter()
                 .map(|src| {
+                    let kind = media::classify(src);
                     let mut clip = MergeClip {
                         path: src.to_string_lossy().to_string(),
                         name: src.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+                        kind: match kind {
+                            Kind::Video => "video",
+                            Kind::Image | Kind::Raw => "photo",
+                            Kind::Other => "other",
+                        }
+                        .into(),
                         size: std::fs::metadata(src).map(|m| m.len()).unwrap_or(0),
                         ..Default::default()
                     };
+                    if !matches!(kind, Kind::Video) {
+                        clip.captured = media::capture_date(src);
+                        return clip;
+                    }
                     match ffmpeg_banner(&ffmpeg, src) {
                         Some(err) => parse_merge_streams(&err, &mut clip),
                         None => clip.error = Some("could not read this file".into()),

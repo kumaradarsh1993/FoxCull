@@ -264,6 +264,8 @@ export const LABEL_VAR: Record<string, string> = Object.fromEntries(
 export interface MergeClip {
   path: string;
   name: string;
+  /** Everything selected is listed; only videos can be merged. */
+  kind: "video" | "photo" | "other";
   size: number;
   duration: number;
   /** Recording time (unix secs) — clips arrive sorted by it. */
