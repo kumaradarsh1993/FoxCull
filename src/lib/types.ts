@@ -259,3 +259,32 @@ export const LABEL_BY_DIGIT: Record<string, string> = Object.fromEntries(
 export const LABEL_VAR: Record<string, string> = Object.fromEntries(
   LABELS.map((l) => [l.key, l.varName]),
 );
+
+/** One clip as the merge dialog sees it (Rust `MergeClip`). */
+export interface MergeClip {
+  path: string;
+  name: string;
+  size: number;
+  duration: number;
+  /** Recording time (unix secs) — clips arrive sorted by it. */
+  captured: number | null;
+  width: number;
+  height: number;
+  fps: number;
+  rotation: number;
+  vcodec: string;
+  profile: string;
+  pix_fmt: string;
+  acodec: string | null;
+  arate: number;
+  alayout: string;
+  /** Everything that must match for a lossless join, as one string. */
+  signature: string;
+  error: string | null;
+}
+
+export interface MergeOutcome {
+  path: string;
+  bytes: number;
+}
+

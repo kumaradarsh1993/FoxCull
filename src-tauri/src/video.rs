@@ -544,6 +544,129 @@ pub fn creation_time(ffmpeg: &Path, src: &Path) -> Option<i64> {
     parse_iso(token)
 }
 
+/// A clip's length in seconds, read straight from an MP4/MOV header: walk the
+/// top-level boxes to `moov`, then its `mvhd` child (timescale + duration).
+/// A handful of small reads even on a 4 GB clip, because the walk seeks past
+/// `mdat` instead of reading it, which is what makes duration badges on a grid
+/// of SD-card videos affordable. `None` for anything that isn't ISO-BMFF (MKV,
+/// AVI, MTS…); callers fall back to ffmpeg for those.
+pub fn mp4_duration(path: &Path) -> Option<f64> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let mut pos = 0u64;
+    // Box header: 32-bit size + 4-byte type; size 1 = 64-bit size follows,
+    // size 0 = box runs to end of file.
+    let header = |f: &mut std::fs::File, at: u64| -> Option<(u64, [u8; 4], u64)> {
+        f.seek(SeekFrom::Start(at)).ok()?;
+        let mut h = [0u8; 8];
+        f.read_exact(&mut h).ok()?;
+        let size32 = u32::from_be_bytes([h[0], h[1], h[2], h[3]]) as u64;
+        let kind = [h[4], h[5], h[6], h[7]];
+        let (size, hdr) = match size32 {
+            1 => {
+                let mut b = [0u8; 8];
+                f.read_exact(&mut b).ok()?;
+                (u64::from_be_bytes(b), 16)
+            }
+            0 => (len - at, 8),
+            n => (n, 8),
+        };
+        if size < hdr {
+            return None;
+        }
+        Some((size, kind, hdr))
+    };
+    for _ in 0..64 {
+        if pos + 8 > len {
+            return None;
+        }
+        let (size, kind, hdr) = header(&mut f, pos)?;
+        if &kind == b"moov" {
+            // mvhd is (almost always) the first child; scan the children anyway.
+            let end = pos + size;
+            let mut child = pos + hdr;
+            for _ in 0..32 {
+                if child + 8 > end {
+                    return None;
+                }
+                let (csize, ckind, chdr) = header(&mut f, child)?;
+                if &ckind == b"mvhd" {
+                    let mut body = [0u8; 32];
+                    f.seek(SeekFrom::Start(child + chdr)).ok()?;
+                    f.read_exact(&mut body).ok()?;
+                    let (timescale, duration) = if body[0] == 1 {
+                        // v1: version/flags 4, creation 8, modification 8, timescale 4, duration 8
+                        (
+                            u32::from_be_bytes(body[20..24].try_into().ok()?) as f64,
+                            u64::from_be_bytes(body[24..32].try_into().ok()?) as f64,
+                        )
+                    } else {
+                        // v0: version/flags 4, creation 4, modification 4, timescale 4, duration 4
+                        (
+                            u32::from_be_bytes(body[12..16].try_into().ok()?) as f64,
+                            u32::from_be_bytes(body[16..20].try_into().ok()?) as f64,
+                        )
+                    };
+                    return (timescale > 0.0 && duration > 0.0).then(|| duration / timescale);
+                }
+                child += csize;
+            }
+            return None;
+        }
+        pos += size;
+    }
+    None
+}
+
+#[cfg(test)]
+mod mp4_duration_tests {
+    use super::mp4_duration;
+    use std::io::Write;
+
+    fn bx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut v = ((8 + body.len()) as u32).to_be_bytes().to_vec();
+        v.extend(kind);
+        v.extend(body);
+        v
+    }
+
+    #[test]
+    fn reads_mvhd_after_a_large_mdat() {
+        let mut data = Vec::new();
+        data.extend(bx(b"ftyp", b"isom\0\0\0\0"));
+        // A 64-bit-size mdat, as cameras write for >4 GB clips.
+        let payload = vec![0u8; 1000];
+        data.extend(1u32.to_be_bytes());
+        data.extend(b"mdat");
+        data.extend(((16 + payload.len()) as u64).to_be_bytes());
+        data.extend(&payload);
+        // mvhd v0: timescale 60000, duration 60000*334.38 (a 5:34 Osmo clip).
+        let mut mvhd = vec![0u8; 4 + 4 + 4];
+        mvhd.extend(60000u32.to_be_bytes());
+        mvhd.extend(((60000.0 * 334.38) as u32).to_be_bytes());
+        mvhd.extend(vec![0u8; 80]);
+        data.extend(bx(b"moov", &bx(b"mvhd", &mvhd)));
+        let dir = std::env::temp_dir().join(format!("foxcull-mp4dur-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("clip.mp4");
+        std::fs::File::create(&p).unwrap().write_all(&data).unwrap();
+        let d = mp4_duration(&p).unwrap();
+        assert!((d - 334.38).abs() < 0.01, "got {d}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn not_an_mp4() {
+        let dir = std::env::temp_dir().join(format!("foxcull-mp4dur-n-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("x.mkv");
+        std::fs::File::create(&p).unwrap().write_all(&[0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0, 1, 2]).unwrap();
+        assert!(mp4_duration(&p).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// Parse "YYYY-MM-DDThh:mm:ss…" (ignoring sub-seconds / trailing Z) to Unix secs.
 fn parse_iso(s: &str) -> Option<i64> {
     if s.len() < 19 {

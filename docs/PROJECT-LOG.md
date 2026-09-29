@@ -797,3 +797,36 @@ where the zoom goes through a different engine. And the controller pairing
 guide still tells a Mac user to open Windows Bluetooth settings: that's a
 copy problem, not a layout one.
 
+## 2026-09-28 — The YouTube workflow gets its own door
+
+The owner described FoxCull as two apps living in one. The Edit studio was built
+for Instagram: crop a landscape clip to portrait, trim it, grade it, add music,
+export small and sharp. The other job is simpler and bigger: come home from a
+trip with an hour and a half of Osmo Pocket 3 footage, join it into one file,
+and put it on YouTube for the family, without re-encoding, because there's no
+time and the files are enormous. That second job had been squeezed through the
+timeline, and the timeline is the wrong tool for it.
+
+Before designing anything, the actual clips were examined, and they changed the
+design. One Seattle folder held five different kinds of video: 59.94 fps
+10-bit, 29.97 fps 8-bit, a 23.98 fps clip, vertical, and square. A lossless
+join only works when every clip matches, and the Edit export's existing check
+looked only at frame size and codec, so it would have happily glued 60 and 30
+fps footage into a file that stutters. So the merge dialog reads each clip's
+full signature, groups the matching ones, and leaves the rest out with the
+reason spelled out, the way LosslessCut does.
+
+The owner then added the part that matters on a 512 GB laptop holding 97 GB of
+footage: tell me the size before you start, and let me send it to an external
+drive. The dialog shows the estimated length and size up front, lists every
+drive with its free space, and won't start where the file can't fit. In the
+same spirit, selecting a batch of clips now adds up their count, length and
+size in the bottom bar, like a spreadsheet's status line. Tiles also show each
+video's length, read from the file header in a fraction of a millisecond, so
+fifty-seven clips cost twenty milliseconds.
+
+One wish stayed a wish: uploading straight to YouTube without writing the file
+locally. It can be done, but it means a Google developer project, sign-in
+screens and a daily upload quota. That's a project of its own, and saving to an
+external drive solves the space problem today.
+

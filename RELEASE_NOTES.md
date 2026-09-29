@@ -1,6 +1,33 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
+## Merge a trip's videos into one, at full quality
+
+Select your clips, right-click, **Merge N videos into one…**. FoxCull joins
+them end to end in the order they were shot, **without re-encoding**: the file
+is exactly the camera's video and audio, so it's the best thing you can upload
+to YouTube, and it takes about as long as copying the files.
+
+- **It checks that the clips can be joined.** A lossless merge only works when
+  every clip was shot the same way. If your selection mixes 60 and 30 fps, 8-
+  and 10-bit, or vertical clips, FoxCull shows each set with its length and
+  leaves the odd ones out, with the reason next to each.
+- **Photos in the selection are left out automatically.**
+- **It tells you the size before it starts**, and which drives have room: the
+  clips' own folder, your computer, or any plugged-in drive. It won't start if
+  the file won't fit.
+- When it's done: **Show in folder** or **Open YouTube upload**.
+
+## Video lengths and selection totals
+
+- **Video tiles show their length**, in the corner. Choose what tiles show in
+  **Settings → Tile details**: video length, file name, or both.
+- **Select several things and the bottom bar adds them up**: how many, total
+  video length, and total size.
+- **⌘-click** (Ctrl on Windows) adds or removes one item, **Shift-click**
+  selects a range, and **⌘+Shift-click** adds another range without losing
+  what you'd already picked.
+
 ## Nothing overlaps any more
 
 A full pass over every screen at every window size, done on a Mac this time,

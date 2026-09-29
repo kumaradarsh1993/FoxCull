@@ -30,6 +30,7 @@
   import ExcludePanel from "$lib/components/ExcludePanel.svelte";
   import { keepInView } from "$lib/keep-in-view";
   import Welcome from "$lib/components/Welcome.svelte";
+  import MergeDialog from "$lib/components/MergeDialog.svelte";
   import UpdatePanel from "$lib/components/UpdatePanel.svelte";
   import { updates, primeUpdateCheck } from "$lib/updates.svelte";
   import { pad, PAD_ACTIONS, buttonName, type PadActionId } from "$lib/gamepad.svelte";
@@ -435,6 +436,12 @@
   /** A system drive root that was open last session and deliberately NOT
    *  reopened at launch (see onMount). The welcome screen offers it back. */
   let resumeDir = $state<string | null>(null);
+  /** Open "Merge videos" dialog: the selected videos and what was left out. */
+  let mergeReq = $state<{ paths: string[]; skippedPhotos: number; sourceDir: string } | null>(null);
+  /** Video lengths (seconds) by path: the tile badge and the selection summary.
+   *  Filled per folder from the per-drive cache (MP4/MOV headers, so cheap). */
+  let durations = $state<Record<string, number>>({});
+  let durationsDir: string | null = null;
   let padHelpOpen = $state(false);
   let shortcutsOpen = $state(false);
   let aboutOpen = $state(false);
@@ -1216,6 +1223,8 @@
     opts: { selectPath?: string | null; selectIndex?: number } = {},
   ) {
     const gen = ++openGen;
+    if (dir !== currentDir) durations = {};
+    durationsDir = null;
     currentDir = dir;
     resumeDir = null;
     loading = true;
@@ -1275,6 +1284,75 @@
     // Index real capture dates in the background — only when a date-driven view
     // needs them (sort-by-capture or month grouping). Cached after the first pass.
     maybeFetchCaptures();
+    void fetchDurations(dir);
+  }
+
+  /** Lengths of the folder's videos, in batches so a big folder's badges and
+   *  the selection total fill in progressively rather than all at the end. */
+  async function fetchDurations(dir: string) {
+    if (durationsDir === dir) return;
+    durationsDir = dir;
+    const vids = items.filter((i) => i.kind === "video" && !i.missing && !(i.path in durations)).map((i) => i.path);
+    for (let k = 0; k < vids.length; k += 64) {
+      if (currentDir !== dir) return;
+      try {
+        const res = await api.videoDurations(dir, vids.slice(k, k + 64));
+        if (currentDir !== dir) return;
+        const next = { ...durations };
+        for (const r of res) next[r.path] = r.duration;
+        durations = next;
+      } catch {
+        durationsDir = null; // let a later open retry
+        return;
+      }
+    }
+  }
+
+  /** 83.4 → "1:23"; 3723 → "1:02:03". */
+  function fmtDur(sec: number): string {
+    const s = Math.round(sec);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const ss = String(s % 60).padStart(2, "0");
+    return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+  }
+  const fmtBytes = (b: number) =>
+    b >= 1e12 ? `${(b / 1e12).toFixed(1)} TB` : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${Math.round(b / 1e6)} MB` : `${Math.max(1, Math.round(b / 1e3))} KB`;
+
+  /** The status line for a multi-selection: count, video length, size. Like a
+   *  spreadsheet's status bar, so a batch of Osmo clips can be sized up before
+   *  merging or moving it. */
+  let selectionSummary = $derived.by(() => {
+    if (selected.size < 2) return null;
+    let videos = 0;
+    let secs = 0;
+    let unknown = 0;
+    let others = 0;
+    let bytes = 0;
+    for (const it of items) {
+      if (!selected.has(it.path)) continue;
+      bytes += it.size;
+      if (it.kind === "video") {
+        videos++;
+        const d = durations[it.path];
+        if (d == null) unknown++;
+        else secs += d;
+      } else others++;
+    }
+    const parts: string[] = [];
+    if (videos) parts.push(`${videos} video${videos === 1 ? "" : "s"} · ${unknown ? "≥ " : ""}${fmtDur(secs)}`);
+    if (others) parts.push(`${others} photo${others === 1 ? "" : "s"}`);
+    parts.push(fmtBytes(bytes));
+    return { count: selected.size, text: parts.join(" · ") };
+  });
+
+  function openMerge() {
+    const ts = targets();
+    const vids = ts.filter((i) => i.kind === "video" && !i.missing);
+    if (vids.length < 2 || !currentDir) return;
+    const first = vids[0].path;
+    const sourceDir = first.slice(0, Math.max(first.lastIndexOf("/"), first.lastIndexOf("\\"))) || currentDir;
+    mergeReq = { paths: vids.map((i) => i.path), skippedPhotos: ts.length - vids.length, sourceDir };
   }
 
   /** Whether the current view depends on real capture dates. */
@@ -2362,7 +2440,18 @@
   function gridCellClick(e: MouseEvent, i: number) {
     const it = view[i];
     if (!it) return;
-    if (e.shiftKey) {
+    if (e.shiftKey && (e.ctrlKey || e.metaKey)) {
+      // Add a range to what's already selected (Finder / Explorer behaviour):
+      // select a range, Cmd-click some out, then Cmd+Shift-click another range
+      // in, without losing the first. The anchor stays put.
+      const a = anchorIndexForSelection();
+      const next = new Set(selected);
+      for (const x of view.slice(Math.min(a, i), Math.max(a, i) + 1)) next.add(x.path);
+      selected = next;
+      activeIndex = i;
+      scrollActive();
+      rememberActive();
+    } else if (e.shiftKey) {
       setActiveTo(i, { extend: true });
     } else if (e.ctrlKey || e.metaKey) {
       const next = new Set(selected);
@@ -2533,6 +2622,15 @@
               icon: "✎",
               action: openEditMode,
             },
+          ]
+        : []),
+      ...(ts.filter((i) => i.kind === "video" && !i.missing).length >= 2
+        ? [
+            {
+              label: `Merge ${ts.filter((i) => i.kind === "video" && !i.missing).length} videos into one…`,
+              icon: "⧉",
+              action: openMerge,
+            } as MenuEntry,
           ]
         : []),
       {
@@ -3276,6 +3374,7 @@
 
 {#snippet gridCell(item: MediaItem, i: number)}
   {@const rel = relatedFor(item)}
+  {@const len = settings.s.tileInfo.duration && item.kind === "video" ? durations[item.path] : undefined}
   <button
     class="cell"
     class:active={i === activeIndex}
@@ -3317,8 +3416,9 @@
          so its bar can bleed past the tile edge into the grid gap — see
          .stackline CSS. Everything that still needs rounded-corner clipping
          (the thumbnail image, reject dim, badges) moves in here instead. -->
-    <div class="cellclip">
+    <div class="cellclip" class:named={settings.s.tileInfo.name}>
       <Thumb {item} size={gridThumbTier} armed={i === activeIndex} badge={false} />
+      {#if settings.s.tileInfo.name}<span class="tileName" title={item.name}>{item.name}</span>{/if}
       <span class="ov">
         {#if rel}
           <span class="rel-badges">
@@ -3338,8 +3438,15 @@
         {#if item.flag === "reject"}<span class="fl x">✕</span>{/if}
         {#if item.flag === "pick"}<span class="fl pick">✓</span>{/if}
         {#if item.rating > 0}<span class="stars">{"★".repeat(item.rating)}</span>{/if}
-        {#if item.tags.length}<span class="tagdot" title={item.tags.join(", ")}>🏷</span>{/if}
-        {#if item.events.length}<span class="evtdot" title={`Event: ${item.events.join(", ")}`}>✦</span>{/if}
+        {#if item.tags.length || item.events.length || len != null}
+          <!-- One bottom-right cluster, so the length badge and the tag/event
+               glyphs line up instead of being hand-offset around each other. -->
+          <span class="br">
+            {#if item.events.length}<span class="evtdot" title={`Event: ${item.events.join(", ")}`}>✦</span>{/if}
+            {#if item.tags.length}<span class="tagdot" title={item.tags.join(", ")}>🏷</span>{/if}
+            {#if len != null}<span class="dur">{fmtDur(len)}</span>{/if}
+          </span>
+        {/if}
         {#if item.missing}<span class="gonemark" title="File not found — right-click to relink">?</span>{/if}
         {#if derivativeBadge(item.name)}<span class="deriv-badge" title="Exported by FoxCull ({derivativeBadge(item.name)})">{derivativeBadge(item.name)}</span>{/if}
         {#if rawKindTag(item, rel)}<span class="kind-tag" class:raw={item.kind === "raw"} title={item.kind === "raw" ? "RAW file" : "JPEG sibling of a RAW"}>{rawKindTag(item, rel)}</span>{/if}
@@ -3895,6 +4002,12 @@
           </div>
         </div>
         <div class="grpHead">Browsing</div>
+        <div class="row"><span>Tile details</span>
+          <div class="seg" title="What grid tiles show besides the picture">
+            <button class="chip" class:on={settings.s.tileInfo.duration} onclick={() => { settings.set({ tileInfo: { ...settings.s.tileInfo, duration: !settings.s.tileInfo.duration } }); }}>Video length</button>
+            <button class="chip" class:on={settings.s.tileInfo.name} onclick={() => settings.set({ tileInfo: { ...settings.s.tileInfo, name: !settings.s.tileInfo.name } })}>File name</button>
+          </div>
+        </div>
         <div class="row"><span>Stacks</span>
           <div class="seg">
             <button class="chip" class:on={settings.s.relatedMode === "expanded"} onclick={() => setRelatedMode("expanded")}>Open</button>
@@ -3997,6 +4110,18 @@
     {#if controllerOpen}
       <ControllerPanel onclose={() => (controllerOpen = false)} />
     {/if}
+    {#if mergeReq}
+      <MergeDialog
+        paths={mergeReq.paths}
+        skippedPhotos={mergeReq.skippedPhotos}
+        sourceDir={mergeReq.sourceDir}
+        {drives}
+        onclose={() => (mergeReq = null)}
+        ondone={(path, dir) => {
+          if (currentDir && (samePath(dir, currentDir) || (settings.s.includeSub && isUnder(dir, currentDir)))) void refreshAfterMediaOutput(path);
+        }}
+      />
+    {/if}
     {#if excludesOpen}
       <ExcludePanel onclose={closeExcludes} />
     {/if}
@@ -4012,6 +4137,9 @@
             <div class="kbGroup">Navigate</div>
             <div class="kbRow"><span class="keys"><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd></span><span>Move between items</span></div>
             <div class="kbRow"><span class="keys"><kbd>Shift</kbd>+<kbd>←/→</kbd></span><span>Extend selection</span></div>
+            <div class="kbRow"><span class="keys"><kbd>Shift</kbd>+click</span><span>Select a range</span></div>
+            <div class="kbRow"><span class="keys"><kbd>{isMac ? "⌘" : "Ctrl"}</kbd>+click</span><span>Add or remove one</span></div>
+            <div class="kbRow"><span class="keys"><kbd>{isMac ? "⌘" : "Ctrl"}</kbd>+<kbd>Shift</kbd>+click</span><span>Add a range</span></div>
             <div class="kbRow"><span class="keys"><kbd>Enter</kbd></span><span>Focus view ⇄ grid</span></div>
             <div class="kbRow"><span class="keys"><kbd>Esc</kbd></span><span>Close / back out</span></div>
             <div class="kbGroup">Views</div>
@@ -4292,14 +4420,19 @@
     {#if active && !editOpen}
       <div class="info">
         <span class="activeIdentity">
-          <span class="name" title={active.path}>{active.name}</span>
-          {#if inTrashFolder}
-            {@const row = trashRowFor(active)}
-            <span class="meta trashMeta" title={row ? `Deleted from ${row.orig}` : "Origin unknown"}>
-              🗑 {row ? `from ${row.orig}` : "origin unknown"}
-            </span>
+          {#if selectionSummary}
+            <span class="name" title={`Active: ${active.name}`}>{selectionSummary.count} selected</span>
+            <span class="meta selSum">{selectionSummary.text}</span>
           {:else}
-            <span class="meta">{active.kind} · {activeIndex + 1} of {view.length}</span>
+            <span class="name" title={active.path}>{active.name}</span>
+            {#if inTrashFolder}
+              {@const row = trashRowFor(active)}
+              <span class="meta trashMeta" title={row ? `Deleted from ${row.orig}` : "Origin unknown"}>
+                🗑 {row ? `from ${row.orig}` : "origin unknown"}
+              </span>
+            {:else}
+              <span class="meta">{active.kind} · {activeIndex + 1} of {view.length}</span>
+            {/if}
           {/if}
         </span>
         <span class="infoDivider"></span>
@@ -5082,9 +5215,18 @@
   .fl.x { color: var(--reject); }
   .fl.pick { color: var(--pick); }
   .stars { position: absolute; bottom: 4px; left: 6px; color: var(--star); font-size: 13px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
-  .tagdot { position: absolute; bottom: 4px; right: 6px; font-size: 11px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
+  .br { position: absolute; bottom: 4px; right: 6px; display: flex; align-items: center; gap: 5px; }
+  .tagdot { font-size: 11px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
   /* Event marker — sits inboard of the tag glyph so a photo can carry both. */
-  .evtdot { position: absolute; bottom: 4px; right: 22px; font-size: 11px; color: var(--accent); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.65)); }
+  .evtdot { font-size: 11px; color: var(--accent); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.65)); }
+  /* Video length, YouTube-style: it lands in the letterbox under a landscape
+     clip, space the tile was leaving empty. */
+  .dur { padding: 1px 5px; border-radius: 4px; background: rgba(0,0,0,0.66); color: #fff; font-size: 10.5px; font-weight: 650; line-height: 1.45; font-variant-numeric: tabular-nums; letter-spacing: .01em; }
+  /* File-name caption (Settings → Tile details). The picture keeps the space
+     above it, and the corner marks stay on the picture. */
+  .cellclip.named { display: grid; grid-template-rows: minmax(0, 1fr) auto; }
+  .cellclip.named .ov { bottom: 19px; }
+  .tileName { height: 19px; padding: 0 6px; overflow: hidden; color: var(--text-dim); font-size: 11px; line-height: 19px; text-overflow: ellipsis; white-space: nowrap; }
   .gonemark {
     position: absolute;
     top: 5px;
@@ -5368,6 +5510,7 @@
 
   .info { min-height: 49px; gap: 9px; padding: 6px 11px; border-top-color: var(--border-soft); background: color-mix(in srgb, var(--bg-panel) 96%, transparent); box-shadow: 0 -6px 20px rgba(0,0,0,.08); }
   .activeIdentity { min-width: 0; display: flex; flex-direction: column; line-height: 1.1; }
+  .info .meta.selSum { text-transform: none; letter-spacing: 0; font-size: 11.5px; font-variant-numeric: tabular-nums; }
   .info .name { max-width: 260px; font-size: 12px; font-weight: 650; }
   .info .meta { margin-top: 4px; font-size: 10px; letter-spacing: .03em; text-transform: uppercase; }
   .infoDivider { align-self: stretch; width: 1px; margin: 3px 1px; background: var(--border-soft); }

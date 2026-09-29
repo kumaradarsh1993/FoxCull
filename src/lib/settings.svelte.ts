@@ -87,6 +87,9 @@ export interface AppSettings {
   relatedMode: RelatedMode;
   relatedStrip: boolean;
   deleteMode: DeleteMode;
+  /** What grid tiles show besides the picture: the length of each video
+   *  (a small badge, bottom-right) and the file name (a caption line). */
+  tileInfo: { duration: boolean; name: boolean };
   /** Folders every scan skips. System folders are pre-selected; the user can
    *  untick groups and add their own folders or name patterns. */
   scanExcludes: ScanExcludes;
@@ -132,6 +135,7 @@ const DEFAULTS: AppSettings = {
   relatedStrip: true,
   deleteMode: "folder",
   scanExcludes: defaultScanExcludes(),
+  tileInfo: { duration: true, name: false },
   rejectFolder: null,
   lastDir: null,
   lastActivePath: null,
@@ -195,6 +199,7 @@ class Settings {
         // Fill in any exclude group added after this store was written, so a
         // new built-in group arrives switched on rather than undefined.
         migrated.scanExcludes = { ...defaultScanExcludes(), ...(loaded.scanExcludes ?? {}) };
+        migrated.tileInfo = { ...DEFAULTS.tileInfo, ...(loaded.tileInfo ?? {}) };
         this.s = { ...DEFAULTS, ...migrated };
       }
     } catch {

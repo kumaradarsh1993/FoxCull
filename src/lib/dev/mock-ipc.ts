@@ -192,6 +192,48 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
     folderItems(a.dir)
       .filter((i) => i.kind === "video")
       .map((i) => ({ name: i.name, path: i.path, kind: "video", ext: i.ext, mtime: i.mtime, size: i.size })),
+  video_durations: (a) =>
+    (a.paths as string[])
+      .filter((p) => byPath.get(p)?.kind === "video")
+      .map((p) => ({ path: p, duration: 20 + ((byPath.get(p)!.seed * 37) % 300) })),
+  // Mostly the Osmo main set; every 7th clip 29.97 fps 8-bit, every 11th vertical.
+  merge_probe: (a) =>
+    (a.paths as string[])
+      .filter((p) => byPath.get(p)?.kind === "video")
+      .map((p, i) => {
+        const it = byPath.get(p)!;
+        const slow = i % 7 === 6;
+        const vert = i % 11 === 10;
+        const [w, h] = vert ? [1728, 3072] : [3840, 2160];
+        const fps = slow ? 29.97 : 59.94;
+        const profile = slow ? "Main" : "Main 10";
+        const pix = slow ? "yuv420p" : "yuv420p10le";
+        return {
+          path: p,
+          name: it.name,
+          size: it.size,
+          duration: 20 + ((it.seed * 37) % 300),
+          captured: it.mtime,
+          width: w,
+          height: h,
+          fps,
+          rotation: 0,
+          vcodec: "hevc",
+          profile,
+          pix_fmt: pix,
+          acodec: "aac",
+          arate: 48000,
+          alayout: "stereo",
+          signature: `hevc|${profile}|${pix}|${w}x${h}|${fps}|0|aac|48000|stereo`,
+          error: null,
+        };
+      }),
+  // The card is nearly full, so the dialog's not-enough-space state shows.
+  disk_free: (a) => (a.path.startsWith("/Users") ? 76e9 : a.path === SD ? 9e9 : 1.2e12),
+  merge_videos: async (a) => {
+    await new Promise((r) => setTimeout(r, 1500));
+    return { path: `${a.req.destDir}/${a.req.name}.mp4`, bytes: 63.1e9 };
+  },
   list_tags: () => [
     ["family", 42],
     ["sunset", 17],

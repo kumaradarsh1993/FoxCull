@@ -5,6 +5,8 @@ import type {
   TreeDir,
   ScanExcludes,
   SuggestedFolder,
+  MergeClip,
+  MergeOutcome,
   MediaItem,
   TrashOutcome,
   TrashItem,
@@ -48,6 +50,17 @@ export const api = {
     invoke<{ path: string; count: number }[]>("folder_counts", { paths, recompute }),
   /** Drop every cached folder count so the badges recompute. */
   clearFolderCounts: () => invoke<void>("clear_folder_counts").catch(() => {}),
+  /** Lengths (seconds) of the videos among `paths`; cached per drive. */
+  videoDurations: (dir: string, paths: string[]) =>
+    invoke<{ path: string; duration: number }[]>("video_durations", { dir, paths }),
+  /** Stream signature, length and recording time per clip, in shooting order. */
+  mergeProbe: (paths: string[]) => invoke<MergeClip[]>("merge_probe", { paths }),
+  /** Join clips end to end with no re-encode. Progress: `onExportProgress`;
+   *  cancel: `cancelEditExport`. */
+  mergeVideos: (req: { paths: string[]; destDir: string; name: string }) =>
+    invoke<MergeOutcome>("merge_videos", { req }),
+  /** Free bytes on the volume holding `path`. */
+  diskFree: (path: string) => invoke<number>("disk_free", { path }),
   listFolderMedia: (dir: string, recursive: boolean) =>
     invoke<MediaItem[]>("list_folder_media", { dir, recursive }),
   listEditSources: (dir: string, recursive: boolean) =>

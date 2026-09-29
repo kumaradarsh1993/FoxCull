@@ -2501,6 +2501,530 @@ pub async fn capture_dates(
     Ok(results)
 }
 
+// ── Video lengths (grid duration badge) ────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct VideoLength {
+    pub path: String,
+    pub duration: f64,
+}
+
+/// (mtime secs, size) — the cache validity stamp used by `captures` too.
+fn file_stamp(p: &Path) -> (i64, i64) {
+    match std::fs::metadata(p) {
+        Ok(m) => (
+            m.modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0),
+            m.len() as i64,
+        ),
+        Err(_) => (0, 0),
+    }
+}
+
+/// ffmpeg's `-i` banner (stderr) for one file, or None if ffmpeg won't run.
+fn ffmpeg_banner(ffmpeg: &Path, src: &Path) -> Option<String> {
+    let mut cmd = Command::new(ffmpeg);
+    cmd.arg("-hide_banner")
+        .arg("-i")
+        .arg(src)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().ok()?;
+    Some(String::from_utf8_lossy(&out.stderr).into_owned())
+}
+
+/// Length of one clip: the MP4/MOV header when there is one (a few reads),
+/// else ffmpeg's banner.
+fn clip_length(ffmpeg: Option<&Path>, p: &Path) -> Option<f64> {
+    video::mp4_duration(p).or_else(|| {
+        let d = parse_banner_duration(&ffmpeg_banner(ffmpeg?, p)?);
+        (d > 0.0).then_some(d)
+    })
+}
+
+/// Lengths for the videos among `paths`, from the per-drive cache when the
+/// file's (mtime, size) still match, else measured and cached. Measuring runs
+/// on the bounded warm pool, so a grid full of SD-card clips never takes more
+/// than its share of the card from the thumbnails.
+#[tauri::command]
+pub async fn video_durations(
+    state: State<'_, AppState>,
+    catalog: State<'_, Catalog>,
+    dir: String,
+    paths: Vec<String>,
+) -> Result<Vec<VideoLength>, String> {
+    let root = state.root.lock().clone();
+    let cached = catalog.durations_under(&rel_of(&root, &dir));
+    let ffmpeg = state.ffmpeg.clone();
+    let mut out: Vec<VideoLength> = Vec::with_capacity(paths.len());
+    let mut pending: Vec<(String, String, i64, i64)> = Vec::new();
+    for path in paths {
+        let p = Path::new(&path);
+        if !matches!(media::classify(p), Kind::Video) {
+            continue;
+        }
+        let rel = rel_of(&root, &path);
+        let (mtime, size) = file_stamp(p);
+        if let Some(&(d, cm, cs)) = cached.get(&rel) {
+            if cm == mtime && cs == size {
+                out.push(VideoLength { path, duration: d });
+                continue;
+            }
+        }
+        pending.push((path, rel, mtime, size));
+    }
+    if !pending.is_empty() {
+        let measured: Vec<(String, String, f64, i64, i64)> = tauri::async_runtime::spawn_blocking(move || {
+            warm_pool().install(|| {
+                pending
+                    .par_iter()
+                    .filter_map(|(path, rel, mtime, size)| {
+                        let d = clip_length(ffmpeg.as_deref(), Path::new(path))?;
+                        Some((path.clone(), rel.clone(), d, *mtime, *size))
+                    })
+                    .collect()
+            })
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let rows: Vec<(String, f64, i64, i64)> =
+            measured.iter().map(|(_, rel, d, m, s)| (rel.clone(), *d, *m, *s)).collect();
+        let _ = catalog.set_duration_many(&rows);
+        out.extend(measured.into_iter().map(|(path, _, duration, _, _)| VideoLength { path, duration }));
+    }
+    Ok(out)
+}
+
+// ── Merge videos end to end, losslessly ───────────────────────────────────
+//
+// The Osmo Pocket 3 workflow: a trip's worth of clips joined in shooting order
+// into one file for YouTube, with no re-encode, so it keeps the camera's
+// native ~70-110 Mbps HEVC and is as good as anything YouTube will ever be
+// given. A stream-copy join is only valid when every clip shares codec,
+// profile, pixel format, frame size, frame rate, rotation and audio format;
+// the Osmo mixes 59.94 and 29.97 fps, 8- and 10-bit, landscape, vertical and
+// square in one folder, so the probe below reports each clip's signature and
+// the dialog keeps only the clips that match the main set.
+
+#[derive(Serialize, Clone, Debug, Default, PartialEq)]
+pub struct MergeClip {
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+    pub duration: f64,
+    /// Recording time (the container's creation_time), for chronological order.
+    pub captured: Option<i64>,
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    pub rotation: i32,
+    pub vcodec: String,
+    pub profile: String,
+    pub pix_fmt: String,
+    pub acodec: Option<String>,
+    pub arate: u32,
+    pub alayout: String,
+    /// Everything that must match for a stream-copy join, as one comparable string.
+    pub signature: String,
+    pub error: Option<String>,
+}
+
+/// Split on commas that aren't inside (...) or [...], as ffmpeg's stream lines
+/// nest commas in parentheses: `yuv420p10le(tv, bt709), 3840x2160, ...`.
+fn split_top(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut cur = String::new();
+    for c in s.chars() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(cur.trim().to_string());
+                cur.clear();
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur.trim().to_string());
+    }
+    out
+}
+
+/// Fill a MergeClip's stream fields from an ffmpeg `-i` banner. The first video
+/// stream that isn't an attached picture is the clip (DJI files also carry a
+/// 1280x720 JPEG cover as a second "video" stream).
+fn parse_merge_streams(err: &str, clip: &mut MergeClip) {
+    clip.duration = parse_banner_duration(err);
+    clip.captured = parse_banner_creation(err);
+    for line in err.lines() {
+        let l = line.trim();
+        if !l.starts_with("Stream #") {
+            if clip.rotation == 0 && l.contains("rotation of") {
+                if let Some(v) = l.split("rotation of").nth(1) {
+                    let deg = v.trim().split_whitespace().next().and_then(|t| t.parse::<f64>().ok());
+                    clip.rotation = deg.map(|d| d.round() as i32).unwrap_or(0);
+                }
+            }
+            continue;
+        }
+        if clip.vcodec.is_empty() && l.contains("Video:") && !l.contains("attached pic") {
+            let parts = split_top(l.split("Video:").nth(1).unwrap_or(""));
+            if let Some(first) = parts.first() {
+                clip.vcodec = first.split_whitespace().next().unwrap_or("").to_string();
+                // `hevc (Main 10) (hvc1 / 0x...)`: the profile is the first
+                // parenthesised group that isn't the `tag / fourcc` one.
+                clip.profile = first
+                    .split('(')
+                    .skip(1)
+                    .map(|g| g.split(')').next().unwrap_or("").trim())
+                    .find(|g| !g.contains('/'))
+                    .unwrap_or("")
+                    .to_string();
+            }
+            if let Some(pix) = parts.get(1) {
+                clip.pix_fmt = pix.split('(').next().unwrap_or("").trim().to_string();
+            }
+            for part in &parts {
+                let tok = part.split_whitespace().next().unwrap_or("");
+                if let Some((w, h)) = tok.split_once('x') {
+                    if let (Ok(w), Ok(h)) = (w.parse::<u32>(), h.parse::<u32>()) {
+                        if clip.width == 0 && w >= 16 && h >= 16 {
+                            clip.width = w;
+                            clip.height = h;
+                        }
+                    }
+                }
+                if let Some(f) = part.strip_suffix(" fps") {
+                    clip.fps = f.trim().parse().unwrap_or(0.0);
+                }
+            }
+        } else if clip.acodec.is_none() && l.contains("Audio:") {
+            let parts = split_top(l.split("Audio:").nth(1).unwrap_or(""));
+            clip.acodec = parts
+                .first()
+                .and_then(|p| p.split_whitespace().next())
+                .map(|s| s.to_string());
+            for part in &parts {
+                if let Some(hz) = part.strip_suffix(" Hz") {
+                    clip.arate = hz.trim().parse().unwrap_or(0);
+                }
+            }
+            clip.alayout = parts.get(2).cloned().unwrap_or_default();
+        }
+    }
+    clip.signature = format!(
+        "{}|{}|{}|{}x{}|{:.3}|{}|{}|{}|{}",
+        clip.vcodec,
+        clip.profile,
+        clip.pix_fmt,
+        clip.width,
+        clip.height,
+        clip.fps,
+        clip.rotation,
+        clip.acodec.as_deref().unwrap_or("none"),
+        clip.arate,
+        clip.alayout
+    );
+}
+
+/// Probe clips for a lossless merge: stream signature, length and recording
+/// time for each, returned in shooting order (recording time, then name).
+#[tauri::command]
+pub async fn merge_probe(state: State<'_, AppState>, paths: Vec<String>) -> Result<Vec<MergeClip>, String> {
+    let root = canonical_active_root(&state.root.lock().clone())?;
+    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
+    let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg not available")?;
+    let mut files: Vec<PathBuf> = Vec::with_capacity(paths.len());
+    for p in &paths {
+        let src = validate_active_media_file(&root, lib.as_ref(), p)?;
+        if matches!(media::classify(&src), Kind::Video) {
+            files.push(src);
+        }
+    }
+    let mut clips: Vec<MergeClip> = tauri::async_runtime::spawn_blocking(move || {
+        warm_pool().install(|| {
+            files
+                .par_iter()
+                .map(|src| {
+                    let mut clip = MergeClip {
+                        path: src.to_string_lossy().to_string(),
+                        name: src.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+                        size: std::fs::metadata(src).map(|m| m.len()).unwrap_or(0),
+                        ..Default::default()
+                    };
+                    match ffmpeg_banner(&ffmpeg, src) {
+                        Some(err) => parse_merge_streams(&err, &mut clip),
+                        None => clip.error = Some("could not read this file".into()),
+                    }
+                    if clip.vcodec.is_empty() && clip.error.is_none() {
+                        clip.error = Some("no video stream found".into());
+                    }
+                    clip
+                })
+                .collect()
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    clips.sort_by(|a, b| {
+        let ka = a.captured.unwrap_or(i64::MAX);
+        let kb = b.captured.unwrap_or(i64::MAX);
+        ka.cmp(&kb).then_with(|| a.name.cmp(&b.name))
+    });
+    Ok(clips)
+}
+
+/// Free bytes on the volume holding `path` (the merge destination check).
+#[tauri::command]
+pub fn disk_free(path: String) -> Result<u64, String> {
+    let dir = canonical_dir(Path::new(&path))?;
+    fs4::available_space(&dir).map_err(|e| e.to_string())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeRequest {
+    /// Clips in the order they should play.
+    pub paths: Vec<String>,
+    pub dest_dir: String,
+    /// File name without extension; the first clip's container decides that.
+    pub name: String,
+}
+
+#[derive(Serialize)]
+pub struct MergeOutcome {
+    pub path: String,
+    pub bytes: u64,
+}
+
+/// A filename the user typed, made safe for every filesystem FoxCull writes to
+/// (FAT/exFAT cards included) while keeping spaces and punctuation readable.
+fn friendly_file_stem(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .map(|c| if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') { ' ' } else { c })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.').trim().to_string();
+    if trimmed.is_empty() {
+        "Merged video".into()
+    } else {
+        trimmed.chars().take(180).collect()
+    }
+}
+
+/// Join clips end to end with a stream copy (ffmpeg's concat demuxer): no
+/// re-encode, so the result is exactly the camera's video and audio, and the
+/// work is a straight file copy (about as fast as the disks allow). Only the
+/// main video and first audio stream are kept; DJI's ~5 Mbps debug track,
+/// timecode, metadata track and cover JPEG are dropped. Refuses up front if
+/// the destination volume can't hold the result, rather than failing an hour in.
+/// Progress and cancel use the same channel as Edit exports.
+#[tauri::command]
+pub async fn merge_videos(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    req: MergeRequest,
+) -> Result<MergeOutcome, String> {
+    if req.paths.len() < 2 {
+        return Err("pick at least two videos to merge".into());
+    }
+    let root = canonical_active_root(&state.root.lock().clone())?;
+    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
+    let mut files: Vec<PathBuf> = Vec::with_capacity(req.paths.len());
+    for p in &req.paths {
+        let src = validate_active_media_file(&root, lib.as_ref(), p)?;
+        if !matches!(media::classify(&src), Kind::Video) {
+            return Err(format!("not a video: {p}"));
+        }
+        files.push(src);
+    }
+    let dest_dir = canonical_dir(Path::new(&req.dest_dir))?;
+    if let Some(l) = &lib {
+        if within(&dest_dir, l) {
+            return Err("choose a folder outside FoxCull's library".into());
+        }
+    }
+    let ext = files[0]
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .filter(|e| e == "mp4" || e == "mov" || e == "m4v")
+        .unwrap_or_else(|| "mp4".into());
+    let dest = uniquify(dest_dir.join(format!("{}.{ext}", friendly_file_stem(&req.name))));
+
+    let need: u64 = files.iter().map(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0)).sum();
+    if let Ok(free) = fs4::available_space(&dest_dir) {
+        // The copy drops the debug/metadata tracks, so `need` over-estimates a
+        // little; keep a 1 GB margin for the filesystem anyway.
+        if free < need + (1 << 30) {
+            let gb = |b: u64| b as f64 / 1e9;
+            return Err(format!(
+                "Not enough space in that folder: the merged file needs about {:.1} GB and only {:.1} GB is free. Pick a folder on a bigger drive.",
+                gb(need),
+                gb(free)
+            ));
+        }
+    }
+
+    let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg not available")?;
+    let my_gen = state.export_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    let gen = state.export_gen.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let total_s: f64 = files.iter().filter_map(|f| clip_length(Some(&ffmpeg), f)).sum();
+        let watch = ExportWatch {
+            app: app.clone(),
+            gen,
+            my_gen,
+            label: format!("Merging {} videos", files.len()),
+            total_s,
+        };
+        watch.emit(0, "running");
+
+        static MERGE_SEQ: AtomicU64 = AtomicU64::new(0);
+        let list_path = std::env::temp_dir().join(format!(
+            "foxcull-merge-{}-{}-{}.txt",
+            std::process::id(),
+            now(),
+            MERGE_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let write_list = || -> std::io::Result<()> {
+            let mut f = std::fs::File::create(&list_path)?;
+            for clip in &files {
+                writeln!(f, "file '{}'", concat_list_escape(clip))?;
+            }
+            Ok(())
+        };
+        if let Err(e) = write_list() {
+            emit_activity(&app, "edit-export", "Merge failed", 0, 100, "error");
+            return Err(e.to_string());
+        }
+
+        let first_banner = ffmpeg_banner(&ffmpeg, &files[0]).unwrap_or_default();
+        let mut cmd = Command::new(&ffmpeg);
+        cmd.args(["-v", "error", "-f", "concat", "-safe", "0", "-i"])
+            .arg(&list_path)
+            // `V` = video that isn't an attached picture, so DJI's cover JPEG
+            // can never be picked over the real stream.
+            .args(["-map", "0:V:0", "-map", "0:a:0?", "-c", "copy"])
+            .args(["-avoid_negative_ts", "make_zero"]);
+        if first_banner.contains("Video: hevc") {
+            // Apple players and YouTube expect HEVC in MP4 tagged hvc1.
+            cmd.args(["-tag:v", "hvc1"]);
+        }
+        if let Some(ts) = parse_banner_creation(&first_banner) {
+            cmd.args(["-metadata", &format!("creation_time={}", iso_utc(ts))]);
+        }
+        cmd.args(["-progress", "pipe:1", "-nostats"]).arg(&dest);
+        let res = run_ffmpeg_watched(cmd, Some(&watch), &dest);
+        let _ = std::fs::remove_file(&list_path);
+        match res {
+            Ok(()) => {
+                watch.emit(100, "done");
+                let bytes = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+                crate::log::line(&format!("MERGE ok clips={} bytes={bytes} dest={dest:?}", files.len()));
+                Ok(MergeOutcome { path: dest.to_string_lossy().to_string(), bytes })
+            }
+            Err(e) if e == EXPORT_CANCELLED => {
+                emit_activity(&app, "edit-export", "Merge cancelled", 100, 100, "done");
+                Err(e)
+            }
+            Err(e) => {
+                emit_activity(&app, "edit-export", &e, 0, 100, "error");
+                crate::log::line(&format!("MERGE failed: {e}"));
+                Err(e)
+            }
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Unix seconds → `YYYY-MM-DDTHH:MM:SSZ`.
+fn iso_utc(ts: i64) -> String {
+    let days = ts.div_euclid(86_400);
+    let secs = ts.rem_euclid(86_400);
+    // Civil-from-days (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", secs / 3600, (secs % 3600) / 60, secs % 60)
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::{iso_utc, parse_merge_streams, MergeClip};
+
+    const OSMO_60: &str = r#"
+  Duration: 00:05:34.38, start: 0.000000, bitrate: 115381 kb/s
+    creation_time   : 2026-09-21T19:07:48.000000Z
+  Stream #0:0[0x1](und): Video: hevc (Main 10) (hvc1 / 0x31637668), yuv420p10le(tv, bt709), 3840x2160, 109895 kb/s, 59.94 fps, 59.94 tbr, 60k tbn (default)
+  Stream #0:1[0x2](und): Audio: aac (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 317 kb/s (default)
+  Stream #0:2[0x3](und): Data: none (djmd / 0x646D6A64), 27 kb/s
+  Stream #0:5[0x0]: Video: mjpeg (Baseline), yuvj420p(pc, bt470bg/unknown/unknown), 1280x720 [SAR 1:1 DAR 16:9], 90k tbr, 90k tbn (attached pic)
+"#;
+
+    #[test]
+    fn parses_an_osmo_clip() {
+        let mut c = MergeClip::default();
+        parse_merge_streams(OSMO_60, &mut c);
+        assert_eq!(c.vcodec, "hevc");
+        assert_eq!(c.profile, "Main 10");
+        assert_eq!(c.pix_fmt, "yuv420p10le");
+        assert_eq!((c.width, c.height), (3840, 2160));
+        assert!((c.fps - 59.94).abs() < 0.001);
+        assert_eq!(c.acodec.as_deref(), Some("aac"));
+        assert_eq!(c.arate, 48000);
+        assert_eq!(c.alayout, "stereo");
+        assert!((c.duration - 334.38).abs() < 0.01);
+        assert_eq!(iso_utc(c.captured.unwrap()), "2026-09-21T19:07:48Z");
+    }
+
+    #[test]
+    fn a_30fps_8bit_clip_has_a_different_signature() {
+        let other = OSMO_60
+            .replace("hevc (Main 10)", "hevc (Main)")
+            .replace("yuv420p10le", "yuv420p")
+            .replace("59.94 fps", "29.97 fps");
+        let (mut a, mut b) = (MergeClip::default(), MergeClip::default());
+        parse_merge_streams(OSMO_60, &mut a);
+        parse_merge_streams(&other, &mut b);
+        assert_ne!(a.signature, b.signature);
+        assert_eq!(b.profile, "Main");
+        assert!((b.fps - 29.97).abs() < 0.001);
+    }
+
+    #[test]
+    fn cover_art_never_wins_and_vertical_is_distinct() {
+        let vertical = OSMO_60.replace("3840x2160", "1728x3072");
+        let mut v = MergeClip::default();
+        parse_merge_streams(&vertical, &mut v);
+        assert_eq!((v.width, v.height), (1728, 3072));
+        let mut c = MergeClip::default();
+        parse_merge_streams(OSMO_60, &mut c);
+        assert_ne!(v.signature, c.signature);
+    }
+}
+
 #[tauri::command]
 pub fn set_rating(
     state: State<'_, AppState>,

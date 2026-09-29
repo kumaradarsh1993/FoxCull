@@ -143,6 +143,18 @@ impl Catalog {
             )",
             [],
         )?;
+        // Cached video lengths in seconds, for the grid's duration badge and the
+        // merge dialog. Same (mtime, size) validation as `captures`, so a
+        // re-exported or replaced clip is measured again.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS durations (
+                rel      TEXT PRIMARY KEY,
+                duration REAL NOT NULL,
+                mtime    INTEGER NOT NULL,
+                size     INTEGER NOT NULL
+            )",
+            [],
+        )?;
         // In-app Trash: files moved into the per-drive recycle folder by a
         // folder-mode delete. `stored` = path within the recycle dir; `orig` =
         // original path relative to the drive root (for Restore); `deleted_at`
@@ -592,6 +604,54 @@ impl Catalog {
             Ok(it) => it.filter_map(|r| r.ok()).collect(),
             Err(_) => HashMap::new(),
         }
+    }
+
+    /// Cached video lengths at or under a rel-path prefix: rel → (duration, mtime, size).
+    pub fn durations_under(&self, prefix: &str) -> HashMap<String, (f64, i64, i64)> {
+        let conn = self.conn.lock();
+        let (sql, like): (&str, String) = if prefix.is_empty() {
+            ("SELECT rel, duration, mtime, size FROM durations", String::new())
+        } else {
+            (
+                "SELECT rel, duration, mtime, size FROM durations WHERE rel = ?1 OR rel LIKE ?2",
+                format!("{prefix}/%"),
+            )
+        };
+        let mut stmt = match conn.prepare(sql) {
+            Ok(s) => s,
+            Err(_) => return HashMap::new(),
+        };
+        let map = |r: &rusqlite::Row<'_>| {
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get::<_, f64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?),
+            ))
+        };
+        let rows = if prefix.is_empty() {
+            stmt.query_map([], map)
+        } else {
+            stmt.query_map(params![prefix, like], map)
+        };
+        match rows {
+            Ok(it) => it.filter_map(|r| r.ok()).collect(),
+            Err(_) => HashMap::new(),
+        }
+    }
+
+    /// Upsert many duration rows (rel, duration, mtime, size) in one transaction.
+    pub fn set_duration_many(&self, rows: &[(String, f64, i64, i64)]) -> rusqlite::Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO durations(rel, duration, mtime, size) VALUES(?1, ?2, ?3, ?4)
+                 ON CONFLICT(rel) DO UPDATE SET duration = ?2, mtime = ?3, size = ?4",
+            )?;
+            for (rel, duration, mtime, size) in rows {
+                stmt.execute(params![rel, duration, mtime, size])?;
+            }
+        }
+        tx.commit()
     }
 
     /// Upsert many capture rows (rel, captured, mtime, size) in one transaction.

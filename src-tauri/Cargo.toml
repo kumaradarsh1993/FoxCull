@@ -47,6 +47,9 @@ filetime = "0.2"
 rayon = "1"
 
 parking_lot = "0.12"
+# Free space on the merge destination (statvfs / GetDiskFreeSpaceExW). Pure
+# Rust (rustix + windows-sys), so it keeps the C-toolchain-free rule above.
+fs4 = "0.13"
 
 # ── Cast to TV (src/cast.rs) — all three deliberately C-toolchain-free ──────
 # mDNS discovery of Google Cast devices (pure Rust).

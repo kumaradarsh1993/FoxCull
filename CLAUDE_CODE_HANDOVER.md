@@ -1,5 +1,29 @@
 # Agent Handover: FoxCull
 
+## 2026-09-28 — lossless Merge videos, tile lengths, selection totals
+
+Ledger: `docs/changes/2026-09-28-durations-selection-merge.md`.
+
+- **Two video workflows, kept apart on purpose.** The Edit studio is the
+  Instagram flow (crop, trim, grade, music, re-encode). **Merge videos** is the
+  YouTube flow: Osmo clips joined losslessly in shooting order. Don't fold
+  merge into the timeline; the owner explicitly doesn't want to open it for this.
+- **Merge = concat demuxer + stream copy**, gated by a per-clip signature
+  (`merge_probe`). Osmo folders mix 59.94/29.97/23.98 fps, 8/10-bit, landscape,
+  vertical and square, so the check is essential. The older
+  `concat_needs_reencode` in the Edit export only compares size + codec; if you
+  touch it, reuse `parse_merge_streams`.
+- **Video lengths** come from `video::mp4_duration` (MP4/MOV header, sub-ms)
+  and are cached in the catalog's `durations` table.
+- **Owner's question: upload to YouTube without a local copy?** Possible in
+  principle (ffmpeg concat → fragmented MP4 → YouTube resumable upload), but it
+  needs a Google Cloud project, OAuth consent (an unverified-app warning), and
+  YouTube Data API quota (an upload costs 1,600 of the default 10,000 units a
+  day). Not built. The dialog sends the output to any drive instead, so the
+  Mac's 512 GB disk is never needed.
+- Not verified: a full-size merge, Windows.
+
+
 ## 2026-09-27 (later) — layout audit; TV/Compact had never scaled
 
 Ledger: `docs/changes/2026-09-27-layout-audit.md`. Method and matrix:
