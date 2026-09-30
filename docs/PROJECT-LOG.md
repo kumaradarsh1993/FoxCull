@@ -830,3 +830,29 @@ locally. It can be done, but it means a Google developer project, sign-in
 screens and a daily upload quota. That's a project of its own, and saving to an
 external drive solves the space problem today.
 
+## 2026-09-30 — clips that don't match: glasses footage and "Convert to match"
+
+The owner came back from a day in Seattle with twelve clips from Meta's new
+glasses and the merge window wouldn't take seven of them. Their questions were
+fair: is that ffmpeg, or just FoxCull? And why is "Vertical" highlighted when
+every clip is vertical?
+
+Both halves had an answer. The frame-rate flags were FoxCull being too strict.
+Glasses and phones record a variable frame rate, dropping frames when the light
+is low, so a 30 fps clip averages 29.73 or 29.94. A lossless join carries every
+frame's own timestamp, so those join cleanly, and a test join proved it. The
+"Vertical" flag was right but badly worded. The glasses crop every clip a little
+differently, from 1376×1824 to 1488×1984, and a lossless join of different sizes
+really does break: after the join the picture turns to green garbage. The column
+said "Vertical" when it should have said the size.
+
+So the window now shows real sizes and compares frame rates the way a person
+would. For clips that can't be joined losslessly, the owner can choose
+"Convert to match": every clip is re-encoded to one size at twice the camera's
+bitrate, which on a Mac's hardware encoder takes a few minutes and looks the
+same. The obvious way to build that, one ffmpeg run fed all twelve clips, was
+tried first on the real footage. It produced a file with three minutes of frozen
+picture spread across six of the joins. What shipped encodes each clip on its
+own and then joins the results with the same lossless join the app already
+trusts, after checking that every part came out of the encoder with identical
+settings.

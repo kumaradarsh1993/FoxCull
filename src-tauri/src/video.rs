@@ -619,6 +619,53 @@ pub fn mp4_duration(path: &Path) -> Option<f64> {
     None
 }
 
+/// The video decoder configuration box (`hvcC` / `avcC`) of an MP4/MOV: the
+/// parameter sets every frame is decoded with. Two files can be joined by
+/// stream copy only if these are byte-identical, so the convert-merge checks
+/// its parts with this before joining them.
+pub fn mp4_codec_config(path: &Path) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let mut pos = 0u64;
+    for _ in 0..64 {
+        if pos + 8 > len {
+            return None;
+        }
+        f.seek(SeekFrom::Start(pos)).ok()?;
+        let mut h = [0u8; 8];
+        f.read_exact(&mut h).ok()?;
+        let size32 = u32::from_be_bytes([h[0], h[1], h[2], h[3]]) as u64;
+        let (size, hdr) = match size32 {
+            1 => {
+                let mut b = [0u8; 8];
+                f.read_exact(&mut b).ok()?;
+                (u64::from_be_bytes(b), 16)
+            }
+            0 => (len - pos, 8),
+            n => (n, 8),
+        };
+        if size < hdr {
+            return None;
+        }
+        if &h[4..8] == b"moov" {
+            // The moov of a merged part is a few MB at most; refuse silly sizes.
+            let body_len = size - hdr;
+            if body_len > 256 << 20 {
+                return None;
+            }
+            let mut moov = vec![0u8; body_len as usize];
+            f.read_exact(&mut moov).ok()?;
+            let at = moov.windows(4).position(|w| w == b"hvcC" || w == b"avcC")?;
+            let start = at.checked_sub(4)?;
+            let bsize = u32::from_be_bytes(moov[start..at].try_into().ok()?) as usize;
+            return moov.get(start..start + bsize).map(|b| b.to_vec());
+        }
+        pos += size;
+    }
+    None
+}
+
 #[cfg(test)]
 mod mp4_duration_tests {
     use super::mp4_duration;

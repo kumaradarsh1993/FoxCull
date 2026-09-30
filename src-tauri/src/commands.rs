@@ -2632,17 +2632,45 @@ pub struct MergeClip {
     pub captured: Option<i64>,
     pub width: u32,
     pub height: u32,
+    /// ffmpeg's AVERAGE rate. Phones and glasses record variable frame rate,
+    /// so a 30 fps clip can read 29.73; compare `fps_class`, not this.
     pub fps: f64,
+    /// The nominal rate the clip was shot at (see `fps_class`).
+    pub fps_class: u32,
     pub rotation: i32,
     pub vcodec: String,
     pub profile: String,
     pub pix_fmt: String,
+    /// Video stream bitrate in kb/s (0 when ffmpeg doesn't say).
+    pub vbitrate: u32,
+    /// "hlg", "pq" or "sdr": HDR and SDR can't share one file.
+    pub color: String,
     pub acodec: Option<String>,
     pub arate: u32,
     pub alayout: String,
     /// Everything that must match for a stream-copy join, as one comparable string.
     pub signature: String,
     pub error: Option<String>,
+}
+
+/// The nominal frame rate a clip was shot at, from ffmpeg's average rate.
+/// Phones and glasses record variable frame rate: frames are dropped in low
+/// light, so a 30 fps clip averages 29.73 or 29.94, and NTSC 29.97 is a "30"
+/// too. A stream copy carries every frame's own timestamp, so clips in one
+/// class join cleanly (checked on Meta glasses clips of 29.73-30 fps,
+/// 2026-09-29: every frame kept, no decode errors); only a different class
+/// (30 vs 60) is a real difference. Averages only ever fall below the nominal
+/// rate, so the class is the first one at or above the average.
+pub fn fps_class(fps: f64) -> u32 {
+    const CLASSES: [u32; 13] = [12, 15, 24, 25, 30, 48, 50, 60, 72, 90, 100, 120, 240];
+    if fps.is_nan() || fps <= 0.0 {
+        return 0;
+    }
+    CLASSES
+        .iter()
+        .copied()
+        .find(|&c| c as f64 >= fps * 0.995)
+        .unwrap_or(fps.round() as u32)
 }
 
 /// Split on commas that aren't inside (...) or [...], as ffmpeg's stream lines
@@ -2703,6 +2731,16 @@ fn parse_merge_streams(err: &str, clip: &mut MergeClip) {
             }
             if let Some(pix) = parts.get(1) {
                 clip.pix_fmt = pix.split('(').next().unwrap_or("").trim().to_string();
+                // `yuv420p10le(tv, bt2020nc/bt2020/arib-std-b67)`
+                let low = pix.to_ascii_lowercase();
+                clip.color = if low.contains("arib-std-b67") {
+                    "hlg"
+                } else if low.contains("smpte2084") {
+                    "pq"
+                } else {
+                    "sdr"
+                }
+                .into();
             }
             for part in &parts {
                 let tok = part.split_whitespace().next().unwrap_or("");
@@ -2716,6 +2754,9 @@ fn parse_merge_streams(err: &str, clip: &mut MergeClip) {
                 }
                 if let Some(f) = part.strip_suffix(" fps") {
                     clip.fps = f.trim().parse().unwrap_or(0.0);
+                }
+                if let Some(k) = part.strip_suffix(" kb/s") {
+                    clip.vbitrate = k.trim().parse().unwrap_or(0);
                 }
             }
         } else if clip.acodec.is_none() && l.contains("Audio:") {
@@ -2732,15 +2773,17 @@ fn parse_merge_streams(err: &str, clip: &mut MergeClip) {
             clip.alayout = parts.get(2).cloned().unwrap_or_default();
         }
     }
+    clip.fps_class = fps_class(clip.fps);
     clip.signature = format!(
-        "{}|{}|{}|{}x{}|{:.3}|{}|{}|{}|{}",
+        "{}|{}|{}|{}x{}|{}|{}|{}|{}|{}|{}",
         clip.vcodec,
         clip.profile,
         clip.pix_fmt,
         clip.width,
         clip.height,
-        clip.fps,
+        clip.fps_class,
         clip.rotation,
+        clip.color,
         clip.acodec.as_deref().unwrap_or("none"),
         clip.arate,
         clip.alayout
@@ -2819,6 +2862,107 @@ pub struct MergeRequest {
     pub dest_dir: String,
     /// File name without extension; the first clip's container decides that.
     pub name: String,
+    /// Re-encode everything to one format instead of a stream copy. None is
+    /// the lossless join.
+    #[serde(default)]
+    pub convert: Option<MergeConvert>,
+}
+
+/// The one format every clip is re-encoded to when the owner chooses
+/// "Convert to match": for clips a stream copy can't join, such as Meta
+/// glasses footage, where each clip is cropped to a slightly different size
+/// (1376×1824 … 1488×1984). A stream copy of mixed sizes decodes the later
+/// clips with the first clip's parameter sets and turns them to green
+/// garbage (seen 2026-09-29), so there is no lossless way to join those.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeConvert {
+    pub width: u32,
+    pub height: u32,
+    /// ffmpeg rate: "30" or "30000/1001".
+    pub fps: String,
+    pub ten_bit: bool,
+    /// "hlg", "pq" or "sdr" — kept as the source's, never tone-mapped.
+    pub color: String,
+    /// Video bitrate target for the hardware encoders.
+    pub bitrate_kbps: u32,
+}
+
+impl MergeConvert {
+    fn validate(&self) -> Result<(), String> {
+        let even = |v: u32| (64..=8192).contains(&v) && v.is_multiple_of(2);
+        if !even(self.width) || !even(self.height) {
+            return Err(format!("unusable frame size {}x{}", self.width, self.height));
+        }
+        let rate_ok = {
+            let mut it = self.fps.splitn(2, '/');
+            let num_ok = it.next().is_some_and(|n| !n.is_empty() && n.len() <= 6 && n.bytes().all(|b| b.is_ascii_digit()));
+            let den_ok = it.next().is_none_or(|d| !d.is_empty() && d.len() <= 6 && d.bytes().all(|b| b.is_ascii_digit()));
+            num_ok && den_ok
+        };
+        if !rate_ok {
+            return Err(format!("unusable frame rate {}", self.fps));
+        }
+        if !matches!(self.color.as_str(), "hlg" | "pq" | "sdr") {
+            return Err(format!("unknown colour {}", self.color));
+        }
+        Ok(())
+    }
+
+    /// Bytes the converted file will take, for the space check.
+    fn estimate_bytes(&self, secs: f64) -> u64 {
+        let kbps = self.bitrate_kbps.clamp(2_000, 200_000) as f64 + 320.0;
+        (secs * kbps * 1000.0 / 8.0) as u64
+    }
+}
+
+/// The ffmpeg arguments for one attempt at the conversion encode.
+/// `encoder` is "videotoolbox" (Mac hardware), "nvenc" (NVIDIA) or "x265"
+/// (software, everywhere; slow but always there).
+fn merge_convert_encoder_args(c: &MergeConvert, encoder: &str) -> (Vec<String>, &'static str) {
+    let kbps = c.bitrate_kbps.clamp(2_000, 200_000);
+    let b = format!("{kbps}k");
+    let max = format!("{}k", kbps + kbps / 2);
+    let mut a: Vec<String> = match encoder {
+        "videotoolbox" => vec![
+            "-c:v".into(), "hevc_videotoolbox".into(),
+            "-profile:v".into(), if c.ten_bit { "main10" } else { "main" }.into(),
+            "-b:v".into(), b,
+            "-allow_sw".into(), "1".into(),
+        ],
+        "nvenc" => vec![
+            "-c:v".into(), "hevc_nvenc".into(),
+            "-preset".into(), "p5".into(),
+            "-rc".into(), "vbr".into(),
+            "-b:v".into(), b,
+            "-maxrate".into(), max,
+            "-profile:v".into(), if c.ten_bit { "main10" } else { "main" }.into(),
+        ],
+        _ => vec![
+            "-c:v".into(), "libx265".into(),
+            "-preset".into(), "medium".into(),
+            "-crf".into(), "18".into(),
+        ],
+    };
+    let (trc, prim, matrix) = match c.color.as_str() {
+        "hlg" => ("arib-std-b67", "bt2020", "bt2020nc"),
+        "pq" => ("smpte2084", "bt2020", "bt2020nc"),
+        _ => ("bt709", "bt709", "bt709"),
+    };
+    a.extend(
+        ["-tag:v", "hvc1", "-color_primaries", prim, "-color_trc", trc, "-colorspace", matrix, "-color_range", "tv"]
+            .iter()
+            .map(|s| s.to_string()),
+    );
+    // The pixel format each encoder takes natively, so the filter chain hands
+    // it frames without another conversion.
+    let pix = match (encoder, c.ten_bit) {
+        ("x265", true) => "yuv420p10le",
+        ("x265", false) => "yuv420p",
+        (_, true) => "p010le",
+        (_, false) => "nv12",
+    };
+    (a, pix)
 }
 
 #[derive(Serialize)]
@@ -2879,9 +3023,22 @@ pub async fn merge_videos(
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
         .filter(|e| e == "mp4" || e == "mov" || e == "m4v")
         .unwrap_or_else(|| "mp4".into());
+    if let Some(c) = &req.convert {
+        c.validate()?;
+    }
+    // A conversion always writes MP4 (HEVC in it is what YouTube and Apple
+    // players expect); a stream copy keeps the first clip's container.
+    let ext = if req.convert.is_some() { "mp4".to_string() } else { ext };
     let dest = uniquify(dest_dir.join(format!("{}.{ext}", friendly_file_stem(&req.name))));
+    let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg not available")?;
 
-    let need: u64 = files.iter().map(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0)).sum();
+    let lengths: Vec<f64> = files.iter().map(|f| clip_length(Some(&ffmpeg), f).unwrap_or(0.0)).collect();
+    let total_s: f64 = lengths.iter().sum();
+    let need: u64 = match &req.convert {
+        // The converted parts stay until they're joined: twice the result.
+        Some(c) => c.estimate_bytes(total_s) * 2,
+        None => files.iter().map(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0)).sum(),
+    };
     if let Ok(free) = fs4::available_space(&dest_dir) {
         // The copy drops the debug/metadata tracks, so `need` over-estimates a
         // little; keep a 1 GB margin for the filesystem anyway.
@@ -2895,62 +3052,30 @@ pub async fn merge_videos(
         }
     }
 
-    let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg not available")?;
     let my_gen = state.export_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let gen = state.export_gen.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let total_s: f64 = files.iter().filter_map(|f| clip_length(Some(&ffmpeg), f)).sum();
         let watch = ExportWatch {
             app: app.clone(),
             gen,
             my_gen,
             label: format!("Merging {} videos", files.len()),
             total_s,
+            base_pct: 0.0,
+            span_pct: 100.0,
         };
         watch.emit(0, "running");
 
-        static MERGE_SEQ: AtomicU64 = AtomicU64::new(0);
-        let list_path = std::env::temp_dir().join(format!(
-            "foxcull-merge-{}-{}-{}.txt",
-            std::process::id(),
-            now(),
-            MERGE_SEQ.fetch_add(1, Ordering::Relaxed)
-        ));
-        let write_list = || -> std::io::Result<()> {
-            let mut f = std::fs::File::create(&list_path)?;
-            for clip in &files {
-                writeln!(f, "file '{}'", concat_list_escape(clip))?;
-            }
-            Ok(())
+        let res = match &req.convert {
+            Some(conv) => merge_convert(&ffmpeg, &files, conv, &dest, Some(&watch)),
+            None => merge_copy(&ffmpeg, &files, &dest, Some(&watch)),
         };
-        if let Err(e) = write_list() {
-            emit_activity(&app, "edit-export", "Merge failed", 0, 100, "error");
-            return Err(e.to_string());
-        }
-
-        let first_banner = ffmpeg_banner(&ffmpeg, &files[0]).unwrap_or_default();
-        let mut cmd = Command::new(&ffmpeg);
-        cmd.args(["-v", "error", "-f", "concat", "-safe", "0", "-i"])
-            .arg(&list_path)
-            // `V` = video that isn't an attached picture, so DJI's cover JPEG
-            // can never be picked over the real stream.
-            .args(["-map", "0:V:0", "-map", "0:a:0?", "-c", "copy"])
-            .args(["-avoid_negative_ts", "make_zero"]);
-        if first_banner.contains("Video: hevc") {
-            // Apple players and YouTube expect HEVC in MP4 tagged hvc1.
-            cmd.args(["-tag:v", "hvc1"]);
-        }
-        if let Some(ts) = parse_banner_creation(&first_banner) {
-            cmd.args(["-metadata", &format!("creation_time={}", iso_utc(ts))]);
-        }
-        cmd.args(["-progress", "pipe:1", "-nostats"]).arg(&dest);
-        let res = run_ffmpeg_watched(cmd, Some(&watch), &dest);
-        let _ = std::fs::remove_file(&list_path);
         match res {
             Ok(()) => {
                 watch.emit(100, "done");
                 let bytes = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-                crate::log::line(&format!("MERGE ok clips={} bytes={bytes} dest={dest:?}", files.len()));
+                let how = if req.convert.is_some() { "converted" } else { "copy" };
+                crate::log::line(&format!("MERGE ok ({how}) clips={} bytes={bytes} dest={dest:?}", files.len()));
                 Ok(MergeOutcome { path: dest.to_string_lossy().to_string(), bytes })
             }
             Err(e) if e == EXPORT_CANCELLED => {
@@ -2958,6 +3083,8 @@ pub async fn merge_videos(
                 Err(e)
             }
             Err(e) => {
+                // Never leave a half-written file behind to be uploaded by mistake.
+                let _ = std::fs::remove_file(&dest);
                 emit_activity(&app, "edit-export", &e, 0, 100, "error");
                 crate::log::line(&format!("MERGE failed: {e}"));
                 Err(e)
@@ -2966,6 +3093,215 @@ pub async fn merge_videos(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// The lossless join: ffmpeg's concat demuxer with a stream copy. Each file is
+/// offset by its own length, video and audio together, so sound stays with
+/// picture across every join.
+fn merge_copy(ffmpeg: &Path, files: &[PathBuf], dest: &Path, watch: Option<&ExportWatch>) -> Result<(), String> {
+    static MERGE_SEQ: AtomicU64 = AtomicU64::new(0);
+    let list_path = std::env::temp_dir().join(format!(
+        "foxcull-merge-{}-{}-{}.txt",
+        std::process::id(),
+        now(),
+        MERGE_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let write_list = || -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&list_path)?;
+        for clip in files {
+            writeln!(f, "file '{}'", concat_list_escape(clip))?;
+        }
+        Ok(())
+    };
+    write_list().map_err(|e| e.to_string())?;
+
+    let first_banner = ffmpeg_banner(ffmpeg, &files[0]).unwrap_or_default();
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(["-v", "error", "-f", "concat", "-safe", "0", "-i"])
+        .arg(&list_path)
+        // `V` = video that isn't an attached picture, so DJI's cover JPEG
+        // can never be picked over the real stream.
+        .args(["-map", "0:V:0", "-map", "0:a:0?", "-c", "copy"])
+        .args(["-avoid_negative_ts", "make_zero"]);
+    if first_banner.contains("Video: hevc") {
+        // Apple players and YouTube expect HEVC in MP4 tagged hvc1.
+        cmd.args(["-tag:v", "hvc1"]);
+    }
+    if let Some(ts) = parse_banner_creation(&first_banner) {
+        cmd.args(["-metadata", &format!("creation_time={}", iso_utc(ts))]);
+    }
+    cmd.args(["-progress", "pipe:1", "-nostats"]).arg(dest);
+    let res = run_ffmpeg_watched(cmd, watch, dest);
+    let _ = std::fs::remove_file(&list_path);
+    res
+}
+
+/// The ffmpeg command that converts ONE clip to the merge's target format.
+fn merge_convert_part_cmd(ffmpeg: &Path, src: &Path, info: &MergeClip, conv: &MergeConvert, encoder: &str, out: &Path) -> Command {
+    let (enc_args, pix) = merge_convert_encoder_args(conv, encoder);
+    let has_audio = info.acodec.is_some();
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(["-v", "error", "-i"]).arg(src);
+    if !has_audio {
+        // Silence for the clip's length, so every part has the same streams.
+        cmd.args(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]);
+    }
+    cmd.args(["-map", "0:V:0", "-map", if has_audio { "0:a:0" } else { "1:a:0" }]);
+    // Fill the frame, then centre-crop the few pixels of aspect difference;
+    // one constant frame rate for the whole file (phones and glasses record
+    // a variable one).
+    cmd.arg("-vf").arg(format!(
+        "scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h},setsar=1,fps={fps},format={pix}",
+        w = conv.width,
+        h = conv.height,
+        fps = conv.fps,
+    ));
+    cmd.args(&enc_args);
+    // A keyframe every 2 s: what YouTube asks for.
+    let rate = {
+        let mut it = conv.fps.splitn(2, '/');
+        let num: f64 = it.next().and_then(|n| n.parse().ok()).unwrap_or(30.0);
+        let den: f64 = it.next().and_then(|d| d.parse().ok()).unwrap_or(1.0);
+        (num / den.max(1.0)).round().max(1.0)
+    };
+    cmd.args(["-g", &format!("{}", (rate * 2.0) as u32)]);
+    // AAC 48 kHz stereo is what the merged file carries; copy it when it's
+    // already that (no generation loss), otherwise encode to it.
+    let copy_audio = has_audio && info.acodec.as_deref() == Some("aac") && info.arate == 48_000 && info.alayout == "stereo";
+    if copy_audio {
+        cmd.args(["-c:a", "copy"]);
+    } else {
+        cmd.args(["-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2"]);
+    }
+    if !has_audio {
+        cmd.arg("-shortest");
+    }
+    // ffmpeg drops creation_time when it re-encodes; keep the recording time
+    // so the join (which reads it off the first part) stamps the real one.
+    if let Some(ts) = info.captured {
+        cmd.args(["-metadata", &format!("creation_time={}", iso_utc(ts))]);
+    }
+    cmd.args(["-progress", "pipe:1", "-nostats"]).arg(out);
+    cmd
+}
+
+/// "Convert to match": every clip re-encoded ON ITS OWN to one format, then
+/// the parts joined by `merge_copy`, the same stream copy as the lossless
+/// merge.
+///
+/// Why not a single ffmpeg with every clip as an input and the concat filter:
+/// ffmpeg 9 mis-times segments when many inputs feed one filtergraph. On 12
+/// Meta glasses clips it left 3 min 16 s of frozen picture at six of the
+/// joins (2026-09-29). Converting clip by clip keeps each clip's own
+/// timeline, and the concat demuxer offsets video and audio together.
+///
+/// A stream-copy join needs every part to carry byte-identical parameter
+/// sets. The same encoder with the same settings gives exactly that (checked
+/// on VideoToolbox with 4 clips of 4 different sizes), so the encoder is
+/// chosen on the first clip and kept for the rest, and the parts' decoder
+/// configs are compared before joining: a mismatch fails with nothing
+/// written, rather than a file that turns to garbage at a join.
+fn merge_convert(ffmpeg: &Path, files: &[PathBuf], conv: &MergeConvert, dest: &Path, watch: Option<&ExportWatch>) -> Result<(), String> {
+    let n = files.len();
+    let infos: Vec<MergeClip> = files
+        .iter()
+        .map(|f| {
+            let mut c = MergeClip::default();
+            if let Some(b) = ffmpeg_banner(ffmpeg, f) {
+                parse_merge_streams(&b, &mut c);
+            }
+            c
+        })
+        .collect();
+    let secs_of = |c: &MergeClip| c.duration.max(0.1);
+    let total: f64 = infos.iter().map(secs_of).sum();
+    // Parts go next to the destination (the drive whose space was checked),
+    // in a dot-folder the library scan skips; always removed afterwards.
+    static CONVERT_SEQ: AtomicU64 = AtomicU64::new(0);
+    let work = dest
+        .parent()
+        .ok_or("no destination folder")?
+        .join(format!(".foxcull-merge-{}-{}-{}", std::process::id(), now(), CONVERT_SEQ.fetch_add(1, Ordering::Relaxed)));
+    std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+    let sub_watch = |label: String, secs: f64, base: f64, span: f64| {
+        watch.map(|w| ExportWatch {
+            app: w.app.clone(),
+            gen: w.gen.clone(),
+            my_gen: w.my_gen,
+            label,
+            total_s: secs,
+            base_pct: base,
+            span_pct: span,
+        })
+    };
+    const CONVERT_SHARE: f64 = 95.0;
+    let res = (|| -> Result<(), String> {
+        let ladder: &[&str] = if cfg!(target_os = "macos") { &["videotoolbox", "x265"] } else { &["nvenc", "x265"] };
+        let mut chosen: Option<&str> = None;
+        let mut parts: Vec<PathBuf> = Vec::with_capacity(n);
+        let mut done_s = 0.0;
+        for (i, (src, info)) in files.iter().zip(&infos).enumerate() {
+            let part = work.join(format!("part{i:04}.mp4"));
+            let secs = secs_of(info);
+            let w = sub_watch(
+                format!("Converting clip {} of {n}", i + 1),
+                secs,
+                CONVERT_SHARE * done_s / total,
+                CONVERT_SHARE * secs / total,
+            );
+            let candidates: Vec<&str> = match chosen {
+                Some(e) => vec![e],
+                None => ladder.to_vec(),
+            };
+            let mut last_err = String::from("no encoder worked");
+            for enc in candidates {
+                let cmd = merge_convert_part_cmd(ffmpeg, src, info, conv, enc, &part);
+                match run_ffmpeg_watched(cmd, w.as_ref(), &part) {
+                    Ok(()) => {
+                        chosen = Some(enc);
+                        break;
+                    }
+                    Err(e) if e == EXPORT_CANCELLED => return Err(e),
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&part);
+                        crate::log::line(&format!("MERGE convert with {enc} failed on {src:?}: {e}"));
+                        last_err = e;
+                    }
+                }
+            }
+            if !part.is_file() {
+                let name = src.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                return Err(format!("Couldn't convert {name}: {last_err}"));
+            }
+            parts.push(part);
+            done_s += secs;
+        }
+        let first = crate::video::mp4_codec_config(&parts[0]);
+        if first.is_none() || parts[1..].iter().any(|p| crate::video::mp4_codec_config(p) != first) {
+            return Err("The converted clips came out with different encoder settings, so joining them would corrupt the video. Nothing was saved.".into());
+        }
+        crate::log::line(&format!("MERGE converted {n} clips with {}", chosen.unwrap_or("?")));
+        // Space was checked before starting, but a conversion takes minutes
+        // and other copies can fill the drive meanwhile (seen 2026-09-30: the
+        // join ran out of room on an external SSD at 4.3 GB). Check again,
+        // for the joined file, which is the size of the parts.
+        let parts_bytes: u64 = parts.iter().map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)).sum();
+        if let Ok(free) = fs4::available_space(&work) {
+            if free < parts_bytes + (256 << 20) {
+                return Err(format!(
+                    "The drive filled up while converting: joining needs about {:.1} GB and only {:.1} GB is free. Free some space or pick another folder.",
+                    parts_bytes as f64 / 1e9,
+                    free as f64 / 1e9
+                ));
+            }
+        }
+        let w = sub_watch("Joining the converted clips".into(), total, CONVERT_SHARE, 100.0 - CONVERT_SHARE);
+        // Each part carries its clip's recording time, so the join stamps the
+        // first clip's, as the lossless merge does.
+        merge_copy(ffmpeg, &parts, dest, w.as_ref())
+    })();
+    let _ = std::fs::remove_dir_all(&work);
+    res
 }
 
 /// Unix seconds → `YYYY-MM-DDTHH:MM:SSZ`.
@@ -2988,7 +3324,8 @@ fn iso_utc(ts: i64) -> String {
 
 #[cfg(test)]
 mod merge_tests {
-    use super::{iso_utc, parse_merge_streams, MergeClip};
+    use super::{fps_class, iso_utc, merge_convert, merge_convert_part_cmd, parse_merge_streams, MergeClip, MergeConvert};
+    use std::path::Path;
 
     const OSMO_60: &str = r#"
   Duration: 00:05:34.38, start: 0.000000, bitrate: 115381 kb/s
@@ -3038,6 +3375,115 @@ mod merge_tests {
         let mut c = MergeClip::default();
         parse_merge_streams(OSMO_60, &mut c);
         assert_ne!(v.signature, c.signature);
+    }
+
+    // Meta Ray-Ban Display glasses, 2026-09: HLG, variable frame rate, and a
+    // slightly different crop per clip.
+    const META: &str = r#"
+  Duration: 00:01:25.06, start: 0.000000, bitrate: 15241 kb/s
+    creation_time   : 2026-09-25T15:47:22.000000Z
+  Stream #0:0[0x1](eng): Video: hevc (Main 10) (hvc1 / 0x31637668), yuv420p10le(tv, bt2020nc/bt2020/arib-std-b67), 1392x1856, 15076 kb/s, SAR 1:1 DAR 3:4, 29.88 fps, 120 tbr, 90k tbn (default)
+  Stream #0:1[0x2](eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 128 kb/s (default)
+"#;
+
+    #[test]
+    fn frame_rate_classes_absorb_variable_rate_and_ntsc() {
+        for (avg, class) in [
+            (29.73, 30), (29.88, 30), (29.97, 30), (30.02, 30), (30.0, 30),
+            (23.976, 24), (24.0, 24), (25.0, 25), (59.94, 60), (50.0, 50),
+            (119.88, 120), (26.5, 30),
+        ] {
+            assert_eq!(fps_class(avg), class, "{avg}");
+        }
+        assert_eq!(fps_class(0.0), 0);
+    }
+
+    #[test]
+    fn meta_clips_differ_only_where_they_really_differ() {
+        let mut a = MergeClip::default();
+        parse_merge_streams(META, &mut a);
+        assert_eq!((a.width, a.height, a.fps_class, a.vbitrate), (1392, 1856, 30, 15076));
+        assert_eq!(a.color, "hlg");
+        // Same size, a different average rate: the same signature.
+        let mut b = MergeClip::default();
+        parse_merge_streams(&META.replace("29.88 fps", "30 fps").replace("120 tbr", "30 tbr"), &mut b);
+        assert_eq!(a.signature, b.signature);
+        // A different crop: a different signature (a stream copy would corrupt).
+        let mut c = MergeClip::default();
+        parse_merge_streams(&META.replace("1392x1856", "1376x1840"), &mut c);
+        assert_ne!(a.signature, c.signature);
+        // HDR and SDR never share a signature.
+        let mut d = MergeClip::default();
+        parse_merge_streams(&META.replace("bt2020nc/bt2020/arib-std-b67", "bt709"), &mut d);
+        assert_eq!(d.color, "sdr");
+        assert_ne!(a.signature, d.signature);
+    }
+
+    fn conv() -> MergeConvert {
+        MergeConvert { width: 1488, height: 1984, fps: "30".into(), ten_bit: true, color: "hlg".into(), bitrate_kbps: 37_000 }
+    }
+
+    #[test]
+    fn convert_requests_are_validated() {
+        assert!(conv().validate().is_ok());
+        assert!(MergeConvert { fps: "30000/1001".into(), ..conv() }.validate().is_ok());
+        assert!(MergeConvert { width: 1487, ..conv() }.validate().is_err());
+        assert!(MergeConvert { fps: "30;rm".into(), ..conv() }.validate().is_err());
+        assert!(MergeConvert { fps: "/1".into(), ..conv() }.validate().is_err());
+        assert!(MergeConvert { color: "bt601".into(), ..conv() }.validate().is_err());
+    }
+
+    #[test]
+    fn a_part_keeps_hdr_copies_matching_audio_and_fills_missing_audio() {
+        let mut clip = MergeClip::default();
+        parse_merge_streams(META, &mut clip);
+        let args = |c: &MergeClip, enc: &str| -> Vec<String> {
+            merge_convert_part_cmd(Path::new("ffmpeg"), Path::new("in.mp4"), c, &conv(), enc, Path::new("out.mp4"))
+                .get_args()
+                .map(|a| a.to_string_lossy().to_string())
+                .collect()
+        };
+        let vt = args(&clip, "videotoolbox").join(" ");
+        assert!(vt.contains("-c:v hevc_videotoolbox -profile:v main10 -b:v 37000k"), "{vt}");
+        assert!(vt.contains("scale=1488:1984:force_original_aspect_ratio=increase:flags=lanczos,crop=1488:1984,setsar=1,fps=30,format=p010le"), "{vt}");
+        assert!(vt.contains("-color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc"), "{vt}");
+        assert!(vt.contains("-c:a copy"), "{vt}");
+        assert!(vt.contains("-g 60"), "{vt}");
+        assert!(vt.contains("-metadata creation_time=2026-09-25T15:47:22Z"), "{vt}");
+        let x = args(&clip, "x265").join(" ");
+        assert!(x.contains("libx265") && x.contains("format=yuv420p10le"), "{x}");
+        clip.acodec = None;
+        let silent = args(&clip, "videotoolbox").join(" ");
+        assert!(silent.contains("anullsrc") && silent.contains("-map 1:a:0") && silent.contains("-shortest"), "{silent}");
+        clip.acodec = Some("pcm_s16le".into());
+        assert!(args(&clip, "videotoolbox").join(" ").contains("-c:a aac -b:a 320k"));
+    }
+
+    /// The whole convert-merge on real files. Opt-in:
+    /// FOXCULL_FFMPEG=… FOXCULL_MERGE_FILES="a.mp4\nb.mp4" FOXCULL_MERGE_DEST=out.mp4
+    /// FOXCULL_MERGE_CONVERT="1488x1984@30,hlg,10,37000" cargo test --lib real_convert_merge -- --ignored
+    #[test]
+    #[ignore]
+    fn real_convert_merge() {
+        let ffmpeg = std::env::var("FOXCULL_FFMPEG").expect("FOXCULL_FFMPEG");
+        let files: Vec<std::path::PathBuf> = std::env::var("FOXCULL_MERGE_FILES").expect("FOXCULL_MERGE_FILES").lines().map(Into::into).collect();
+        let dest = std::path::PathBuf::from(std::env::var("FOXCULL_MERGE_DEST").expect("FOXCULL_MERGE_DEST"));
+        let spec = std::env::var("FOXCULL_MERGE_CONVERT").expect("FOXCULL_MERGE_CONVERT");
+        let (size, rest) = spec.split_once('@').unwrap();
+        let (w, h) = size.split_once('x').unwrap();
+        let f: Vec<&str> = rest.split(',').collect();
+        let c = MergeConvert {
+            width: w.parse().unwrap(),
+            height: h.parse().unwrap(),
+            fps: f[0].into(),
+            color: f[1].into(),
+            ten_bit: f[2] == "10",
+            bitrate_kbps: f[3].parse().unwrap(),
+        };
+        c.validate().unwrap();
+        assert!(!dest.exists(), "refusing to overwrite {dest:?}");
+        merge_convert(Path::new(&ffmpeg), &files, &c, &dest, None).unwrap();
+        assert!(dest.is_file());
     }
 }
 
@@ -3611,6 +4057,10 @@ struct ExportWatch {
     label: String,
     /// Total output seconds (sum of clip durations) — drives the percentage.
     total_s: f64,
+    /// The slice of the whole job's 0-100 this run covers: a convert-merge
+    /// runs one ffmpeg per clip and each reports only its own share.
+    base_pct: f64,
+    span_pct: f64,
 }
 
 impl ExportWatch {
@@ -3662,7 +4112,7 @@ fn run_ffmpeg_watched(mut cmd: Command, watch: Option<&ExportWatch>, dest: &Path
             if w.total_s > 0.0 {
                 if let Some(v) = line.strip_prefix("out_time_us=") {
                     if let Ok(us) = v.trim().parse::<f64>() {
-                        let pct = ((us / 1_000_000.0 / w.total_s).clamp(0.0, 1.0) * 100.0) as u64;
+                        let pct = (w.base_pct + (us / 1_000_000.0 / w.total_s).clamp(0.0, 1.0) * w.span_pct) as u64;
                         if pct != last {
                             last = pct;
                             w.emit(pct, "running");
@@ -4211,6 +4661,8 @@ pub async fn edit_export(
             my_gen,
             label: format!("Exporting {first_name}"),
             total_s,
+            base_pct: 0.0,
+            span_pct: 100.0,
         };
         watch.emit(0, "running");
         // Decide re-encode BEFORE picking the output path — it selects the

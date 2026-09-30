@@ -272,17 +272,35 @@ export interface MergeClip {
   captured: number | null;
   width: number;
   height: number;
+  /** ffmpeg's AVERAGE rate: variable-rate clips read 29.73 for a 30. */
   fps: number;
+  /** The nominal rate it was shot at (24, 25, 30, 60…): compare this. */
+  fps_class: number;
   rotation: number;
   vcodec: string;
   profile: string;
   pix_fmt: string;
+  /** Video bitrate, kb/s (0 = unknown). */
+  vbitrate: number;
+  /** "hlg" | "pq" | "sdr" */
+  color: string;
   acodec: string | null;
   arate: number;
   alayout: string;
   /** Everything that must match for a lossless join, as one string. */
   signature: string;
   error: string | null;
+}
+
+/** "Convert to match": the one format every clip is re-encoded to. */
+export interface MergeConvert {
+  width: number;
+  height: number;
+  /** ffmpeg rate, "30" or "30000/1001". */
+  fps: string;
+  tenBit: boolean;
+  color: string;
+  bitrateKbps: number;
 }
 
 export interface MergeOutcome {

@@ -11,13 +11,20 @@
   //   * The owner removes items: the row's − button, right-click → Remove, or
   //     select rows and press Delete. Merge stays disabled until nothing is
   //     flagged.
+  //   * Only real differences are flagged. A variable frame rate (29.73 for a
+  //     30) joins cleanly and isn't one; a different frame size is, and the
+  //     cell says the size, not a vague "Vertical" (2026-09-29, Meta glasses).
+  //   * Clips that differ only in size, rate, codec or audio can still go in
+  //     through "Convert to match", which the owner chooses: everything is
+  //     re-encoded to one format at a generous bitrate. Different shapes,
+  //     HDR mixed with SDR, and photos can't, and stay flagged.
   //   * Chronological (oldest first) by default; rows can be dragged to reorder.
   //   * Clicking a row previews it on the right (photo, or video with hover
   //     scrub and Play). Clicking outside never closes the window.
   import { onDestroy, onMount } from "svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { api } from "$lib/api";
-  import type { MediaItem, MergeClip, TreeDir } from "$lib/types";
+  import type { MediaItem, MergeClip, MergeConvert, TreeDir } from "$lib/types";
   import Thumb from "./Thumb.svelte";
   import ContextMenu, { type MenuEntry } from "./ContextMenu.svelte";
 
@@ -68,19 +75,35 @@
   const bitDepth = (c: MergeClip) => (/10|12/.test(c.pix_fmt) ? "10-bit" : "8-bit");
   const codecName = (c: MergeClip) =>
     ({ hevc: "HEVC", h264: "H.264", prores: "ProRes", av1: "AV1", vp9: "VP9" })[c.vcodec] ?? c.vcodec.toUpperCase();
-  const codecLabel = (c: MergeClip) => `${codecName(c)} ${bitDepth(c)}`;
-  function frameLabel(c: MergeClip) {
-    const w = c.rotation % 180 ? c.height : c.width;
-    const h = c.rotation % 180 ? c.width : c.height;
-    if (h > w) return "Vertical";
-    if (h === w) return "Square";
-    if (w >= 3840) return "4K";
-    if (w >= 2688) return "2.7K";
-    if (w >= 1920) return "1080p";
-    if (w >= 1280) return "720p";
-    return `${w}×${h}`;
+  const hdrName = (color: string) => (color === "hlg" ? "HLG" : color === "pq" ? "HDR10" : "");
+  /** "HEVC 10-bit", or "HEVC HLG" for HDR (HDR is always 10-bit). */
+  const codecLabel = (c: MergeClip) => `${codecName(c)} ${hdrName(c.color) || bitDepth(c)}`;
+  /** Width × height as it plays (a rotated clip is shown upright). */
+  const dims = (c: MergeClip): [number, number] => (c.rotation % 180 ? [c.height, c.width] : [c.width, c.height]);
+  const frameLabel = (c: MergeClip) => dims(c).join("×");
+  const shape = (c: MergeClip) => {
+    const [w, h] = dims(c);
+    return h > w ? "vertical" : h === w ? "square" : "landscape";
+  };
+  const aspect = (c: MergeClip) => {
+    const [w, h] = dims(c);
+    return w / h;
+  };
+  /** A 29.97 reads "29.97"; a variable-rate 30 that averages 29.73 reads "30". */
+  function fpsLabel(c: MergeClip) {
+    if (!c.fps) return "—";
+    const cls = c.fps_class || Math.round(c.fps);
+    if (Math.abs(c.fps - cls / 1.001) < 0.01) return (cls / 1.001).toFixed(2);
+    return String(cls);
   }
-  const fpsLabel = (f: number) => (f ? (Number.isInteger(f) ? `${f}` : f.toFixed(2)) : "—");
+  function fpsTitle(c: MergeClip) {
+    const cls = c.fps_class || Math.round(c.fps);
+    if (Math.abs(c.fps - cls) < 0.05 || Math.abs(c.fps - cls / 1.001) < 0.01) return `${fpsLabel(c)} fps`;
+    return `Averages ${c.fps.toFixed(2)} fps: a variable frame rate, normal for phones and glasses. It joins like any ${cls} fps clip.`;
+  }
+  /** A flagged cell's tooltip; in convert mode a fixable one says it's handled. */
+  const cellTitle = (why: string | undefined, soft: boolean) =>
+    why ? (soft ? `Converted to match. ${why.replace(/ Convert to match can include it\.$/, "")}` : why) : undefined;
   const audioLabel = (c: MergeClip) =>
     c.acodec ? `${c.acodec.toUpperCase()} ${c.arate ? Math.round(c.arate / 1000) + "k" : ""}${c.alayout && c.alayout !== "stereo" ? " " + c.alayout : ""}`.trim() : "None";
 
@@ -101,38 +124,117 @@
     return best?.clip ?? null;
   });
 
-  type Issues = { frame?: string; fps?: string; codec?: string; audio?: string; kind?: string };
-  /** Which attributes of this item stop it joining the merge, in words. */
+  type Issues = { frame?: string; fps?: string; codec?: string; audio?: string; kind?: string; hard: boolean };
+  /** Which attributes of this item stop a lossless join, in words. `hard`:
+   *  converting can't fix it either (a photo, another shape, HDR vs SDR). */
   function issuesOf(c: MergeClip): Issues | null {
-    if (c.kind === "photo") return { kind: "Photo: only videos can be merged" };
-    if (c.kind !== "video") return { kind: "Not a video" };
-    if (c.error) return { kind: c.error };
+    if (c.kind === "photo") return { kind: "Photo: only videos can be merged", hard: true };
+    if (c.kind !== "video") return { kind: "Not a video", hard: true };
+    if (c.error) return { kind: c.error, hard: true };
     const d = dominant;
     if (!d || c.signature === d.signature) return null;
-    const out: Issues = {};
-    if (c.width !== d.width || c.height !== d.height || c.rotation !== d.rotation)
-      out.frame = `${c.width}×${c.height}; the rest are ${d.width}×${d.height}`;
-    if (Math.abs(c.fps - d.fps) > 0.01) out.fps = `${fpsLabel(c.fps)} fps; the rest are ${fpsLabel(d.fps)} fps`;
-    if (c.vcodec !== d.vcodec || c.profile !== d.profile || c.pix_fmt !== d.pix_fmt)
-      out.codec = `${codecLabel(c)} (${c.profile || c.vcodec}); the rest are ${codecLabel(d)} (${d.profile || d.vcodec})`;
-    if (c.acodec !== d.acodec || c.arate !== d.arate || c.alayout !== d.alayout) out.audio = `${audioLabel(c)}; the rest are ${audioLabel(d)}`;
-    if (!Object.keys(out).length) out.codec = "Encoded differently from the rest";
+    const out: Issues = { hard: false };
+    const [cw, ch] = dims(c);
+    const [dw, dh] = dims(d);
+    if (cw !== dw || ch !== dh) {
+      const sameShape = shape(c) === shape(d) && Math.abs(aspect(c) / aspect(d) - 1) <= 0.03;
+      if (sameShape) {
+        out.frame = `${cw}×${ch}; the rest are ${dw}×${dh}. A lossless join can't mix frame sizes: the picture breaks after the join. Convert to match can include it.`;
+      } else {
+        out.frame = `${shape(c)[0].toUpperCase()}${shape(c).slice(1)} ${cw}×${ch}; the rest are ${shape(d)} ${dw}×${dh}. A different shape can't join this video.`;
+        out.hard = true;
+      }
+    }
+    if (c.fps_class !== d.fps_class) out.fps = `${fpsLabel(c)} fps; the rest are ${fpsLabel(d)} fps. Convert to match can include it.`;
+    if ((c.color || "sdr") !== (d.color || "sdr")) {
+      out.codec = `${c.color === "sdr" ? "SDR" : "HDR (" + hdrName(c.color) + ")"}; the rest are ${d.color === "sdr" ? "SDR" : "HDR (" + hdrName(d.color) + ")"}. HDR and SDR can't share one file.`;
+      out.hard = true;
+    } else if (c.vcodec !== d.vcodec || c.profile !== d.profile || c.pix_fmt !== d.pix_fmt) {
+      out.codec = `${codecLabel(c)} (${c.profile || c.vcodec}); the rest are ${codecLabel(d)} (${d.profile || d.vcodec}).`;
+    }
+    if (c.acodec !== d.acodec || c.arate !== d.arate || c.alayout !== d.alayout) out.audio = `${audioLabel(c)}; the rest are ${audioLabel(d)}.`;
+    if (!out.frame && !out.fps && !out.codec && !out.audio) out.codec = "Encoded differently from the rest";
     return out;
   }
   let issues = $derived(Object.fromEntries(list.map((c) => [c.path, issuesOf(c)])) as Record<string, Issues | null>);
-  let flagged = $derived(list.filter((c) => issues[c.path]));
-  let clean = $derived(list.filter((c) => !issues[c.path]));
+
+  /** "copy" = the lossless join; "convert" = re-encode everything to one format. */
+  let mode = $state<"copy" | "convert">("copy");
+  /** Clips only a conversion can bring in. */
+  let fixable = $derived(list.filter((c) => issues[c.path] && !issues[c.path]!.hard));
+  let hardFlagged = $derived(list.filter((c) => issues[c.path]?.hard));
+  let converting = $derived(mode === "convert");
+  // What blocks the Merge button, and what goes in.
+  let flagged = $derived(converting ? hardFlagged : list.filter((c) => issues[c.path]));
+  let clean = $derived(list.filter((c) => (converting ? !issues[c.path]?.hard : !issues[c.path])));
   let totalSecs = $derived(clean.reduce((s, c) => s + c.duration, 0));
+  // Leave convert mode by itself once there's nothing left it would fix.
+  $effect(() => {
+    if (mode === "convert" && !fixable.length) mode = "copy";
+  });
+
+  /** The format a conversion writes: the dominant clip's rate, colour and bit
+   *  depth, at the size of the largest clip of that shape (so nothing is
+   *  scaled down), and twice the sharpest source's bitrate for that size, so
+   *  a second generation looks the same as the first. */
+  let target = $derived.by((): MergeConvert | null => {
+    const d = dominant;
+    if (!d || !clean.length) return null;
+    let big = d;
+    for (const c of clean) {
+      const [w, h] = dims(c);
+      const [bw, bh] = dims(big);
+      if (w * h > bw * bh) big = c;
+    }
+    const [bw, bh] = dims(big);
+    const width = bw - (bw % 2);
+    const height = bh - (bh % 2);
+    const cls = d.fps_class || Math.round(d.fps) || 30;
+    const ntsc = Math.abs(d.fps - cls / 1.001) < 0.01;
+    const rate = ntsc ? cls / 1.001 : cls;
+    let kbps = 0;
+    for (const c of clean) {
+      const [w, h] = dims(c);
+      if (!c.vbitrate || !w || !h) continue;
+      kbps = Math.max(kbps, (c.vbitrate * (width * height)) / (w * h) * (rate / (c.fps_class || rate)));
+    }
+    if (!kbps) kbps = (width * height * rate * 0.1) / 1000; // ~0.1 bit per pixel when ffmpeg didn't say
+    return {
+      width,
+      height,
+      fps: ntsc ? `${cls * 1000}/1001` : String(cls),
+      tenBit: bitDepth(d) === "10-bit" || d.color !== "sdr",
+      color: d.color || "sdr",
+      bitrateKbps: Math.min(150_000, Math.max(8_000, Math.round((2 * kbps) / 1000) * 1000)),
+    };
+  });
+  const targetFpsLabel = (t: MergeConvert) => (t.fps.includes("/") ? (Number(t.fps.split("/")[0]) / 1001).toFixed(2) : t.fps);
+  const sourceMbps = $derived.by(() => {
+    const r = clean.map((c) => c.vbitrate).filter(Boolean);
+    if (!r.length) return "";
+    const lo = Math.round(Math.min(...r) / 1000);
+    const hi = Math.round(Math.max(...r) / 1000);
+    return lo === hi ? `${lo}` : `${lo}–${hi}`;
+  });
+
   // DJI clips carry a ~5 Mbps debug track the merge drops, so the plain sum
   // slightly over-estimates: fine for a space check.
-  let totalBytes = $derived(clean.reduce((s, c) => s + c.size, 0));
+  let totalBytes = $derived(
+    converting && target ? Math.round((totalSecs * (target.bitrateKbps + 320) * 1000) / 8) : clean.reduce((s, c) => s + c.size, 0),
+  );
+  /** Free space the job needs: a conversion keeps its converted parts until
+   *  they're joined, so it briefly needs the result's size twice. */
+  let needBytes = $derived(converting ? totalBytes * 2 : totalBytes);
   let dest = $derived(dests.find((d) => d.path === destDir));
   const MARGIN = 1024 ** 3; // the backend's 1 GB margin
-  const fits = (d: Dest | undefined) => !!d && (d.free === null || d.free >= totalBytes + MARGIN);
+  const fits = (d: Dest | undefined) => !!d && (d.free === null || d.free >= needBytes + MARGIN);
 
   /** The one thing still in the way of merging, or null when it can run. */
   let blocker = $derived.by(() => {
-    if (flagged.length) return `Remove the ${flagged.length} highlighted item${flagged.length === 1 ? "" : "s"} to merge`;
+    if (flagged.length) {
+      const n = `${flagged.length} highlighted item${flagged.length === 1 ? "" : "s"}`;
+      return !converting && !hardFlagged.length ? `Remove the ${n}, or choose Convert to match` : `Remove the ${n} to merge`;
+    }
     if (clean.length < 2) return "Add at least two videos";
     if (!name.trim()) return "Give the file a name";
     if (!destDir) return "Choose where to save it";
@@ -402,7 +504,7 @@
       /* no progress events outside the app */
     }
     try {
-      result = await api.mergeVideos({ paths: clean.map((c) => c.path), destDir, name });
+      result = await api.mergeVideos({ paths: clean.map((c) => c.path), destDir, name, convert: converting ? target : null });
       phase = "done";
       ondone(result.path, destDir);
     } catch (e) {
@@ -442,7 +544,9 @@
   <header>
     <div>
       <h2>Merge videos</h2>
-      <p class="sub">Joined end to end with no re-encoding, so the file keeps the camera's full quality.</p>
+      <p class="sub">
+        {#if converting}Every clip re-encoded to one format so they can join. At a high bitrate it looks the same as the originals.{:else}Joined end to end with no re-encoding, so the file keeps the camera's full quality.{/if}
+      </p>
     </div>
     <span class="grow"></span>
     {#if phase !== "merging"}<button class="x" onclick={onclose} title="Close" aria-label="Close">✕</button>{/if}
@@ -456,11 +560,20 @@
     <div class="body">
       <!-- ░ left: the merge sequence ░ -->
       <section class="left">
-        {#if dominant}
+        {#if converting && target && dominant}
+          <div class="basis">
+            <span class="basisLabel">Converting to</span>
+            <span class="fmt">{target.width}×{target.height}</span>
+            <span class="fmt">{targetFpsLabel(target)} fps</span>
+            <span class="fmt">{codecName(dominant)} {hdrName(target.color) || (target.tenBit ? "10-bit" : "8-bit")}</span>
+            <span class="fmt">AAC 48k</span>
+            <span class="basisNote">the size of your largest clip, the rest scaled to fit</span>
+          </div>
+        {:else if dominant}
           <div class="basis">
             <span class="basisLabel">Merging as</span>
-            <span class="fmt">{frameLabel(dominant)}</span>
-            <span class="fmt">{fpsLabel(dominant.fps)} fps</span>
+            <span class="fmt">{frameLabel(dominant)} {shape(dominant)}</span>
+            <span class="fmt">{fpsLabel(dominant)} fps</span>
             <span class="fmt">{codecLabel(dominant)}</span>
             <span class="fmt">{audioLabel(dominant)}</span>
             <span class="basisNote">the format most of this footage shares</span>
@@ -470,9 +583,12 @@
         <div class="toolbar">
           <span class="count">{list.length} item{list.length === 1 ? "" : "s"}</span>
           {#if flagged.length}
-            <span class="flagChip" title="Highlighted cells show why each one can't join the merge">{flagged.length} can't be merged</span>
-          {:else if list.length}
+            <span class="flagChip" title="Highlighted cells show why each one can't join the merge">{flagged.length} can't be merged{!converting && !hardFlagged.length ? " losslessly" : ""}</span>
+          {:else if list.length && !converting}
             <span class="okChip">All compatible</span>
+          {/if}
+          {#if converting && fixable.length}
+            <span class="convChip" title="Resized or re-timed to match the rest">{fixable.length} adjusted to match</span>
           {/if}
           <span class="grow"></span>
           {#if flagged.length}
@@ -501,7 +617,8 @@
             <div
               class="row"
               class:sel={sel.has(c.path)}
-              class:flag={!!iss}
+              class:flag={!!iss && (!converting || iss.hard)}
+              class:adjusted={converting && !!iss && !iss.hard}
               class:previewing={previewPath === c.path}
               class:dropBefore={dropAt?.path === c.path && !dropAt.after}
               class:dropAfter={dropAt?.path === c.path && dropAt.after}
@@ -531,10 +648,11 @@
                 </span>
               {:else}
                 <span class="c-len">{fmtDur(c.duration)}</span>
-                <span class="c-frame" class:bad={!!iss?.frame} title={iss?.frame ?? `${c.width}×${c.height}`}>{frameLabel(c)}</span>
-                <span class="c-fps" class:bad={!!iss?.fps} title={iss?.fps}>{fpsLabel(c.fps)}</span>
-                <span class="c-codec" class:bad={!!iss?.codec} title={iss?.codec ?? `${codecName(c)} ${c.profile} · ${c.pix_fmt}`}>{codecLabel(c)}</span>
-                <span class="c-audio" class:bad={!!iss?.audio} title={iss?.audio ?? audioLabel(c)}>{audioLabel(c)}</span>
+                {@const soft = converting && !!iss && !iss.hard}
+                <span class="c-frame" class:bad={!!iss?.frame && !soft} class:conv={!!iss?.frame && soft} title={cellTitle(iss?.frame, soft) ?? `${frameLabel(c)} ${shape(c)}`}>{frameLabel(c)}</span>
+                <span class="c-fps" class:bad={!!iss?.fps && !soft} class:conv={!!iss?.fps && soft} title={cellTitle(iss?.fps, soft) ?? fpsTitle(c)}>{fpsLabel(c)}</span>
+                <span class="c-codec" class:bad={!!iss?.codec && !soft} class:conv={!!iss?.codec && soft} title={cellTitle(iss?.codec, soft) ?? `${codecName(c)} ${c.profile} · ${c.pix_fmt}${c.vbitrate ? ` · ${Math.round(c.vbitrate / 1000)} Mbps` : ""}`}>{codecLabel(c)}</span>
+                <span class="c-audio" class:bad={!!iss?.audio && !soft} class:conv={!!iss?.audio && soft} title={cellTitle(iss?.audio, soft) ?? audioLabel(c)}>{audioLabel(c)}</span>
               {/if}
               <span class="c-size">{gb(c.size)}</span>
               <span class="c-rm">
@@ -581,7 +699,7 @@
           <div class="pcap">
             <span class="pname" title={preview.path}>{preview.name}</span>
             <span class="pmeta">
-              {#if preview.kind === "video" && !preview.error}{fmtDur(preview.duration)} · {preview.width}×{preview.height} · {fpsLabel(preview.fps)} fps · {codecLabel(preview)} · {gb(preview.size)}{:else}{preview.kind === "photo" ? "Photo" : "Not a video"} · {gb(preview.size)}{/if}
+              {#if preview.kind === "video" && !preview.error}{fmtDur(preview.duration)} · {frameLabel(preview)} · {fpsLabel(preview)} fps · {codecLabel(preview)} · {gb(preview.size)}{:else}{preview.kind === "photo" ? "Photo" : "Not a video"} · {gb(preview.size)}{/if}
             </span>
           </div>
         {/if}
@@ -592,7 +710,10 @@
               <div class="doneIcon">✓</div>
               <h3 title={result.path}>{baseName(result.path)}</h3>
               <p>{gb(result.bytes)} · {fmtLong(totalSecs)} · {clean.length} clips</p>
-              <p class="hint2">Upload this file to YouTube as it is: that gives YouTube the original quality. Your clips are untouched, so you can delete this file after the upload to get the space back.</p>
+              <p class="hint2">
+                {#if converting && target}Upload this file to YouTube as it is. It's encoded at {Math.round(target.bitrateKbps / 1000)} Mbps, well above what YouTube keeps, so nothing you'd see is lost.{:else}Upload this file to YouTube as it is: that gives YouTube the original quality.{/if}
+                Your clips are untouched, so you can delete this file after the upload to get the space back.
+              </p>
               <div class="doneActions">
                 <button class="btn" onclick={() => api.reveal(result!.path)}>Show in folder</button>
                 <button class="btn" onclick={() => openUrl("https://www.youtube.com/upload")}>Open YouTube upload</button>
@@ -600,8 +721,28 @@
               </div>
             </div>
           {:else}
+            {#if fixable.length || converting}
+              <span class="fl">How to join</span>
+              <div class="modes" role="radiogroup" aria-label="How to join">
+                <button class="mode" class:on={!converting} role="radio" aria-checked={!converting} disabled={phase === "merging"} onclick={() => (mode = "copy")}>
+                  <span class="mt">Lossless</span>
+                  <span class="md">Exact camera quality. Only clips in the same format.</span>
+                </button>
+                <button class="mode" class:on={converting} role="radio" aria-checked={converting} disabled={phase === "merging"} onclick={() => (mode = "convert")}>
+                  <span class="mt">Convert to match</span>
+                  <span class="md">Brings in the {fixable.length} that differ. Re-encoded; takes a few minutes.</span>
+                </button>
+              </div>
+            {/if}
+
             <div class="summary">
               <div class="big">{clean.length} clip{clean.length === 1 ? "" : "s"} · {fmtLong(totalSecs)} · about {gb(totalBytes)}</div>
+              {#if converting && target}
+                <div class="small dim">
+                  Re-encoded at {Math.round(target.bitrateKbps / 1000)} Mbps{sourceMbps ? ` (the clips are ${sourceMbps})` : ""}, so it looks the same.
+                  Needs {gb(needBytes)} free while it works.
+                </div>
+              {/if}
               {#if flagged.length}<div class="small warnText">Not counting the {flagged.length} highlighted item{flagged.length === 1 ? "" : "s"}.</div>{/if}
             </div>
 
@@ -624,7 +765,7 @@
             {#if phase === "merging"}
               <div class="progress" role="progressbar" aria-valuenow={pct} aria-valuemin="0" aria-valuemax="100">
                 <div class="bar"><div class="fill" style="width:{pct}%"></div></div>
-                <span>Merging… {pct}%{eta ? ` · ${eta}` : ""}</span>
+                <span>{converting ? "Converting" : "Merging"}… {pct}%{eta ? ` · ${eta}` : ""}</span>
               </div>
             {/if}
 
@@ -636,7 +777,7 @@
                 {#if blocker}<span class="why">{blocker}</span>{/if}
                 <span class="grow"></span>
                 <button class="btn" onclick={onclose}>Cancel</button>
-                <button class="btn accent" disabled={!!blocker} onclick={start}>Merge {clean.length} clips</button>
+                <button class="btn accent" disabled={!!blocker} onclick={start}>{converting ? "Convert and merge" : "Merge"} {clean.length} clips</button>
               {/if}
             </div>
           {/if}
@@ -686,6 +827,7 @@
   .flagChip, .okChip { padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
   .flagChip { background: color-mix(in srgb, var(--star) 15%, transparent); color: var(--star); }
   .okChip { background: color-mix(in srgb, var(--pick) 15%, transparent); color: var(--pick); }
+  .convChip { padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-size: 11.5px; font-weight: 600; }
   .warnText { color: var(--star); font-weight: 600; }
 
   /* The sequence table. Plain rows (not <table>) so rows can be dragged. */
@@ -693,7 +835,7 @@
   .row {
     position: relative;
     display: grid;
-    grid-template-columns: 44px minmax(150px, 1fr) 88px 50px 66px 58px 90px 70px 62px 30px;
+    grid-template-columns: 44px minmax(150px, 1fr) 84px 50px 86px 54px 88px 70px 62px 30px;
     align-items: center; column-gap: 8px;
     min-height: 30px; padding: 0 6px 0 8px;
     border-bottom: 1px solid var(--border-soft);
@@ -705,6 +847,7 @@
   .row.sel, .row.sel:hover { background: color-mix(in srgb, var(--select) 16%, transparent); }
   .row.previewing { box-shadow: inset 2px 0 0 var(--accent); }
   .row.flag { box-shadow: inset 3px 0 0 var(--star); }
+  .row.adjusted { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 70%, transparent); }
   .row.flag.previewing { box-shadow: inset 3px 0 0 var(--star), inset 5px 0 0 var(--accent); }
   .row.dropBefore { box-shadow: inset 0 2px 0 var(--accent); }
   .row.dropAfter { box-shadow: inset 0 -2px 0 var(--accent); }
@@ -721,7 +864,8 @@
   .c-when, .c-len, .c-size { color: var(--text-dim); }
   .c-span { grid-column: 4 / span 5; display: flex; align-items: center; gap: 6px; color: color-mix(in srgb, var(--reject) 80%, var(--text-dim)); font-size: 12px; }
   .c-span svg { flex: none; opacity: 0.85; }
-  .bad { justify-self: start; max-width: 100%; padding: 1px 6px; border-radius: 5px; background: color-mix(in srgb, var(--star) 17%, transparent); color: var(--star); font-weight: 620; cursor: help; }
+  .conv { justify-self: start; max-width: 100%; padding: 1px 5px; border-radius: 5px; background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); font-weight: 600; cursor: help; }
+  .bad { justify-self: start; max-width: 100%; padding: 1px 5px; border-radius: 5px; background: color-mix(in srgb, var(--star) 17%, transparent); color: var(--star); font-weight: 620; cursor: help; }
   .c-rm { display: flex; justify-content: flex-end; }
   .rm { display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid transparent; border-radius: 6px; color: var(--text-faint); opacity: 0.55; transition: opacity 100ms ease, background 100ms ease, color 100ms ease; }
   .row:hover .rm, .row.sel .rm, .row.flag .rm { opacity: 1; }
@@ -732,12 +876,12 @@
   /* Narrow list: drop the columns you can live without (the row's hover
      titles and the preview caption still carry them), so the name keeps room. */
   @container (max-width: 760px) {
-    .row { grid-template-columns: 40px minmax(150px, 1fr) 50px 64px 56px 88px 70px 28px; }
+    .row { grid-template-columns: 40px minmax(150px, 1fr) 50px 86px 54px 88px 70px 28px; }
     .c-when, .c-size { display: none; }
     .c-span { grid-column: 3 / span 5; }
   }
   @container (max-width: 600px) {
-    .row { grid-template-columns: 40px minmax(140px, 1fr) 46px 60px 54px 86px 28px; }
+    .row { grid-template-columns: 40px minmax(140px, 1fr) 46px 84px 52px 86px 28px; }
     .c-audio { display: none; }
     .c-span { grid-column: 3 / span 4; }
   }
@@ -758,6 +902,13 @@
   .summary { padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: color-mix(in srgb, var(--accent) 7%, var(--bg-elev)); }
   .big { color: var(--text); font-size: 14.5px; font-weight: 650; font-variant-numeric: tabular-nums; }
   .small { margin-top: 2px; font-size: 12px; }
+  .small.dim { color: var(--text-dim); line-height: 1.45; }
+  .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .mode { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 9px; background: color-mix(in srgb, var(--bg-elev) 45%, transparent); text-align: left; }
+  .mode:hover:not(:disabled) { border-color: var(--border); }
+  .mode.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev)); }
+  .mt { color: var(--text); font-size: 12.5px; font-weight: 650; }
+  .md { color: var(--text-dim); font-size: 11.5px; line-height: 1.35; }
   .fl { margin-top: 4px; color: var(--text-faint); font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
   .settings input[type="text"] { min-height: var(--control-h); padding: 5px 10px; font-size: 13px; user-select: text; }
   .dests { display: flex; flex-direction: column; gap: 4px; }

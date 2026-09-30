@@ -1,5 +1,22 @@
 # Agent Handover: FoxCull
 
+## 2026-09-30 — merge: honest checks and "Convert to match"
+
+Ledger: `docs/changes/2026-09-30-merge-convert-to-match.md`. Triggered by Meta
+Ray-Ban Display glasses clips: variable frame rate, and a different crop per
+clip (1376×1824 … 1488×1984).
+
+- **Compare `fps_class`, never the raw average.** VFR clips average 29.73 for
+  a 30. A stream copy joins them fine (tested).
+- **Mixed frame sizes can't be stream-copied**: the later clips decode with the
+  first clip's parameter sets and go green. The only way in is "Convert to
+  match".
+- **Never re-encode a merge through one ffmpeg with N inputs into the `concat`
+  filter.** ffmpeg 9 inserts frozen gaps at joins (3 min 16 s over 12 Meta
+  clips). `merge_convert` encodes each clip on its own with the same encoder
+  and settings (identical `hvcC`, which it checks) and joins the parts with the
+  lossless `merge_copy`. Keep that shape.
+
 ## 2026-09-30 — Trash mode, compact sidebar, tree reload fix
 
 Ledger: `docs/changes/2026-09-30-trash-mode-and-sidebar.md`. v1.5.1 shipped

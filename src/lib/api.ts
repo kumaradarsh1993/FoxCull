@@ -6,6 +6,7 @@ import type {
   ScanExcludes,
   SuggestedFolder,
   MergeClip,
+  MergeConvert,
   MergeOutcome,
   MediaItem,
   TrashOutcome,
@@ -57,7 +58,7 @@ export const api = {
   mergeProbe: (paths: string[]) => invoke<MergeClip[]>("merge_probe", { paths }),
   /** Join clips end to end with no re-encode. Progress: `onExportProgress`;
    *  cancel: `cancelEditExport`. */
-  mergeVideos: (req: { paths: string[]; destDir: string; name: string }) =>
+  mergeVideos: (req: { paths: string[]; destDir: string; name: string; convert?: MergeConvert | null }) =>
     invoke<MergeOutcome>("merge_videos", { req }),
   /** Free bytes on the volume holding `path`. */
   diskFree: (path: string) => invoke<number>("disk_free", { path }),
