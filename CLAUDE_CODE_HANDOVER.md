@@ -1,5 +1,23 @@
 # Agent Handover: FoxCull
 
+## 2026-09-30 — Trash mode, compact sidebar, tree reload fix
+
+Ledger: `docs/changes/2026-09-30-trash-mode-and-sidebar.md`. v1.5.1 shipped
+stable before this (the merge window, after the owner merged real Seattle
+footage: 37-, 4- and 8-clip merges of 44, 30 and 15 GB).
+
+- **The Trash is a mode, not a folder with the library's chrome.** Everything
+  keys off `inTrashFolder`: its own top bar, bottom bar, keys, menu and empty
+  state, plus the pinned sidebar entry. The tree hides the Trash folder. If you
+  add a toolbar action, decide whether it belongs in Trash mode too.
+- **TreeNode re-lists on `treeGen`** and reveals `revealPath`. Bump `treeGen`
+  whenever folders may have appeared or gone. Don't remount the tree (that
+  collapsed everything).
+- **macOS privacy prompts reset per build** (ad-hoc signing): after each update
+  macOS asks again for Downloads/removable-volume access, and until the owner
+  answers, scans stall silently. A stable signing identity would end it.
+
+
 ## 2026-09-29 — merge window redesigned to the owner's spec
 
 Ledger: `docs/changes/2026-09-29-merge-window-redesign.md`. **The owner's rule:

@@ -425,14 +425,22 @@
     if (!inTrashFolder) return undefined;
     return trashByName.get(basename(it.path).toLowerCase());
   }
+  /** Where "Back" goes when leaving the Trash: the folder, and the photo, it
+   *  was opened from. Cleared by navigating anywhere else. */
+  let trashReturn = $state<{ dir: string; selectPath: string | null } | null>(null);
+  /** Files in the active drive's Trash: the sidebar entry's badge. */
+  let trashCount = $state(0);
   let controllerOpen = $state(false);
   let excludesOpen = $state(false);
   /** The exclude rules as they were when the panel opened, to tell on close
    *  whether anything needs re-scanning. */
   let excludesBefore = "";
-  /** Bumped when the exclude rules change: re-mounts the folder tree so every
-   *  expanded node re-lists its children under the new rules. */
+  /** Bumped when folders may have appeared or gone (a folder created, ↻, the
+   *  exclude rules changed): every expanded tree node re-lists its children,
+   *  keeping what's expanded. */
   let treeGen = $state(0);
+  /** A folder the tree should scroll to and expand its way down to. */
+  let revealPath = $state<string | null>(null);
   /** A system drive root that was open last session and deliberately NOT
    *  reopened at launch (see onMount). The welcome screen offers it back. */
   let resumeDir = $state<string | null>(null);
@@ -923,6 +931,13 @@
   // type → rating/label/flag/tag filters → sort, in one pass. Grouping by month
   // implies sorting by capture date (that's the order the sections need).
   let baseView = $derived.by(() => {
+    // The Trash is its own mode: library filters, grouping and sort don't
+    // apply there (a hidden rating filter would hide trashed files), and the
+    // natural order is most recently deleted first, like every other Trash.
+    if (inTrashFolder) {
+      const at = (i: MediaItem) => trashByName.get(basename(i.path).toLowerCase())?.deleted_at ?? 0;
+      return [...items].sort((a, b) => at(b) - at(a) || collator.compare(a.name, b.name));
+    }
     let arr = items;
     const tf = settings.s.typeFilter;
     if (tf !== "all") arr = arr.filter((i) => i.kind === tf);
@@ -967,6 +982,7 @@
   let relatedGroupCount = $derived(relatedIndex.groups.length);
 
   let view = $derived.by(() => {
+    if (inTrashFolder) return baseView; // no stacks in the Trash: every file stands alone
     const out: MediaItem[] = [];
     const emitted = new Set<string>();
     for (const it of baseView) {
@@ -1028,7 +1044,7 @@
     }
     return out;
   });
-  let grouped = $derived((settings.s.groupBy !== "none" || settings.s.subgroupBy !== "none") && viewMode === "grid");
+  let grouped = $derived((settings.s.groupBy !== "none" || settings.s.subgroupBy !== "none") && viewMode === "grid" && !inTrashFolder);
 
   let active = $derived(view.length ? view[Math.min(activeIndex, view.length - 1)] : null);
   let selectedItems = $derived(items.filter((i) => selected.has(i.path)));
@@ -1205,6 +1221,7 @@
       }
       await api.clearFolderCounts();
       countsGen++;
+      treeGen++; // ↻ also picks up folders made or removed outside FoxCull
       if (dir) {
         await openFolder(dir, { selectPath: keepPath, selectIndex: keepIndex });
       }
@@ -1225,6 +1242,7 @@
   ) {
     const gen = ++openGen;
     if (dir !== currentDir) durations = {};
+    if (!libInfo || dir.replace(/[\\/]+$/, "").toLowerCase() !== libInfo.recycle.replace(/[\\/]+$/, "").toLowerCase()) trashReturn = null;
     durationsDir = null;
     currentDir = dir;
     resumeDir = null;
@@ -2292,6 +2310,10 @@
           const created = await api.createFolder(parent, name);
           await api.clearFolderCounts();
           countsGen++;
+          // Re-list the tree and walk it open to the new folder, so it's in
+          // view the moment it exists (it used to stay hidden until a restart).
+          treeGen++;
+          revealPath = created;
           activity.local("new-folder", `Created ${basename(created)}`, 1, 1);
           // If files are staged for a move, land them straight in the new
           // folder — "make a folder for these" is the whole reason to be here.
@@ -2542,37 +2564,20 @@
     if (inTrashFolder) {
       const rows = ts.map(trashRowFor).filter((r): r is TrashItem => !!r);
       const one = trashRowFor(ctx);
+      const n = rows.length > 1 ? ` ${rows.length} files` : "";
+      const originAbs = one && libInfo ? `${libInfo.root.replace(/[\\/]+$/, "")}/${originFolder(one.orig) === driveLabelOf(libInfo.root) ? "" : originFolder(one.orig)}` : null;
       return [
-        { label: "Previous", icon: "←", disabled: activeIndex <= 0, action: () => move(-1) },
-        { label: "Next", icon: "→", disabled: activeIndex >= view.length - 1, action: () => move(1) },
+        { label: `Restore${n}`, icon: "↩", disabled: !rows.length, action: () => restoreSelected(rows) },
+        { label: `Delete permanently${n}…`, icon: "⌫", danger: true, disabled: !rows.length, action: () => purgeSelected(rows) },
         { separator: true },
         {
-          label: viewMode === "loupe" ? "Back to grid" : "Open in Focus",
+          label: viewMode === "loupe" ? "Back to grid" : "Preview in Focus",
           icon: "▣",
           action: () => setView(viewMode === "loupe" ? "grid" : "loupe"),
         },
-        { label: "Open in default app", icon: "▶", action: () => api.openExternal(ctx.path) },
+        { label: ctx.kind === "video" ? "Open in system player" : "Open in default app", icon: "▶", action: () => api.openExternal(ctx.path) },
         { separator: true },
-        {
-          label: `Restore to original location${rows.length > 1 ? ` (${rows.length})` : ""}`,
-          icon: "↩",
-          disabled: !rows.length,
-          action: () => restoreSelected(rows),
-        },
-        {
-          label: `Delete permanently${rows.length > 1 ? ` (${rows.length})` : ""}`,
-          icon: "⌫",
-          danger: true,
-          disabled: !rows.length,
-          action: () => purgeSelected(rows),
-        },
-        { separator: true },
-        {
-          label: one ? `Came from: ${one.orig}` : "Origin unknown",
-          icon: "ⓘ",
-          disabled: true,
-          action: () => {},
-        },
+        ...(originAbs ? [{ label: `Show original folder (${originFolder(one!.orig)})`, icon: "⤴", action: () => api.reveal(originAbs) } as MenuEntry] : []),
         { label: revealLabel, icon: "⤴", action: () => api.reveal(ctx.path) },
       ];
     }
@@ -2824,6 +2829,7 @@
         body: reasons.join("\n\n"),
       });
     }
+    void refreshTrashCount();
     // Stay where we were — after the rejected shots vanish, the same index lands
     // on the next surviving photo, not back at the top of the folder.
     if (currentDir) await openFolder(currentDir, { selectIndex: activeIndex });
@@ -3006,15 +3012,92 @@
   }
 
   // ── in-app Trash (per-drive recycle folder) ──────────────────────────────
-  /** Navigate to the Trash folder — it lives in the tree like anything else. */
+  // A mode of the library view, not an overlay: the grid, Details and Focus
+  // still work (previewing a clip before deciding was the point of making the
+  // folder visible), but the toolbar, bottom bar, keys and menu become the
+  // Trash's own, and Back returns to where you came from, like Photos'
+  // "Recently Deleted" or Finder's Trash.
   async function openTrash() {
     const dir = libInfo?.recycle;
-    if (dir) await openFolder(dir);
+    if (!dir || inTrashFolder) return;
+    if (currentDir) trashReturn = { dir: currentDir, selectPath: active?.path ?? null };
+    await openFolder(dir);
+  }
+
+  async function leaveTrash() {
+    const back = trashReturn;
+    trashReturn = null;
+    const dir = back?.dir ?? libInfo?.root ?? null;
+    if (dir) await openFolder(dir, { selectPath: back?.selectPath ?? null });
+  }
+
+  let trashBackLabel = $derived(trashReturn ? basename(trashReturn.dir) || trashReturn.dir : libInfo ? driveLabelOf(libInfo.root) : "library");
+  let trashBytes = $derived(inTrashFolder ? items.reduce((n, i) => n + i.size, 0) : 0);
+
+  function driveLabelOf(root: string): string {
+    return drives.find((d) => d.path.replace(/[\\/]+$/, "").toLowerCase() === root.replace(/[\\/]+$/, "").toLowerCase())?.name.replace(/[\\/]+$/, "") || basename(root) || root;
+  }
+
+  /** "DCIM/100MEDIA/DSC_1.JPG" → "DCIM/100MEDIA"; a file at the drive root → the drive. */
+  function originFolder(orig: string): string {
+    const parts = orig.split(/[\\/]/).filter(Boolean);
+    parts.pop();
+    return parts.length ? parts.join("/") : libInfo ? driveLabelOf(libInfo.root) : "drive root";
+  }
+
+  function deletedAgo(ts: number): string {
+    const s = Math.max(0, Date.now() / 1000 - ts);
+    if (s < 90) return "just now";
+    if (s < 3600) return `${Math.round(s / 60)} min ago`;
+    if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+    if (s < 2 * 86400) return "yesterday";
+    if (s < 30 * 86400) return `${Math.round(s / 86400)} days ago`;
+    return new Date(ts * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  }
+
+  /** The Trash rows behind the current selection (or the active item). */
+  function trashTargets(): TrashItem[] {
+    return actionTargets.map(trashRowFor).filter((r): r is TrashItem => !!r);
+  }
+
+  async function refreshTrashCount() {
+    try {
+      const rows = await api.listTrash();
+      trashCount = rows.length;
+      if (inTrashFolder) trashItems = rows;
+    } catch {
+      trashCount = 0;
+    }
+  }
+  // The badge follows the active drive.
+  $effect(() => {
+    if (libInfo?.recycle) void refreshTrashCount();
+  });
+
+  function restoreAll() {
+    if (trashItems.length) void restoreSelected(trashItems);
+  }
+
+  function emptyTrash() {
+    if (!trashItems.length) return;
+    const n = trashItems.length;
+    openAsk({
+      title: `Empty the Trash?`,
+      body: `This permanently deletes ${n} file${n === 1 ? "" : "s"} (${fmtBytes(trashBytes)}) from ${libInfo ? driveLabelOf(libInfo.root) : "this drive"}. There is no undo, and they don't go to the system Trash.`,
+      confirmLabel: "Empty Trash",
+      onconfirm: async () => {
+        const done = await api.purgeTrash(trashItems.map((r) => r.stored));
+        activity.local("trash-purge", `Emptied the Trash (${done} file${done === 1 ? "" : "s"})`, 1, 1);
+        await loadTrashRows();
+        if (currentDir) await openFolder(currentDir);
+      },
+    });
   }
 
   async function loadTrashRows() {
     try {
       trashItems = await api.listTrash();
+      trashCount = trashItems.length;
     } catch {
       trashItems = [];
     }
@@ -3041,7 +3124,10 @@
     if (!rows.length) return;
     openAsk({
       title: `Delete ${rows.length} file${rows.length === 1 ? "" : "s"} permanently?`,
-      body: "This erases them from the disk. There is no undo and they do not go to the system Recycle Bin.",
+      body:
+        rows.length === 1
+          ? "This erases it from the disk. There is no undo, and it doesn't go to the system Trash."
+          : "This erases them from the disk. There is no undo, and they don't go to the system Trash.",
       confirmLabel: "Delete permanently",
       onconfirm: async () => {
         const n = await api.purgeTrash(rows.map((r) => r.stored));
@@ -3099,6 +3185,22 @@
     if (e.key === "Escape" && anyPopoverOpen()) {
       closeAllPopovers();
       return;
+    }
+    // A right-click menu closes itself on Escape; that press must not also
+    // back out of the Trash or clear the selection underneath it.
+    if (e.key === "Escape" && menu) {
+      menu = null;
+      return;
+    }
+    if (inTrashFolder && !editOpen) {
+      // ⌘[ / Alt+← is Back everywhere on a Mac and in Explorer.
+      if (((e.metaKey || e.ctrlKey) && e.key === "[") || (e.altKey && e.key === "ArrowLeft")) {
+        void leaveTrash();
+        e.preventDefault();
+        return;
+      }
+      // Moving files out of the Trash by cut/paste would skip Restore's bookkeeping.
+      if ((e.ctrlKey || e.metaKey) && (k === "x" || k === "v")) return;
     }
     if (editOpen) {
       // Delete/cut the selection, or the clip under the playhead. editComp's
@@ -3217,6 +3319,7 @@
       if (fullscreen) toggleFullscreen();
       else if (dimLevel > 0) dimLevel = 0;
       else if (viewMode === "loupe") setView("grid");
+      else if (inTrashFolder && selected.size <= 1) void leaveTrash();
       else {
         selected = active ? new Set([active.path]) : new Set();
         selectionAnchor = active?.path ?? null;
@@ -3228,6 +3331,13 @@
     if (k === "g") { setView("grid"); return; }
     if (k === "d") { setView("details"); return; }
     if (k === "b") { toggleFilmstrip(); return; }
+    if (inTrashFolder) {
+      // Rating, labels and pick/reject mean nothing for a deleted file; the
+      // Trash has its own two verbs.
+      if (k === "r" && !e.metaKey && !e.ctrlKey && !e.altKey) { void restoreSelected(trashTargets()); e.preventDefault(); return; }
+      if (e.key === "Delete" || e.key === "Backspace") { purgeSelected(trashTargets()); e.preventDefault(); return; }
+      return;
+    }
     if (e.key >= "1" && e.key <= "5") { rate(Number(e.key)); return; }
     if (e.key === "`") { rate(0); return; }
     if (e.key in LABEL_BY_DIGIT) { label(LABEL_BY_DIGIT[e.key]); return; }
@@ -3242,6 +3352,8 @@
   // input surfaces share the mapper in the Controller panel.
   function handlePadAction(a: PadActionId | string, _strength = 1) {
     if (editOpen) return; // the pad drives the culling views only
+    // No culling marks on deleted files.
+    if (inTrashFolder && /^(pick|reject|clearMarks|rate\d|label\d)$/.test(a)) return;
     switch (a) {
       case "prev": move(-1); break;
       case "next": move(1); break;
@@ -3302,7 +3414,7 @@
         if (viewMode === "loupe") setView("grid");
         else if (active) setView("loupe");
         break;
-      case "viewBack": if (viewMode === "loupe") setView("grid"); break;
+      case "viewBack": if (viewMode === "loupe") setView("grid"); else if (inTrashFolder) void leaveTrash(); break;
       case "viewForward": if (viewMode !== "loupe" && active) setView("loupe"); break;
       case "fullscreen": void toggleFullscreen(); break;
       case "toggleFilmstrip": toggleFilmstrip(); break;
@@ -3376,8 +3488,32 @@
 
 <svelte:window {onkeydown} {onmouseup} oncontextmenu={onGlobalContextMenu} onpointerdown={onGlobalPointerDown} />
 
+{#snippet viewModes()}
+      <div class="tool-group viewGroup">
+        <span class="ctl-label">View</span>
+        <div class="seg modes" title="View">
+          <button class="chip viewChip" class:on={viewMode === "grid" && !editOpen} onclick={() => setView("grid")} title="Grid (G)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Grid</span>
+          </button>
+          <button class="chip viewChip" class:on={viewMode === "details" && !editOpen} onclick={() => setView("details")} title="Details list (D)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/></svg><span>Details</span>
+          </button>
+          <button class="chip viewChip" class:on={viewMode === "loupe" && !editOpen} onclick={() => setView("loupe")} title="Focus — one item large (Enter)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H4a1 1 0 0 0-1 1v4M16 3h4a1 1 0 0 1 1 1v4M8 21H4a1 1 0 0 1-1-1v-4M16 21h4a1 1 0 0 0 1-1v-4"/><circle cx="12" cy="12" r="4"/></svg><span>Focus</span>
+          </button>
+        </div>
+      </div>
+{/snippet}
+
+{#snippet gearButton()}
+        <button class="ico gear" class:on={settingsOpen} onclick={() => (settingsOpen = !settingsOpen)} title="Settings" aria-label="Settings">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.03-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.56-1.03 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1.02-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.56 1.02H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.56 1.03z"/></svg>
+        </button>
+{/snippet}
+
 {#snippet gridCell(item: MediaItem, i: number)}
   {@const rel = relatedFor(item)}
+  {@const trow = inTrashFolder ? trashRowFor(item) : undefined}
   {@const len = settings.s.tileInfo.duration && item.kind === "video" ? durations[item.path] : undefined}
   <button
     class="cell"
@@ -3395,7 +3531,7 @@
     onclick={(e) => gridCellClick(e, i)}
     ondblclick={() => { setActiveTo(i); setView("loupe"); }}
     oncontextmenu={(e) => openContextMenu(e, item, i)}
-    draggable={!item.missing}
+    draggable={!item.missing && !inTrashFolder}
     ondragstart={(e) => beginMediaDrag(e, item, i)}
     ondragend={endMediaDrag}
     title={item.missing
@@ -3420,9 +3556,14 @@
          so its bar can bleed past the tile edge into the grid gap — see
          .stackline CSS. Everything that still needs rounded-corner clipping
          (the thumbnail image, reject dim, badges) moves in here instead. -->
-    <div class="cellclip" class:named={settings.s.tileInfo.name}>
+    <div class="cellclip" class:named={settings.s.tileInfo.name || inTrashFolder}>
       <Thumb {item} size={gridThumbTier} armed={i === activeIndex} badge={false} />
-      {#if settings.s.tileInfo.name}<span class="tileName" title={item.name}>{item.name}</span>{/if}
+      {#if inTrashFolder}
+        <!-- In the Trash the caption answers "where did this come from, and when". -->
+        <span class="tileName trashCap" title={trow ? `${item.name}\nDeleted ${deletedAgo(trow.deleted_at)} from ${trow.orig}` : item.name}>
+          {trow ? `${originFolder(trow.orig)} · ${deletedAgo(trow.deleted_at)}` : item.name}
+        </span>
+      {:else if settings.s.tileInfo.name}<span class="tileName" title={item.name}>{item.name}</span>{/if}
       <span class="ov">
         {#if rel}
           <span class="rel-badges">
@@ -3553,15 +3694,28 @@
       </div>
       <div class="tree-body">
         {#if drives.length}
-          {#key treeGen}
-            {#each drives as d (d.path)}
-              <TreeNode node={d} {currentDir} onselect={openFolder} onmove={(dest) => movePathsTo(draggingPaths, dest)} onfoldercontext={openFolderContextMenu} {countsGen} />
-            {/each}
-          {/key}
+          {#each drives as d (d.path)}
+            <TreeNode node={d} {currentDir} onselect={openFolder} onmove={(dest) => movePathsTo(draggingPaths, dest)} onfoldercontext={openFolderContextMenu} {countsGen} {treeGen} {revealPath} />
+          {/each}
         {:else}
           <p class="hint">No drives detected.</p>
         {/if}
       </div>
+      {#if libInfo}
+        <!-- The Trash, pinned at the foot of the sidebar like Finder's and
+             Photos' "Recently Deleted": always in the same place, for the
+             drive you're on, with a count. -->
+        <button
+          class="trashNav"
+          class:on={inTrashFolder}
+          onclick={() => (inTrashFolder ? leaveTrash() : openTrash())}
+          title={inTrashFolder ? `Back to ${trashBackLabel}` : `Files deleted from ${driveLabelOf(libInfo.root)}, kept until you empty the Trash`}
+        >
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16" /><path d="M9 7V4.8c0-.4.4-.8.8-.8h4.4c.4 0 .8.4.8.8V7" /><path d="M6 7l1 12.2c.1.9.8 1.8 1.8 1.8h6.4c1 0 1.7-.9 1.8-1.8L18 7" /></svg>
+          <span class="tnLabel">Trash</span>
+          {#if trashCount}<span class="tnCount">{trashCount}</span>{/if}
+        </button>
+      {/if}
       <!-- Background activity sits at the BOTTOM of the sidebar, where a status
            bar belongs — it spent long enough tucked under the header where it
            read as part of the folder chrome. It renders nothing when idle. -->
@@ -3583,24 +3737,37 @@
       <div class="banner">Read-only location — rating works; the delete sweep is disabled here.</div>
     {/if}
 
+    {#if inTrashFolder && !editOpen}
+      <!-- Trash mode's own bar: a way back, what you're looking at, and the
+           two things you can do here. Nothing from culling or editing. -->
+      <div class="bar trashBar">
+        <button class="btn sm backBtn" onclick={leaveTrash} title="Back to {trashBackLabel} (⌘[ or Esc)">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
+          <span class="backLabel">{trashBackLabel}</span>
+        </button>
+        <div class="trashTitle">
+          <span class="ttIcon" aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16" /><path d="M9 7V4.8c0-.4.4-.8.8-.8h4.4c.4 0 .8.4.8.8V7" /><path d="M6 7l1 12.2c.1.9.8 1.8 1.8 1.8h6.4c1 0 1.7-.9 1.8-1.8L18 7" /></svg></span>
+          <span class="ttText">
+            <strong>Trash</strong>
+            <span>{libInfo ? driveLabelOf(libInfo.root) : ""} · {items.length} item{items.length === 1 ? "" : "s"}{items.length ? ` · ${fmtBytes(trashBytes)}` : ""}</span>
+          </span>
+        </div>
+        {#if items.length}
+          <span class="div"></span>
+          {@render viewModes()}
+        {/if}
+        <div class="spacer"></div>
+        <div class="rightTools">
+          <button class="btn sm" disabled={!trashItems.length} onclick={restoreAll} title="Put every file back in the folder it came from">Restore all</button>
+          <button class="btn sm danger" disabled={!trashItems.length} onclick={emptyTrash} title="Permanently delete everything in the Trash">Empty Trash…</button>
+          {@render gearButton()}
+        </div>
+      </div>
+    {:else}
     <!-- top bar -->
     <div class="bar">
       {#if !editOpen}
-      <!-- view mode -->
-      <div class="tool-group viewGroup">
-        <span class="ctl-label">View</span>
-        <div class="seg modes" title="View">
-          <button class="chip viewChip" class:on={viewMode === "grid" && !editOpen} onclick={() => setView("grid")} title="Grid (G)">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Grid</span>
-          </button>
-          <button class="chip viewChip" class:on={viewMode === "details" && !editOpen} onclick={() => setView("details")} title="Details list (D)">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/></svg><span>Details</span>
-          </button>
-          <button class="chip viewChip" class:on={viewMode === "loupe" && !editOpen} onclick={() => setView("loupe")} title="Focus — one item large (Enter)">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H4a1 1 0 0 0-1 1v4M16 3h4a1 1 0 0 1 1 1v4M8 21H4a1 1 0 0 1-1-1v-4M16 21h4a1 1 0 0 0 1-1v-4"/><circle cx="12" cy="12" r="4"/></svg><span>Focus</span>
-          </button>
-        </div>
-      </div>
+      {@render viewModes()}
 
       <span class="div"></span>
 
@@ -3958,11 +4125,10 @@
           <button class:on={!editOpen} onclick={() => (editOpen = false)}>Library</button>
           <button class:on={editOpen} onclick={openEditMode} disabled={!currentDir}>Edit</button>
         </div>
-        <button class="ico gear" class:on={settingsOpen} onclick={() => (settingsOpen = !settingsOpen)} title="Settings" aria-label="Settings">
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.03-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.56-1.03 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1.02-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.56 1.02H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.56 1.03z"/></svg>
-        </button>
+        {@render gearButton()}
       </div>
     </div>
+    {/if}
 
     <!-- settings popover -->
     {#if settingsOpen}
@@ -4365,6 +4531,15 @@
           />
         {:else if editOpen}
           <EditStudio {active} {selectedItems} sourceItems={items} currentDir={currentDir} recursive={settings.s.includeSub} refreshKey={folderRefreshKey} onexported={() => void refreshAfterMediaOutput()} bind:this={editComp} />
+        {:else if view.length === 0 && inTrashFolder}
+          <div class="welcome trashEmpty">
+            <span class="teIcon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16" /><path d="M9 7V4.8c0-.4.4-.8.8-.8h4.4c.4 0 .8.4.8.8V7" /><path d="M6 7l1 12.2c.1.9.8 1.8 1.8 1.8h6.4c1 0 1.7-.9 1.8-1.8L18 7" /></svg>
+            </span>
+            <h2>Trash is empty</h2>
+            <p>Rejected shots you delete land here first, so you can preview them and change your mind before they're gone for good.</p>
+            <button class="btn" onclick={leaveTrash}>‹ Back to {trashBackLabel}</button>
+          </div>
         {:else if view.length === 0}
           <div class="welcome">
             {#if items.length > 0 && activeFilterCount > 0}
@@ -4420,7 +4595,27 @@
     </div>
 
     <!-- active-item info bar -->
-    {#if active && !editOpen}
+    {#if active && !editOpen && inTrashFolder}
+      {@const trows = trashTargets()}
+      {@const one = trashRowFor(active)}
+      <div class="info trashInfo">
+        <span class="activeIdentity">
+          {#if selectionSummary}
+            <span class="name" title={`Active: ${active.name}`}>{selectionSummary.count} selected</span>
+            <span class="meta selSum">{selectionSummary.text}</span>
+          {:else}
+            <span class="name" title={active.path}>{active.name}</span>
+            <span class="meta selSum" title={one ? one.orig : ""}>{one ? `Deleted ${deletedAgo(one.deleted_at)} · from ${originFolder(one.orig)}` : "Where it came from isn't known"} · {fmtBytes(active.size)}</span>
+          {/if}
+        </span>
+        <span class="spacer"></span>
+        <button class="btn sm accent" disabled={!trows.length} onclick={() => restoreSelected(trows)} title="Put back where it came from (R)">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5" /><path d="M4 9h11a5 5 0 0 1 0 10h-3" /></svg>
+          Restore{trows.length > 1 ? ` ${trows.length}` : ""}
+        </button>
+        <button class="btn sm danger" disabled={!trows.length} onclick={() => purgeSelected(trows)} title="Erase from the disk: no undo (Delete)">Delete permanently</button>
+      </div>
+    {:else if active && !editOpen}
       <div class="info">
         <span class="activeIdentity">
           {#if selectionSummary}
@@ -5513,6 +5708,32 @@
 
   .info { min-height: 49px; gap: 9px; padding: 6px 11px; border-top-color: var(--border-soft); background: color-mix(in srgb, var(--bg-panel) 96%, transparent); box-shadow: 0 -6px 20px rgba(0,0,0,.08); }
   .activeIdentity { min-width: 0; display: flex; flex-direction: column; line-height: 1.1; }
+
+  /* ── Trash mode ─────────────────────────────────────────────────────── */
+  .trashBar { gap: 10px; }
+  .backBtn { max-width: 220px; padding-inline: 8px 12px; gap: 4px; }
+  .backLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trashTitle { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  .ttIcon { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; background: color-mix(in srgb, var(--reject) 13%, transparent); color: var(--reject); flex: none; }
+  .ttText { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+  .ttText strong { color: var(--text); font-size: 13.5px; font-weight: 650; }
+  .ttText span { overflow: hidden; color: var(--text-faint); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .trashInfo .btn.accent svg { margin-right: 2px; }
+  .trashCap { color: var(--text-faint); }
+  .trashEmpty { gap: 10px; }
+  .trashEmpty .teIcon { display: grid; place-items: center; width: 64px; height: 64px; border-radius: 20px; background: color-mix(in srgb, var(--bg-elev) 60%, transparent); color: var(--text-faint); }
+  .trashEmpty h2 { margin: 6px 0 0; color: var(--text); font-family: var(--font-display); font-size: 19px; font-weight: 650; }
+  .trashEmpty p { max-width: 380px; margin: 0; color: var(--text-dim); font-size: 13px; line-height: 1.55; }
+  .trashEmpty .btn { margin-top: 8px; }
+  .trashNav {
+    display: flex; align-items: center; gap: 9px;
+    margin: 4px 8px 6px; padding: 7px 10px;
+    border-radius: 8px; color: var(--text-dim); font-size: 13px; text-align: left;
+  }
+  .trashNav:hover { background: var(--bg-hover); color: var(--text); }
+  .trashNav.on { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--text); }
+  .tnLabel { flex: 1; }
+  .tnCount { padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--text-faint) 22%, transparent); color: var(--text-dim); font-size: 11px; font-variant-numeric: tabular-nums; line-height: 18px; }
   .info .meta.selSum { text-transform: none; letter-spacing: 0; font-size: 11.5px; font-variant-numeric: tabular-nums; }
   .info .name { max-width: 260px; font-size: 12px; font-weight: 650; }
   .info .meta { margin-top: 4px; font-size: 10px; letter-spacing: .03em; text-transform: uppercase; }

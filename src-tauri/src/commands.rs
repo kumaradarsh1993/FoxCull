@@ -744,8 +744,10 @@ pub fn list_tree(dir: String) -> Result<Vec<TreeDir>, String> {
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            // Same rule the media walk uses (see `skip_dir`).
-            if skip_dir(p, &name) {
+            // Same rule the media walk uses (see `skip_dir`). The Trash folder
+            // is listed separately: it has its own pinned entry at the foot of
+            // the sidebar, so it isn't mixed in among the drive's folders.
+            if skip_dir(p, &name) || is_trash_dirname(&name) {
                 return None;
             }
             Some(TreeDir {

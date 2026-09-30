@@ -12,6 +12,8 @@
     depth = 0,
     count = null,
     countsGen = 0,
+    treeGen = 0,
+    revealPath = null,
   }: {
     node: TreeDir;
     currentDir: string | null;
@@ -23,6 +25,13 @@
     count?: number | null;
     /** Bumped by the tree's ↻ button to force open nodes to recount. */
     countsGen?: number;
+    /** Bumped whenever folders may have appeared or gone (a folder created,
+     *  ↻, exclusion rules changed): every expanded node re-lists its children.
+     *  A node used to list them once and keep that forever, so a folder made
+     *  from the sidebar never showed up until the app restarted. */
+    treeGen?: number;
+    /** A folder to make visible: its ancestors expand themselves. */
+    revealPath?: string | null;
   } = $props();
 
   let open = $state(false);
@@ -66,6 +75,21 @@
     if (open && kids === null) await loadKids();
   }
 
+  // Re-list children when the tree generation moves on. Open state below is
+  // kept: children are keyed by path, so existing nodes survive the reload.
+  let seenTreeGen = -1;
+  $effect(() => {
+    const g = treeGen;
+    if (seenTreeGen === -1) {
+      seenTreeGen = g;
+      return;
+    }
+    if (g !== seenTreeGen) {
+      seenTreeGen = g;
+      if (kids !== null) void loadKids();
+    }
+  });
+
   // Recount when the user hits ↻ (countsGen changes) and we're expanded. The
   // sentinel start avoids a spurious recount on mount (and capturing the prop).
   let lastGen = -1;
@@ -106,10 +130,19 @@
     }
   });
 
+  // Reveal a folder (a new one, say): expand every ancestor on the way to it.
+  $effect(() => {
+    const rp = revealPath;
+    if (rp && isUnder(rp, node.path) && !open) {
+      open = true;
+      if (kids === null) void loadKids();
+    }
+  });
+
   // Keep the selected folder's row visible in the (scrollable) tree pane.
   let rowEl = $state<HTMLDivElement | null>(null);
   $effect(() => {
-    if (currentDir === node.path) rowEl?.scrollIntoView({ block: "nearest" });
+    if (currentDir === node.path || revealPath === node.path) rowEl?.scrollIntoView({ block: "nearest" });
   });
 
   function acceptsMediaDrag(e: DragEvent): boolean {
@@ -137,9 +170,11 @@
 
 <div
   class="trow"
+  class:root={depth === 0}
   class:active={currentDir === node.path}
+  class:revealed={revealPath === node.path}
   class:drophot={dropHot}
-  style="padding-left:{4 + depth * 14}px"
+  style="--depth:{depth}"
   bind:this={rowEl}
   role="presentation"
   ondragover={onDragOver}
@@ -147,22 +182,28 @@
   ondrop={onDrop}
   oncontextmenu={(e) => onfoldercontext?.(e, node.path)}
 >
+  <!-- One faint guide per ancestor level: the hierarchy reads at a glance
+       without spending width on deep indentation. -->
+  {#each { length: depth } as _, g (g)}<span class="guide" style="--g:{g}" aria-hidden="true"></span>{/each}
   {#if showChevron}
-    <button
-      class="chev"
-      class:open
-      onclick={toggle}
-      aria-label={open ? "Collapse" : "Expand"}
-      title={open ? "Collapse" : "Expand"}
-    >
-      {open ? "▾" : "▸"}
+    <button class="chev" class:open onclick={toggle} aria-label={open ? "Collapse" : "Expand"} title={open ? "Collapse" : "Expand"}>
+      <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
     </button>
   {:else}
     <span class="chev-spacer"></span>
   {/if}
-  <button class="tname" title={node.path} onclick={() => onselect(node.path)}>
+  <button class="tname" title={node.path} onclick={() => onselect(node.path)} ondblclick={toggle}>
+    <svg class="ticon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      {#if depth === 0 && node.name === "Home"}
+        <path d="M4 10.5 12 4l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5.5h-5V20H5a1 1 0 0 1-1-1z" />
+      {:else if depth === 0}
+        <rect x="3" y="6.5" width="18" height="11" rx="2.6" /><path d="M7 14h5" /><circle cx="17" cy="12" r="0.9" fill="currentColor" stroke="none" />
+      {:else}
+        <path d="M3.5 7.2c0-.94.76-1.7 1.7-1.7h3.9l1.9 1.9h7.8c.94 0 1.7.76 1.7 1.7v7.7c0 .94-.76 1.7-1.7 1.7H5.2c-.94 0-1.7-.76-1.7-1.7z" />
+      {/if}
+    </svg>
     <span class="label">{node.name}</span>
-    {#if count != null}<span class="cnt">{count.toLocaleString()}</span>{/if}
+    {#if count != null && count > 0}<span class="cnt">{count.toLocaleString()}</span>{/if}
   </button>
 </div>
 
@@ -177,87 +218,96 @@
       depth={depth + 1}
       count={kidCounts[k.path] ?? null}
       {countsGen}
+      {treeGen}
+      {revealPath}
     />
   {/each}
 {/if}
 
 <style>
-  /* Lightroom-style tree: quiet monochrome rows, a subtle neutral highlight on
-     the selected folder (no loud accent fill), small disclosure triangles, and
-     right-aligned muted counts. */
+  /* Compact, Finder/VS Code-style tree: 24px rows, a folder or drive icon per
+     row, one faint guide line per level instead of deep indentation, and
+     quiet counts. Dense without getting cramped: the chevron and the name
+     keep full-height hit areas. */
   .trow {
+    --indent: 12px;
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 2px;
     width: 100%;
-    min-height: 29px;
-    border-radius: 7px;
+    height: 24px;
+    padding-left: calc(2px + var(--depth) * var(--indent));
+    border-radius: 6px;
   }
+  .trow:hover { background: color-mix(in srgb, var(--bg-hover) 65%, transparent); }
   .trow.active {
-    background: color-mix(in srgb, var(--accent) 11%, var(--bg-elev));
-    box-shadow: inset 2px 0 var(--accent), inset 0 0 0 1px var(--border-soft);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  .trow.revealed:not(.active) { animation: flash 1.4s ease-out 1; }
+  @keyframes flash {
+    0%, 40% { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+    100% { background: transparent; }
   }
   .trow.drophot {
     background: color-mix(in srgb, var(--accent) 24%, transparent);
     outline: 1px solid var(--accent);
     outline-offset: -1px;
   }
-  .trow.active .label {
-    color: var(--text);
-    font-weight: 600;
+  .guide {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc(9px + var(--g) * var(--indent));
+    width: 1px;
+    background: color-mix(in srgb, var(--text-faint) 18%, transparent);
+    pointer-events: none;
   }
 
-  /* Disclosure triangle, clearly separate from the row's select action. Quiet
-     Lightroom look but with a comfortable click target (small glyph, big hit
-     area) so it is easy to hit on a dense tree. */
   .chev {
     flex: 0 0 auto;
-    width: 24px;
-    height: 26px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 12px;
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 24px;
     color: var(--text-faint);
-    border-radius: 6px;
+    border-radius: 4px;
   }
-  .chev:hover {
-    color: var(--text);
-    background: color-mix(in srgb, var(--text-faint) 16%, transparent);
-  }
-  .chev-spacer {
-    flex: 0 0 auto;
-    width: 24px;
-  }
+  .chev svg { transition: transform 120ms ease; }
+  .chev.open svg { transform: rotate(90deg); }
+  .chev:hover { color: var(--text); }
+  .chev-spacer { flex: 0 0 auto; width: 16px; }
 
   .tname {
     flex: 1;
     min-width: 0;
+    height: 24px;
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 5px 7px;
+    padding: 0 6px 0 2px;
     text-align: left;
-    border-radius: 6px;
     color: var(--text-dim);
     font-size: 12.5px;
-    line-height: 1.2;
   }
-  .tname:hover {
-    color: var(--text);
-  }
+  .tname:hover { color: var(--text); }
+  .ticon { flex: none; color: var(--text-faint); }
+  .root .ticon { color: var(--text-dim); }
+  .root .tname { color: var(--text); font-weight: 560; }
+  .trow.active .tname { color: var(--text); font-weight: 600; }
+  .trow.active .ticon { color: var(--accent); }
   .label {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* Lightroom-style file count, right-aligned and muted. */
   .cnt {
     flex: 0 0 auto;
     margin-left: auto;
     padding-left: 6px;
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
     color: var(--text-faint);
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
   }
 </style>

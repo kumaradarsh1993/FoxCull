@@ -155,12 +155,38 @@ function storeWrite(v: Record<string, unknown>) {
 
 let callbackId = 1;
 
+// A drive's Trash: the first 14 items of a folder, "deleted" over the last few
+// days, so the Trash view has real rows to restore and purge.
+const TRASH = "FoxCull Trash";
+const isTrash = (dir: string) => dir.replace(/\/$/, "").endsWith(`/${TRASH}`);
+let trashRows: { stored: string; orig: string; path: string; name: string; kind: string; ext: string; deleted_at: number }[] | null = null;
+function trashFor(root: string) {
+  if (!trashRows) {
+    const now = Math.floor(Date.now() / 1000);
+    trashRows = folderItems(`${root}/DCIM`).slice(0, 14).map((it, i) => {
+      const path = `${root}/${TRASH}/${it.name}`;
+      byPath.set(path, { ...it, path });
+      return { stored: it.name, orig: `DCIM/100MSDCF/${it.name}`, path, name: it.name, kind: it.kind, ext: it.ext, deleted_at: now - i * 7200 - (i > 8 ? 86400 * 3 : 0) };
+    });
+  }
+  return trashRows;
+}
+/** Folders made with "New subfolder", so the tree can be checked to show them. */
+const created = new Map<string, string[]>();
+
 const HANDLERS: Record<string, (a: Args) => unknown> = {
   list_drives: () => DRIVES,
+  create_folder: (a) => {
+    const list = created.get(a.parent) ?? [];
+    list.push(a.name);
+    created.set(a.parent, list);
+    return `${a.parent.replace(/\/$/, "")}/${a.name}`;
+  },
   list_tree: (a) =>
+    [...(created.get(a.dir) ?? []).map((name) => ({ name, path: `${a.dir.replace(/\/$/, "")}/${name}`, has_children: true }))].concat(
     a.dir === "/"
       ? [{ name: "Users", path: "/Users", has_children: true }]
-      : SUBFOLDERS.map((name) => ({ name, path: `${a.dir.replace(/\/$/, "")}/${name}`, has_children: true })),
+      : SUBFOLDERS.map((name) => ({ name, path: `${a.dir.replace(/\/$/, "")}/${name}`, has_children: true }))),
   folder_counts: (a) => (a.paths as string[]).map((path, i) => ({ path, count: [132, 4821, 38, 0, 1207, 96][i % 6] })),
   set_library_root: (a) => ({
     root: a.root,
@@ -171,7 +197,16 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
     writable: true,
   }),
   library_info: () => HANDLERS.set_library_root({ root: SD }),
-  list_folder_media: (a) => folderItems(a.dir).map(({ seed: _s, aspect: _a, ...rest }) => rest),
+  list_folder_media: (a) => {
+    if (isTrash(a.dir)) {
+      const root = a.dir.replace(/\/?FoxCull Trash\/?$/, "");
+      return trashFor(root).map((r) => {
+        const { seed: _s, aspect: _a, ...rest } = byPath.get(r.path)!;
+        return { ...rest, rating: 0, label: null, flag: null, tags: [], events: [] };
+      });
+    }
+    return folderItems(a.dir).map(({ seed: _s, aspect: _a, ...rest }) => rest);
+  },
   folder_writable: () => true,
   thumbnail: (a) => artFor(a.path, Math.min(a.max ?? 320, 480)),
   loupe_src: (a) => artFor(a.path, 1600),
@@ -249,7 +284,17 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
     { id: 2, name: "Mahindra launch", created_at: 0, cover_rel: null, count: 120 },
   ],
   list_rejected: () => [],
-  list_trash: () => [],
+  list_trash: () => trashFor(SD),
+  restore_trash: (a) => {
+    const n = trashFor(SD).length;
+    trashRows = trashFor(SD).filter((r) => !(a.stored as string[]).includes(r.stored));
+    return { restored: n - trashRows.length, failed: [] };
+  },
+  purge_trash: (a) => {
+    const n = trashFor(SD).length;
+    trashRows = trashFor(SD).filter((r) => !(a.stored as string[]).includes(r.stored));
+    return n - trashRows.length;
+  },
   list_missing: () => [],
   catalog_scan: () => ({ tracked: 0, missing: 0, relinked: 0, still_missing: 0, scanned_files: 0, elapsed_ms: 3 }),
   get_trim: () => null,
