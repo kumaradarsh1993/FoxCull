@@ -2962,6 +2962,27 @@ pub struct MergeRequest {
     /// the lossless join.
     #[serde(default)]
     pub convert: Option<MergeConvert>,
+    /// What actually goes in, in play order, when some clips contribute only
+    /// their marked in/out segments. None = every clip in `paths`, whole.
+    #[serde(default)]
+    pub parts: Option<Vec<MergePart>>,
+}
+
+/// One piece of a merge: a whole clip, or one in/out segment of it.
+#[derive(Deserialize, Clone, Debug)]
+pub struct MergePart {
+    pub path: String,
+    #[serde(default)]
+    pub in_s: Option<f64>,
+    #[serde(default)]
+    pub out_s: Option<f64>,
+}
+
+/// A validated merge part: the clip, and the cut if it's a segment.
+#[derive(Clone, Debug)]
+struct MergeItem {
+    path: PathBuf,
+    cut: Option<(f64, f64)>,
 }
 
 /// The one format every clip is re-encoded to when the owner chooses
@@ -3095,6 +3116,8 @@ pub struct MergeStatus {
     pub out_path: String,
     pub dest_dir: String,
     pub clips: usize,
+    /// Pieces joined: more than `clips` when some go in as their segments.
+    pub parts: usize,
     pub total_s: f64,
     pub in_bytes: u64,
     pub convert: bool,
@@ -3201,8 +3224,10 @@ pub async fn merge_videos(
     state: State<'_, AppState>,
     req: MergeRequest,
 ) -> Result<MergeOutcome, String> {
-    if req.paths.len() < 2 {
-        return Err("pick at least two videos to merge".into());
+    // Two pieces at least: two clips, or two segments of one.
+    let pieces = req.parts.as_ref().map(|p| p.len()).filter(|&n| n > 0).unwrap_or(req.paths.len());
+    if req.paths.is_empty() || pieces < 2 {
+        return Err("pick at least two videos (or two segments of one) to merge".into());
     }
     let mut files: Vec<PathBuf> = Vec::with_capacity(req.paths.len());
     for p in &req.paths {
@@ -3241,12 +3266,55 @@ pub async fn merge_videos(
     let dest = uniquify(dest_dir.join(format!("{}.{ext}", friendly_file_stem(&req.name))));
     let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg not available")?;
 
-    let lengths: Vec<f64> = files.iter().map(|f| clip_length(Some(&ffmpeg), f).unwrap_or(0.0)).collect();
+    // The pieces in play order: whole clips, or their marked segments.
+    let items: Vec<MergeItem> = match &req.parts {
+        Some(parts) if !parts.is_empty() => {
+            let mut v = Vec::with_capacity(parts.len());
+            for p in parts {
+                let src = validate_media_anywhere(&state, &p.path).map_err(|e| format!("{}: {e}", file_label(&p.path)))?;
+                let cut = match (p.in_s, p.out_s) {
+                    (Some(a), Some(b)) if b - a >= 0.04 => Some((a.max(0.0), b)),
+                    _ => None,
+                };
+                v.push(MergeItem { path: src, cut });
+            }
+            v
+        }
+        _ => files.iter().map(|f| MergeItem { path: f.clone(), cut: None }).collect(),
+    };
+    let full_len = |p: &Path| clip_length(Some(&ffmpeg), p).unwrap_or(0.0);
+    let size_of = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    let lengths: Vec<f64> = items
+        .iter()
+        .map(|it| match it.cut {
+            Some((a, b)) => (b - a).max(0.0),
+            None => full_len(&it.path),
+        })
+        .collect();
     let total_s: f64 = lengths.iter().sum();
+    // Bytes a piece brings: a segment, its share of the clip.
+    let piece_bytes = |it: &MergeItem, len: f64| -> u64 {
+        match it.cut {
+            None => size_of(&it.path),
+            Some(_) => {
+                let d = full_len(&it.path);
+                if d > 0.0 {
+                    (size_of(&it.path) as f64 * (len / d).min(1.0)) as u64
+                } else {
+                    size_of(&it.path)
+                }
+            }
+        }
+    };
+    let out_estimate: u64 = items.iter().zip(&lengths).map(|(it, &l)| piece_bytes(it, l)).sum();
+    let cut_bytes: u64 = items.iter().zip(&lengths).filter(|(it, _)| it.cut.is_some()).map(|(it, &l)| piece_bytes(it, l)).sum();
     let need: u64 = match &req.convert {
         // The converted parts stay until they're joined: twice the result.
         Some(c) => c.estimate_bytes(total_s) * 2,
-        None => files.iter().map(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0)).sum(),
+        // With segments every piece is copied to a temporary file first, then
+        // joined: the whole result is there twice for a moment.
+        None if cut_bytes > 0 => out_estimate * 2,
+        None => out_estimate,
     };
     if let Ok(free) = fs4::available_space(&dest_dir) {
         // The copy drops the debug/metadata tracks, so `need` over-estimates a
@@ -3269,16 +3337,27 @@ pub async fn merge_videos(
     }
     let flag = job_token("merge");
     crate::procs::set_merge_paused(false);
-    let in_bytes: u64 = files.iter().map(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0)).sum();
+    let in_bytes: u64 = out_estimate;
+    let segments = items.iter().filter(|it| it.cut.is_some()).count();
+    let label = {
+        let out_name = dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let clips = if files.len() == 1 { "1 clip".to_string() } else { format!("{} clips", files.len()) };
+        if segments > 0 {
+            format!("Merging {clips} ({segments} segments) → {out_name}")
+        } else {
+            format!("Merging {clips} → {out_name}")
+        }
+    };
     {
         let out_name = dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         *MERGE.lock() = MergeStatus {
             state: "running".into(),
-            label: format!("Merging {} clips → {out_name}", files.len()),
+            label: label.clone(),
             name: out_name,
             out_path: dest.to_string_lossy().to_string(),
             dest_dir: dest_dir.to_string_lossy().to_string(),
             clips: files.len(),
+            parts: items.len(),
             total_s,
             in_bytes,
             convert: req.convert.is_some(),
@@ -3287,13 +3366,12 @@ pub async fn merge_videos(
         };
     }
     tauri::async_runtime::spawn_blocking(move || {
-        let out_name = dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let watch = ExportWatch {
             app: app.clone(),
             job: "merge",
             gen: None,
             flag: Some(flag.clone()),
-            label: format!("Merging {} clips → {out_name}", files.len()),
+            label,
             detail: None,
             total_s,
             base_pct: 0.0,
@@ -3312,8 +3390,8 @@ pub async fn merge_videos(
         ));
 
         let res = match &req.convert {
-            Some(conv) => merge_convert(&ffmpeg, &files, conv, &dest, Some(&watch)),
-            None => merge_copy(&ffmpeg, &files, &dest, Some(&watch)),
+            Some(conv) => merge_convert(&ffmpeg, &items, conv, &dest, Some(&watch)),
+            None => merge_items_copy(&ffmpeg, &items, &dest, Some(&watch)),
         };
         job_finished("merge", &flag);
         crate::procs::set_merge_paused(false);
@@ -3335,6 +3413,7 @@ pub async fn merge_videos(
                 }
             }
         }
+        let out_name = dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         match res {
             Ok(()) => {
                 let bytes = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
@@ -3345,7 +3424,7 @@ pub async fn merge_videos(
                     &app,
                     Activity {
                         id: "merge".into(),
-                        label: format!("Merged {} clips → {out_name}", files.len()),
+                        label: if files.len() == 1 { format!("Merged 1 clip's segments → {out_name}") } else { format!("Merged {} clips → {out_name}", files.len()) },
                         done: 100,
                         total: 100,
                         state: "done".into(),
@@ -3415,10 +3494,114 @@ fn fmt_secs(s: f64) -> String {
     }
 }
 
+/// The lossless join of whole clips and in/out segments.
+///
+/// With no segments it's `merge_copy` on the originals, unchanged. With
+/// segments, every piece is first stream-copied to MPEG-TS (a segment with
+/// `-ss in -t len`, a whole clip as it is), then the TS pieces are joined into
+/// the MP4/MOV. Measured 2026-10-04 (docs/changes/…-segments-and-reel.md):
+///   * the concat demuxer's own inpoint/outpoint, and cut MP4 parts joined
+///     with whole MP4 clips, both gave backwards timestamps at the joins on
+///     B-frame footage;
+///   * TS pieces joined cleanly: on a real Osmo Pocket 3 clip (HEVC 10-bit,
+///     a keyframe every 0.5 s), segment + whole clip + segment → 794 frames,
+///     no gaps, nothing backwards, zero decode errors.
+/// A stream copy can only start at a keyframe, so each segment starts at the
+/// keyframe at or before its in point (within 0.5 s on Osmo footage); the
+/// window says so, and Convert gives frame-exact cuts.
+fn merge_items_copy(ffmpeg: &Path, items: &[MergeItem], dest: &Path, watch: Option<&ExportWatch>) -> Result<(), String> {
+    if items.iter().all(|it| it.cut.is_none()) {
+        let files: Vec<PathBuf> = items.iter().map(|it| it.path.clone()).collect();
+        return merge_copy(ffmpeg, &files, dest, watch);
+    }
+    static CUT_SEQ: AtomicU64 = AtomicU64::new(0);
+    let work = dest
+        .parent()
+        .ok_or("no destination folder")?
+        .join(format!(".foxcull-cuts-{}-{}-{}", std::process::id(), now(), CUT_SEQ.fetch_add(1, Ordering::Relaxed)));
+    std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+    crate::procs::scratch_add(&work);
+    let res = (|| -> Result<(), String> {
+        // The recording time and codec come from the first original: TS
+        // carries neither the creation_time nor the hvc1 tag through.
+        let first_banner = ffmpeg_banner(ffmpeg, &items[0].path).unwrap_or_default();
+        let created = parse_banner_creation(&first_banner).map(|t| t + items[0].cut.map(|c| c.0 as i64).unwrap_or(0));
+        let lens: Vec<f64> = items
+            .iter()
+            .map(|it| match it.cut {
+                Some((a, b)) => (b - a).max(0.04),
+                None => clip_length(Some(ffmpeg), &it.path).unwrap_or(1.0),
+            })
+            .collect();
+        let total: f64 = lens.iter().sum::<f64>().max(0.1);
+        const PIECE_SHARE: f64 = 50.0;
+        let mut done = 0.0;
+        let mut pieces: Vec<PathBuf> = Vec::with_capacity(items.len());
+        for (i, (it, &len)) in items.iter().zip(&lens).enumerate() {
+            let piece = work.join(format!("piece{i:04}.ts"));
+            let w = watch.map(|w| ExportWatch {
+                app: w.app.clone(),
+                job: w.job,
+                gen: w.gen.clone(),
+                flag: w.flag.clone(),
+                label: w.label.clone(),
+                detail: Some(if it.cut.is_some() {
+                    format!("Cutting piece {} of {}", i + 1, items.len())
+                } else {
+                    format!("Copying piece {} of {}", i + 1, items.len())
+                }),
+                total_s: len,
+                base_pct: PIECE_SHARE * done / total,
+                span_pct: PIECE_SHARE * len / total,
+                expect_bytes: 0,
+                started: w.started,
+            });
+            let mut cmd = Command::new(ffmpeg);
+            cmd.args(["-v", "error"]);
+            if let Some((a, _)) = it.cut {
+                cmd.args(["-ss", &format!("{a:.3}")]);
+            }
+            cmd.arg("-i").arg(&it.path);
+            if it.cut.is_some() {
+                cmd.args(["-t", &format!("{len:.3}")]);
+            }
+            cmd.args(["-map", "0:V:0", "-map", "0:a:0?", "-c", "copy", "-avoid_negative_ts", "make_zero", "-f", "mpegts"]);
+            cmd.args(["-progress", "pipe:1", "-nostats"]).arg(&piece);
+            run_ffmpeg_watched(cmd, w.as_ref(), &piece)?;
+            pieces.push(piece);
+            done += len;
+        }
+        let w = watch.map(|w| ExportWatch {
+            app: w.app.clone(),
+            job: w.job,
+            gen: w.gen.clone(),
+            flag: w.flag.clone(),
+            label: w.label.clone(),
+            detail: None,
+            total_s: total,
+            base_pct: PIECE_SHARE,
+            span_pct: 100.0 - PIECE_SHARE,
+            expect_bytes: w.expect_bytes,
+            started: w.started,
+        });
+        merge_copy_with(ffmpeg, &pieces, dest, w.as_ref(), first_banner.contains("Video: hevc"), created)
+    })();
+    let _ = std::fs::remove_dir_all(&work);
+    crate::procs::scratch_remove(&work);
+    res
+}
+
 /// The lossless join: ffmpeg's concat demuxer with a stream copy. Each file is
 /// offset by its own length, video and audio together, so sound stays with
 /// picture across every join.
 fn merge_copy(ffmpeg: &Path, files: &[PathBuf], dest: &Path, watch: Option<&ExportWatch>) -> Result<(), String> {
+    let first_banner = ffmpeg_banner(ffmpeg, &files[0]).unwrap_or_default();
+    merge_copy_with(ffmpeg, files, dest, watch, first_banner.contains("Video: hevc"), parse_banner_creation(&first_banner))
+}
+
+/// `merge_copy` with the codec tag and recording time given (the join of TS
+/// pieces can't read them off its first file).
+fn merge_copy_with(ffmpeg: &Path, files: &[PathBuf], dest: &Path, watch: Option<&ExportWatch>, hevc: bool, created: Option<i64>) -> Result<(), String> {
     static MERGE_SEQ: AtomicU64 = AtomicU64::new(0);
     let list_path = std::env::temp_dir().join(format!(
         "foxcull-merge-{}-{}-{}.txt",
@@ -3435,7 +3618,6 @@ fn merge_copy(ffmpeg: &Path, files: &[PathBuf], dest: &Path, watch: Option<&Expo
     };
     write_list().map_err(|e| e.to_string())?;
 
-    let first_banner = ffmpeg_banner(ffmpeg, &files[0]).unwrap_or_default();
     let mut cmd = Command::new(ffmpeg);
     cmd.args(["-v", "error", "-f", "concat", "-safe", "0", "-i"])
         .arg(&list_path)
@@ -3443,11 +3625,11 @@ fn merge_copy(ffmpeg: &Path, files: &[PathBuf], dest: &Path, watch: Option<&Expo
         // can never be picked over the real stream.
         .args(["-map", "0:V:0", "-map", "0:a:0?", "-c", "copy"])
         .args(["-avoid_negative_ts", "make_zero"]);
-    if first_banner.contains("Video: hevc") {
+    if hevc {
         // Apple players and YouTube expect HEVC in MP4 tagged hvc1.
         cmd.args(["-tag:v", "hvc1"]);
     }
-    if let Some(ts) = parse_banner_creation(&first_banner) {
+    if let Some(ts) = created {
         cmd.args(["-metadata", &format!("creation_time={}", iso_utc(ts))]);
     }
     cmd.args(["-progress", "pipe:1", "-nostats"]).arg(dest);
@@ -3457,11 +3639,21 @@ fn merge_copy(ffmpeg: &Path, files: &[PathBuf], dest: &Path, watch: Option<&Expo
 }
 
 /// The ffmpeg command that converts ONE clip to the merge's target format.
-fn merge_convert_part_cmd(ffmpeg: &Path, src: &Path, info: &MergeClip, conv: &MergeConvert, encoder: &str, out: &Path) -> Command {
+fn merge_convert_part_cmd(ffmpeg: &Path, src: &Path, info: &MergeClip, conv: &MergeConvert, encoder: &str, out: &Path, cut: Option<(f64, f64)>) -> Command {
     let (enc_args, pix) = merge_convert_encoder_args(conv, encoder);
     let has_audio = info.acodec.is_some();
     let mut cmd = Command::new(ffmpeg);
-    cmd.args(["-v", "error", "-i"]).arg(src);
+    cmd.args(["-v", "error"]);
+    // A segment: seek on the input (fast), and because this re-encodes, the
+    // cut is frame-exact (ffmpeg decodes from the keyframe and drops the
+    // frames before the in point).
+    if let Some((a, _)) = cut {
+        cmd.args(["-ss", &format!("{a:.3}")]);
+    }
+    cmd.arg("-i").arg(src);
+    if let Some((a, b)) = cut {
+        cmd.args(["-t", &format!("{:.3}", (b - a).max(0.04))]);
+    }
     if !has_audio {
         // Silence for the clip's length, so every part has the same streams.
         cmd.args(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]);
@@ -3521,20 +3713,25 @@ fn merge_convert_part_cmd(ffmpeg: &Path, src: &Path, info: &MergeClip, conv: &Me
 /// chosen on the first clip and kept for the rest, and the parts' decoder
 /// configs are compared before joining: a mismatch fails with nothing
 /// written, rather than a file that turns to garbage at a join.
-fn merge_convert(ffmpeg: &Path, files: &[PathBuf], conv: &MergeConvert, dest: &Path, watch: Option<&ExportWatch>) -> Result<(), String> {
-    let n = files.len();
-    let infos: Vec<MergeClip> = files
-        .iter()
-        .map(|f| {
+fn merge_convert(ffmpeg: &Path, items: &[MergeItem], conv: &MergeConvert, dest: &Path, watch: Option<&ExportWatch>) -> Result<(), String> {
+    let n = items.len();
+    // One probe per clip, however many of its segments go in.
+    let mut probed: HashMap<PathBuf, MergeClip> = HashMap::new();
+    for it in items {
+        probed.entry(it.path.clone()).or_insert_with(|| {
             let mut c = MergeClip::default();
-            if let Some(b) = ffmpeg_banner(ffmpeg, f) {
+            if let Some(b) = ffmpeg_banner(ffmpeg, &it.path) {
                 parse_merge_streams(&b, &mut c);
             }
             c
-        })
-        .collect();
-    let secs_of = |c: &MergeClip| c.duration.max(0.1);
-    let total: f64 = infos.iter().map(secs_of).sum();
+        });
+    }
+    let infos: Vec<&MergeClip> = items.iter().map(|it| &probed[&it.path]).collect();
+    let secs_of = |it: &MergeItem, c: &MergeClip| match it.cut {
+        Some((a, b)) => (b - a).max(0.1),
+        None => c.duration.max(0.1),
+    };
+    let total: f64 = items.iter().zip(&infos).map(|(it, c)| secs_of(it, c)).sum();
     // Parts go next to the destination (the drive whose space was checked),
     // in a dot-folder the library scan skips; always removed afterwards.
     static CONVERT_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -3565,9 +3762,10 @@ fn merge_convert(ffmpeg: &Path, files: &[PathBuf], conv: &MergeConvert, dest: &P
         let mut chosen: Option<&str> = None;
         let mut parts: Vec<PathBuf> = Vec::with_capacity(n);
         let mut done_s = 0.0;
-        for (i, (src, info)) in files.iter().zip(&infos).enumerate() {
+        for (i, (item, info)) in items.iter().zip(infos.iter().copied()).enumerate() {
+            let src = &item.path;
             let part = work.join(format!("part{i:04}.mp4"));
-            let secs = secs_of(info);
+            let secs = secs_of(item, info);
             let w = sub_watch(
                 format!("Converting clip {} of {n}", i + 1),
                 secs,
@@ -3580,7 +3778,7 @@ fn merge_convert(ffmpeg: &Path, files: &[PathBuf], conv: &MergeConvert, dest: &P
             };
             let mut last_err = String::from("no encoder worked");
             for enc in candidates {
-                let cmd = merge_convert_part_cmd(ffmpeg, src, info, conv, enc, &part);
+                let cmd = merge_convert_part_cmd(ffmpeg, src, info, conv, enc, &part, item.cut);
                 match run_ffmpeg_watched(cmd, w.as_ref(), &part) {
                     Ok(()) => {
                         chosen = Some(enc);
@@ -3924,7 +4122,7 @@ mod merge_tests {
         let mut clip = MergeClip::default();
         parse_merge_streams(META, &mut clip);
         let args = |c: &MergeClip, enc: &str| -> Vec<String> {
-            merge_convert_part_cmd(Path::new("ffmpeg"), Path::new("in.mp4"), c, &conv(), enc, Path::new("out.mp4"))
+            merge_convert_part_cmd(Path::new("ffmpeg"), Path::new("in.mp4"), c, &conv(), enc, Path::new("out.mp4"), None)
                 .get_args()
                 .map(|a| a.to_string_lossy().to_string())
                 .collect()
@@ -3948,6 +4146,29 @@ mod merge_tests {
     /// The whole convert-merge on real files. Opt-in:
     /// FOXCULL_FFMPEG=… FOXCULL_MERGE_FILES="a.mp4\nb.mp4" FOXCULL_MERGE_DEST=out.mp4
     /// FOXCULL_MERGE_CONVERT="1488x1984@30,hlg,10,37000" cargo test --lib real_convert_merge -- --ignored
+    /// Opt-in: a real lossless merge of whole clips and segments.
+    /// FOXCULL_FFMPEG, FOXCULL_MERGE_DEST, and FOXCULL_MERGE_PARTS as lines of
+    /// `path` or `path|in|out`.
+    #[test]
+    #[ignore]
+    fn real_segment_merge() {
+        let ffmpeg = std::env::var("FOXCULL_FFMPEG").expect("FOXCULL_FFMPEG");
+        let dest = std::path::PathBuf::from(std::env::var("FOXCULL_MERGE_DEST").expect("FOXCULL_MERGE_DEST"));
+        let items: Vec<super::MergeItem> = std::env::var("FOXCULL_MERGE_PARTS")
+            .expect("FOXCULL_MERGE_PARTS")
+            .lines()
+            .map(|l| {
+                let f: Vec<&str> = l.split('|').collect();
+                super::MergeItem {
+                    path: f[0].into(),
+                    cut: (f.len() == 3).then(|| (f[1].parse().unwrap(), f[2].parse().unwrap())),
+                }
+            })
+            .collect();
+        super::merge_items_copy(Path::new(&ffmpeg), &items, &dest, None).unwrap();
+        assert!(dest.is_file());
+    }
+
     #[test]
     #[ignore]
     fn real_convert_merge() {
@@ -3968,7 +4189,8 @@ mod merge_tests {
         };
         c.validate().unwrap();
         assert!(!dest.exists(), "refusing to overwrite {dest:?}");
-        merge_convert(Path::new(&ffmpeg), &files, &c, &dest, None).unwrap();
+        let items: Vec<super::MergeItem> = files.iter().map(|f| super::MergeItem { path: f.clone(), cut: None }).collect();
+        merge_convert(Path::new(&ffmpeg), &items, &c, &dest, None).unwrap();
         assert!(dest.is_file());
     }
 }
@@ -4194,6 +4416,44 @@ pub fn get_video_segments(
 ) -> Vec<VideoSegment> {
     let rel = rel_of(&state.root.lock().clone(), &path);
     catalog.get_video_segments(&rel)
+}
+
+/// Each clip's marked in/out ranges (its segments, else its trim), read from
+/// the catalog of the drive the clip is on, whichever drive the library is
+/// showing now. For the Merge and Reel windows, which outlive the library's
+/// folder: "nothing marked" must mean nothing is marked, not "another drive".
+#[tauri::command]
+pub fn video_ranges(
+    state: State<'_, AppState>,
+    catalog: State<'_, Catalog>,
+    paths: Vec<String>,
+) -> HashMap<String, Vec<VideoSegment>> {
+    let root = state.root.lock().clone();
+    let mut others: HashMap<PathBuf, Option<Catalog>> = HashMap::new();
+    let mut out = HashMap::new();
+    for p in paths {
+        let path = Path::new(&p);
+        let droot = drive_root(&p);
+        // Same drive, not just "under the root": the Mac's own disk is "/",
+        // which every /Volumes path is under too.
+        let ranges = match &root {
+            Some(r) if r.to_string_lossy().trim_end_matches(['/', '\\']).eq_ignore_ascii_case(droot.to_string_lossy().trim_end_matches(['/', '\\'])) => {
+                let rel = rel_under(r, path);
+                catalog.ranges_under(&rel).remove(&rel).unwrap_or_default()
+            }
+            _ => {
+                let rel = rel_under(&droot, path);
+                let cat = others.entry(droot.clone()).or_insert_with(|| {
+                    // Never create a catalog just to read from it.
+                    let lib = resolve_library(&state.data_root, &droot);
+                    if lib.catalog.exists() { Catalog::open(&lib.catalog).ok() } else { None }
+                });
+                cat.as_ref().map(|c| c.ranges_under(&rel).remove(&rel).unwrap_or_default()).unwrap_or_default()
+            }
+        };
+        out.insert(p, ranges);
+    }
+    out
 }
 
 #[tauri::command]

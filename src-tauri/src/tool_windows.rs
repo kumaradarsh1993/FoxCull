@@ -56,6 +56,17 @@ pub fn open_tool_window(app: AppHandle, kind: String, payload: Option<String>) -
     Ok(())
 }
 
+/// "Show in library" from a tool window: bring the library forward and have
+/// it open that clip's folder with the clip selected.
+#[tauri::command]
+pub fn show_in_library(app: AppHandle, path: String) -> Result<(), String> {
+    let main = app.get_webview_window("main").ok_or("the library window is closed")?;
+    let _ = main.unminimize();
+    let _ = main.show();
+    let _ = main.set_focus();
+    app.emit_to("main", "library-reveal", path).map_err(|e| e.to_string())
+}
+
 /// Everything queued for this window since it last looked, oldest first.
 #[tauri::command]
 pub fn take_tool_inbox(kind: String) -> Vec<String> {

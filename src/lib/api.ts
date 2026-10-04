@@ -45,6 +45,11 @@ export const api = {
     invoke<void>("stash_set", { key, value: value == null ? null : JSON.stringify(value) }).catch(() => {}),
   stashGet: <T>(key: string) =>
     invoke<string | null>("stash_get", { key }).then((v) => (v ? (JSON.parse(v) as T) : null)).catch(() => null),
+  /** Bring the library forward with this clip selected in its folder. */
+  showInLibrary: (path: string) => invoke<void>("show_in_library", { path }),
+  /** A tool window asked the library to show a clip (library window only). */
+  onLibraryReveal: (cb: (path: string) => void): Promise<UnlistenFn> =>
+    listen<string>("library-reveal", (e) => cb(e.payload)),
   /** A merge/export/snapshot wrote a file (any window refreshes its folder). */
   onMediaOutput: (cb: (path: string) => void): Promise<UnlistenFn> =>
     listen<string>("media-output", (e) => cb(e.payload)),
@@ -88,7 +93,15 @@ export const api = {
   /** Join clips end to end (or convert, then join). Runs as job "merge":
    *  progress through `activity` events and `mergeStatus`, stop with
    *  `cancelJob("merge")`, pause with `mergePause`. */
-  mergeVideos: (req: { paths: string[]; destDir: string; name: string; convert?: MergeConvert | null }) =>
+  mergeVideos: (req: {
+    paths: string[];
+    destDir: string;
+    name: string;
+    convert?: MergeConvert | null;
+    /** The pieces in play order: a whole clip (no in/out) or one marked
+     *  segment. Absent = every path whole. */
+    parts?: { path: string; in_s?: number | null; out_s?: number | null }[] | null;
+  }) =>
     invoke<MergeOutcome>("merge_videos", { req }),
   /** Free bytes on the volume holding `path`. */
   diskFree: (path: string) => invoke<number>("disk_free", { path }),
@@ -218,6 +231,9 @@ export const api = {
   clearTrim: (path: string) => invoke<void>("clear_trim", { path }).catch(() => {}),
   trimVideo: (path: string, inS: number, outS: number) =>
     invoke<string>("trim_video", { path, inS, outS }),
+  /** Each clip's marked ranges (segments, else trim) from its own drive's
+   *  catalog, whatever drive the library is showing. */
+  videoRanges: (paths: string[]) => invoke<Record<string, VideoSegment[]>>("video_ranges", { paths }),
   getVideoSegments: (path: string) =>
     invoke<VideoSegment[]>("get_video_segments", { path }),
   setVideoSegments: (path: string, segments: VideoSegment[]) =>

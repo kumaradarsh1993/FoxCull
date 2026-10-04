@@ -481,7 +481,15 @@
   let countsGen = $state(0);
   let folderRefreshKey = $state(0);
   let gridComp = $state<{ scrollToIndex: (i: number, center?: boolean) => void; columnCount?: () => number } | null>(null);
-  let loupeComp = $state<{ togglePlay: () => void; seekBy: (d: number) => void; setInPoint?: () => void; setOutPoint?: () => void; toggleGlimpse?: () => void } | null>(null);
+  let loupeComp = $state<{
+    togglePlay: () => void;
+    seekBy: (d: number) => void;
+    setInPoint?: () => void;
+    setOutPoint?: () => void;
+    toggleGlimpse?: () => void;
+    nudgeMark?: (dir: -1 | 1, big?: boolean) => boolean;
+    clearMarkSelection?: () => boolean;
+  } | null>(null);
 
   const HOLD_MS = 850;
   let holdMs = $state(0);
@@ -1137,6 +1145,23 @@
         const dir = parentOf(path);
         if (samePath(dir, currentDir) || (settings.s.includeSub && isUnder(path, currentDir))) void refreshAfterMediaOutput(path);
         else countsGen++;
+      })
+      .catch(() => {});
+    // "Show in library" from the Merge/Reel window: select that clip, opening
+    // its folder if it isn't in view.
+    void api
+      .onLibraryReveal(async (path) => {
+        let idx = displayIndexForPath(path);
+        if (idx < 0) {
+          await openFolder(parentOf(path), { selectPath: path });
+          idx = displayIndexForPath(path);
+        }
+        if (idx >= 0) {
+          setActiveTo(idx);
+          setTimeout(scrollActive, 60);
+        } else {
+          activity.notify("library-reveal", `${basename(path)} is hidden by the filters`, { detail: "Clear the filters to see it." });
+        }
       })
       .catch(() => {});
     // Quitting with work running: say what would stop, and let the owner
@@ -3553,6 +3578,12 @@
       if (e.key === " " || e.code === "Space") { loupeComp.togglePlay(); e.preventDefault(); return; }
       if (e.key === "[") { loupeComp.setInPoint?.(); e.preventDefault(); return; }
       if (e.key === "]") { loupeComp.setOutPoint?.(); e.preventDefault(); return; }
+      // A picked in/out marker takes ←/→ (one frame; Shift: ten) and Esc.
+      if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && !e.metaKey && !e.ctrlKey && !e.altKey && loupeComp.nudgeMark?.(e.key === "ArrowLeft" ? -1 : 1, e.shiftKey)) {
+        e.preventDefault();
+        return;
+      }
+      if (e.key === "Escape" && loupeComp.clearMarkSelection?.()) { e.preventDefault(); return; }
       if (e.shiftKey && e.key === "ArrowRight") { loupeComp.seekBy(5); e.preventDefault(); return; }
       if (e.shiftKey && e.key === "ArrowLeft") { loupeComp.seekBy(-5); e.preventDefault(); return; }
       if (e.key === "," || e.key === "<") { loupeComp.seekBy(-5); e.preventDefault(); return; }

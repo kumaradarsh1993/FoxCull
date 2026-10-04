@@ -1,3 +1,8 @@
+<script module lang="ts">
+  /** An in point still waiting for its out, per clip, for this session. */
+  const openIns = new Map<string, number>();
+</script>
+
 <script lang="ts">
   import { api } from "$lib/api";
   import { activity } from "$lib/activity.svelte";
@@ -9,7 +14,23 @@
   } from "$lib/thumbnail-loader";
   import { settings } from "$lib/settings.svelte";
   import { ScrubEngine, paintFrame } from "$lib/scrub-engine";
-  import type { MediaItem, FilmstripInfo, MediaProbe, VideoSegment } from "$lib/types";
+  import type { MediaItem, FilmstripInfo, MediaProbe, VideoSegment, ClipRef } from "$lib/types";
+  import ContextMenu, { type MenuEntry } from "./ContextMenu.svelte";
+  import {
+    emptyMarks,
+    markIn as ruleIn,
+    markOut as ruleOut,
+    moveEdge,
+    moveOpen,
+    removeIn,
+    removeOut,
+    removeSeg,
+    normalize,
+    snapFrame,
+    totalLen,
+    fmtT,
+    type MarkState,
+  } from "$lib/segments";
 
   let {
     item,
@@ -35,14 +56,8 @@
     onranges?: (path: string, ranges: VideoSegment[]) => void;
   } = $props();
 
-  /** What goes to Edit: the marked subclips, else the trim, else nothing. */
-  function currentRanges(): VideoSegment[] {
-    if (segments.length) return sortedSegments();
-    const end = outS ?? dur;
-    return inS > 0 || outS != null ? (end > inS ? [{ in_s: inS, out_s: end }] : []) : [];
-  }
   function reportRanges() {
-    if (item) onranges(item.path, currentRanges());
+    if (item) onranges(item.path, marks.segments.map((x) => ({ ...x })));
   }
 
   // Image transitions: the PREVIOUS photo stays painted until the next sharp
@@ -99,9 +114,17 @@
   );
   let dur = $state(0);
   let cur = $state(0);
-  let inS = $state(0);
-  let outS = $state<number | null>(null); // null = end
-  let segments = $state<VideoSegment[]>([]);
+  // In/out segments, marked with [ and ] (rules: $lib/segments.ts). Saved to
+  // the catalog as the clip's segments; an in still waiting for its out is
+  // remembered for the session (per clip) but not saved.
+  let marks = $state<MarkState>(emptyMarks());
+  let segments = $derived(marks.segments);
+  /** The marker picked for ←/→ frame nudges (seg -1 = the open in). */
+  let selMark = $state<{ seg: number; edge: "in" | "out" } | null>(null);
+  /** A brief note on the stage after [ or ] (the transport may be hidden). */
+  let markToast = $state<string | null>(null);
+  let markToastTimer: ReturnType<typeof setTimeout> | undefined;
+  let menu = $state<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
   let exporting = $state(false);
   let exportingSegments = $state(false);
   let exportNote = $state<string | null>(null);
@@ -370,9 +393,10 @@
     paused = !settings.s.videoAutoplay;
     dur = 0;
     cur = 0;
-    inS = 0;
-    outS = null;
-    segments = [];
+    marks = emptyMarks();
+    selMark = null;
+    markToast = null;
+    menu = null;
     exportNote = null;
     probe = null;
     clipToolsOpen = false;
@@ -399,14 +423,19 @@
       curSrc = null;
       vsrc = null;
       posterSrc = null;
-      api.getTrim(it.path).then((t) => {
-        if (my === epoch && t) {
-          inS = t[0];
-          outS = t[1];
+      // Segments are the one model now. A clip trimmed under the old single
+      // in/out (the `trims` table) becomes one segment, once.
+      Promise.all([api.getVideoSegments(it.path).catch(() => [] as VideoSegment[]), api.getTrim(it.path).catch(() => null)]).then(([segs, trim]) => {
+        if (my !== epoch) return;
+        let list = normalize(segs);
+        if (!list.length && trim && trim[1] > trim[0]) {
+          list = normalize([{ in_s: trim[0], out_s: trim[1] }]);
+          if (list.length) {
+            void api.setVideoSegments(it.path, list);
+            api.clearTrim(it.path);
+          }
         }
-      });
-      api.getVideoSegments(it.path).then((s) => {
-        if (my === epoch) segments = s;
+        marks = { segments: list, open: openIns.get(it.path) ?? null, last: null };
       });
       api.probeMediaInfo(it.path).then((p) => {
         if (my === epoch) probe = p;
@@ -614,10 +643,39 @@
     seekIdleTimer = setTimeout(() => seekTo(t / max, true), 240);
   }
   export function setInPoint() {
-    setIn();
+    markInHere();
   }
   export function setOutPoint() {
-    setOut();
+    markOutHere();
+  }
+  /** ←/→ while a marker is picked: move it one frame (Shift: ten). Returns
+   *  whether it took the key (else the page moves to the next item). */
+  export function nudgeMark(dir: -1 | 1, big = false): boolean {
+    const m = selMark;
+    if (!m || !item) return false;
+    const step = (big ? 10 : 1) / frameRate();
+    if (m.seg < 0) {
+      if (marks.open == null) return false;
+      marks = moveOpen(marks, snapFrame(marks.open + dir * step, frameRate()), dur);
+      showFrame(marks.open ?? 0);
+      openIns.set(item.path, marks.open ?? 0);
+      return true;
+    }
+    const s = marks.segments[m.seg];
+    if (!s) return false;
+    const t = snapFrame((m.edge === "in" ? s.in_s : s.out_s) + dir * step, frameRate());
+    marks = moveEdge(marks, m.seg, m.edge, t, dur);
+    const now = marks.segments[m.seg];
+    showFrame(m.edge === "in" ? now.in_s : now.out_s);
+    persistMarks();
+    return true;
+  }
+  /** Esc: let go of a picked marker first. */
+  export function clearMarkSelection(): boolean {
+    if (!selMark && !menu) return false;
+    selMark = null;
+    menu = null;
+    return true;
   }
 
   // ── timeline scrub: hover previews a frame, drag seeks the real video ──
@@ -713,6 +771,7 @@
   }
   function onTrackDown(e: PointerEvent) {
     stopGlimpse(false); // taking the playhead by hand supersedes the sweep
+    selMark = null; // and lets go of a picked in/out marker
     ensureFilmstrip();
     scrubbing = true;
     resumeAfterScrub = !!vid && !vid.paused;
@@ -777,90 +836,179 @@
     // in ~250 ms instead of freezing the picture until the clip is changed.
     if (canvasHold && !scrubbing && !glimpsing && !vid.paused) releaseHold();
   }
-  function setIn() {
-    inS = cur;
-    if (outS != null && outS <= inS) outS = null;
-    persist();
+  // ── in/out segments ([ and ], markers, menus) ─────────────────────────────
+  function frameRate(): number {
+    const f = probe?.fps ?? 0;
+    return f > 1 ? f : 30;
   }
-  function setOut() {
-    outS = cur;
-    if (outS <= inS) inS = 0;
-    persist();
+  function toast(note: string | null) {
+    if (!note) return;
+    markToast = note;
+    clearTimeout(markToastTimer);
+    markToastTimer = setTimeout(() => (markToast = null), 2600);
   }
-  function resetTrim() {
-    inS = 0;
-    outS = null;
-    if (item) api.clearTrim(item.path);
-    exportNote = null;
-    reportRanges();
-  }
-  function persist() {
+  function persistMarks() {
     if (!item) return;
-    // `dur` is 0 until metadata lands. You can't seek before then, so this only
-    // guards the pathological case — but a zero-length trim written to the
-    // catalog would come back as a marker pair the user never set.
-    const end = outS ?? dur;
-    if (!(end > inS)) return;
-    api.setTrim(item.path, inS, end).catch((e) => {
-      // Loud on purpose. This write failed silently for months (see api.ts).
-      exportNote = `Couldn't save in/out (${e})`;
+    const path = item.path;
+    api.setVideoSegments(path, marks.segments.map((x) => ({ ...x }))).catch((e) => {
+      // Loud on purpose: in/out writes once failed silently for months.
+      exportNote = `Couldn't save the segments (${e})`;
     });
+    if (marks.open != null) openIns.set(path, marks.open);
+    else openIns.delete(path);
     reportRanges();
   }
-
-  function sortedSegments(next = segments) {
-    return [...next]
-      .filter((s) => Number.isFinite(s.in_s) && Number.isFinite(s.out_s) && s.out_s > s.in_s)
-      .sort((a, b) => a.in_s - b.in_s);
+  function markInHere() {
+    if (!item || item.kind !== "video") return;
+    const r = ruleIn(marks, snapFrame(cur, frameRate()), dur || cur + 1);
+    toast(r.note);
+    if (!r.changed) return;
+    marks = r.state;
+    selMark = r.state.open != null ? { seg: -1, edge: "in" } : r.state.last != null ? { seg: r.state.last, edge: "in" } : null;
+    persistMarks();
   }
-
-  function persistSegments(next = segments) {
-    if (item) api.setVideoSegments(item.path, sortedSegments(next));
-    reportRanges();
+  function markOutHere() {
+    if (!item || item.kind !== "video") return;
+    const r = ruleOut(marks, snapFrame(cur, frameRate()), dur || cur);
+    toast(r.note);
+    if (!r.changed) return;
+    marks = r.state;
+    selMark = r.state.last != null ? { seg: r.state.last, edge: "out" } : null;
+    persistMarks();
   }
-
-  function addSegment() {
-    if (!item || !dur || !canExport) return;
-    const end = outS ?? dur;
-    const next = sortedSegments([...segments, { in_s: Math.max(0, inS), out_s: Math.min(dur, end) }]);
-    segments = next;
-    persistSegments(next);
-    exportNote = `Marked ${next.length} subclip${next.length === 1 ? "" : "s"}`;
+  /** Show the exact frame at `t` (a marker being placed) without playing. */
+  function showFrame(t: number) {
+    cur = t;
+    if (engineReady) paintStage(t, true);
+    if (vid) {
+      vid.currentTime = t;
+      if (engineReady) releaseHoldSoon();
+    }
   }
-
-  function removeSegment(idx: number) {
-    const next = segments.filter((_, i) => i !== idx);
-    segments = next;
-    persistSegments(next);
+  function jumpToSegment(i: number) {
+    const s2 = marks.segments[i];
+    if (!s2) return;
+    selMark = null;
+    showFrame(s2.in_s);
   }
-
-  function useSegment(segment: VideoSegment) {
-    inS = segment.in_s;
-    outS = segment.out_s;
-    if (vid) vid.currentTime = segment.in_s;
-    persist();
+  // Play the marked parts one after another (Clip tools → Play segments).
+  let playingSegs = $state(false);
+  function playSegments() {
+    if (!vid || !marks.segments.length) return;
+    playingSegs = true;
+    showFrame(marks.segments[0].in_s);
+    vid.play().catch(() => {});
   }
+  $effect(() => {
+    // While playing the segments: at each out, jump to the next in; stop after
+    // the last. (Reads `cur`, which timeupdate keeps current.)
+    if (!playingSegs || !vid) return;
+    const t = cur;
+    const segs = marks.segments;
+    const i = segs.findIndex((x) => t >= x.in_s - 0.05 && t < x.out_s);
+    if (i >= 0) return;
+    const next = segs.find((x) => x.in_s > t);
+    if (next && segs.some((x) => x.out_s <= t + 0.05)) {
+      vid.currentTime = next.in_s;
+    } else {
+      playingSegs = false;
+      vid.pause();
+    }
+  });
 
-  async function exportCut() {
-    if (!item || exporting) return;
-    const end = outS ?? dur;
-    if (end <= inS) return;
-    exporting = true;
-    exportNote = "Cutting…";
+  // Marker drag: frame-accurate, showing the exact frame as it moves.
+  let markDrag: { seg: number; edge: "in" | "out"; id: number } | null = null;
+  function onMarkDown(e: PointerEvent, seg: number, edge: "in" | "out") {
+    e.stopPropagation();
+    e.preventDefault();
+    if (e.button !== 0) return;
+    selMark = { seg, edge };
+    vid?.pause();
+    markDrag = { seg, edge, id: e.pointerId };
     try {
-      const out = await api.trimVideo(item.path, inS, end);
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {}
+  }
+  function onMarkMove(e: PointerEvent) {
+    if (!markDrag || !trackEl) return;
+    const r = trackEl.getBoundingClientRect();
+    const t = snapFrame(Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * dur, frameRate());
+    if (markDrag.seg < 0) {
+      marks = moveOpen(marks, t, dur);
+      showFrame(marks.open ?? t);
+    } else {
+      marks = moveEdge(marks, markDrag.seg, markDrag.edge, t, dur);
+      const sg = marks.segments[markDrag.seg];
+      if (sg) showFrame(markDrag.edge === "in" ? sg.in_s : sg.out_s);
+    }
+  }
+  function onMarkUp(e: PointerEvent) {
+    if (!markDrag) return;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {}
+    markDrag = null;
+    persistMarks();
+  }
+
+  function openMarkMenu(e: MouseEvent, seg: number, edge: "in" | "out" | null) {
+    e.preventDefault();
+    e.stopPropagation();
+    const sg = marks.segments[seg];
+    const entries: MenuEntry[] = [];
+    if (seg < 0) {
+      entries.push({ label: "Remove this in point", icon: "⌫", action: () => { marks = { ...marks, open: null }; selMark = null; persistMarks(); } });
+    } else if (sg) {
+      if (edge === "in") {
+        entries.push({ label: seg > 0 ? `Remove in point (start where segment ${seg} ends)` : "Remove in point (start at the beginning)", icon: "⌫", action: () => { marks = removeIn(marks, seg); persistMarks(); } });
+      } else if (edge === "out") {
+        entries.push({ label: marks.open == null ? "Remove out point (press ] to set a new one)" : "Remove out point (run to the next segment)", icon: "⌫", action: () => { marks = removeOut(marks, seg, dur); selMark = null; persistMarks(); } });
+      }
+      entries.push(
+        { label: "Play this segment", icon: "▶", action: () => { jumpToSegment(seg); vid?.play().catch(() => {}); } },
+        { label: "Save this segment as a clip", icon: "⤓", action: () => void saveSegment(seg) },
+        { separator: true },
+        { label: `Remove segment ${seg + 1}`, icon: "✕", danger: true, action: () => { marks = removeSeg(marks, seg); selMark = null; persistMarks(); } },
+      );
+    }
+    if (marks.segments.length > 1 || (marks.segments.length && marks.open != null)) {
+      entries.push({ label: "Remove all segments", icon: "✕", danger: true, action: () => { marks = emptyMarks(); selMark = null; persistMarks(); } });
+    }
+    menu = { x: e.clientX, y: e.clientY, entries };
+  }
+
+  async function saveSegment(i: number) {
+    const sg = marks.segments[i];
+    if (!item || !sg || exporting) return;
+    exporting = true;
+    exportNote = `Saving segment ${i + 1}…`;
+    try {
+      const out = await api.trimVideo(item.path, sg.in_s, sg.out_s);
       exportNote = `Saved ${out.split(/[\\/]/).pop()}`;
       api.reveal(out);
       onchanged(out);
     } catch (e) {
-      exportNote = `Couldn't cut (${e})`;
+      exportNote = `Couldn't save it (${e})`;
     } finally {
       exporting = false;
     }
   }
 
+  // Drag to the Edit window: the grip takes the clip with all its segments;
+  // a segment's span takes just that segment.
+  function dragClip(e: DragEvent, only: number | null) {
+    if (!item || !e.dataTransfer) return;
+    const ranges = only == null ? marks.segments.map((x) => ({ ...x })) : marks.segments[only] ? [{ ...marks.segments[only] }] : [];
+    const ref: ClipRef = { path: item.path, name: item.name, kind: item.kind, ext: item.ext, mtime: item.mtime, size: item.size, ranges };
+    e.dataTransfer.effectAllowed = "copy";
+    e.dataTransfer.setData("application/x-foxcull-clips", JSON.stringify([ref]));
+    e.dataTransfer.setData("text/plain", item.path);
+    void api.stashSet("drag", [ref]);
+  }
+
   async function exportSegments() {
     if (!item || exportingSegments || !segments.length) return;
+    const sortedSegments = () => marks.segments.map((x) => ({ ...x }));
     exportingSegments = true;
     exportNote = "Exporting subclips...";
     try {
@@ -894,7 +1042,6 @@
     return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   }
   let pct = (s: number) => (dur > 0 ? (s / dur) * 100 : 0);
-  let canExport = $derived(dur > 0 && (outS ?? dur) > inS && (inS > 0 || (outS ?? dur) < dur));
   let infoRows = $derived.by(() => {
     if (!item) return [];
     const rows = [
@@ -1041,6 +1188,7 @@
         {#if usingProxy}
           <span class="proxytag" title="The original couldn't decode in-app; you're watching the cached H.264 conversion. Trim still cuts the original.">converted preview</span>
         {/if}
+        {#if markToast}<div class="marktoast" aria-live="polite">{markToast}</div>{/if}
         {#if stripJob}
           <span class="stripbuild" title="Extracting preview frames so scrubbing this clip is instant. Playback is unaffected.">
             scrub preview{stripJob.total > 0 ? ` ${Math.round((stripJob.done / stripJob.total) * 100)}%` : "…"}
@@ -1049,7 +1197,10 @@
         <!-- Collapsed state: a thin, unobtrusive progress line at the very bottom
              so you sense position/length without any bar eating the picture. -->
         {#if minimalBar && !showTransport}
-          <div class="thinline"><div class="thinfill" style="width:{pct(cur)}%"></div></div>
+          <div class="thinline">
+            {#each segments as sg, i (i)}<div class="thinseg" style="left:{pct(sg.in_s)}%; width:{Math.max(0.4, pct(sg.out_s) - pct(sg.in_s))}%"></div>{/each}
+            <div class="thinfill" style="width:{pct(cur)}%"></div>
+          </div>
         {/if}
         <div class="trim" class:shown={showTransport}>
           <!-- Compact single-row transport: play, time, inline scrubber, then the
@@ -1081,19 +1232,52 @@
               onpointerup={onTrackUp}
               onpointerleave={onTrackLeave}
             >
-              <div class="range" style="left:{pct(inS)}%; right:{100 - pct(outS ?? dur)}%"></div>
-              {#each segments as segment, i (i)}
-                <button
-                  class="segmark"
-                  style="left:{pct(segment.in_s)}%; width:{Math.max(0.8, pct(segment.out_s) - pct(segment.in_s))}%"
-                  title={`Subclip ${i + 1}: ${fmt(segment.in_s)}-${fmt(segment.out_s)}`}
+              <!-- Marked segments: a highlighted span each, with an in and an
+                   out marker. Click a span to jump to it, drag it to the Edit
+                   window for just that part, right-click for more. Markers
+                   drag frame by frame (and ←/→ nudge the picked one). -->
+              {#each segments as sg, i (i)}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <div
+                  class="seg"
+                  class:last={marks.last === i}
+                  style="left:{pct(sg.in_s)}%; width:{Math.max(0.6, pct(sg.out_s) - pct(sg.in_s))}%"
+                  title={`Segment ${i + 1}: ${fmtT(sg.in_s)}–${fmtT(sg.out_s)} · click to jump · drag to Edit · right-click for options`}
+                  draggable="true"
+                  ondragstart={(e) => dragClip(e, i)}
                   onpointerdown={(e) => e.stopPropagation()}
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    useSegment(segment);
-                  }}
-                ></button>
+                  onclick={(e) => { e.stopPropagation(); jumpToSegment(i); }}
+                  oncontextmenu={(e) => openMarkMenu(e, i, null)}
+                ><span class="segno">{i + 1}</span></div>
+                {#each ["in", "out"] as const as edge (edge)}
+                  <!-- svelte-ignore a11y_no_static_element_interactions -->
+                  <div
+                    class="mark {edge}"
+                    class:sel={selMark?.seg === i && selMark?.edge === edge}
+                    style="left:{pct(edge === 'in' ? sg.in_s : sg.out_s)}%"
+                    title={`${edge === "in" ? "In" : "Out"} ${fmtT(edge === "in" ? sg.in_s : sg.out_s)} · drag to adjust (←/→ one frame) · right-click to remove`}
+                    onpointerdown={(e) => onMarkDown(e, i, edge)}
+                    onpointermove={onMarkMove}
+                    onpointerup={onMarkUp}
+                    oncontextmenu={(e) => openMarkMenu(e, i, edge)}
+                  ></div>
+                {/each}
               {/each}
+              {#if marks.open != null}
+                {#if cur > marks.open}<div class="seg pending" style="left:{pct(marks.open)}%; width:{pct(cur) - pct(marks.open)}%"></div>{/if}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div
+                  class="mark in open"
+                  class:sel={selMark?.seg === -1}
+                  style="left:{pct(marks.open)}%"
+                  title={`In ${fmtT(marks.open)}, waiting for ] · drag to adjust · right-click to remove`}
+                  onpointerdown={(e) => onMarkDown(e, -1, "in")}
+                  onpointermove={onMarkMove}
+                  onpointerup={onMarkUp}
+                  oncontextmenu={(e) => openMarkMenu(e, -1, "in")}
+                ></div>
+              {/if}
               <div class="cursor" style="left:{pct(cur)}%"></div>
               {#if preview != null && !scrubbing && engineReady}
                 <!-- Hover thumbnail, decoded on demand (no sprite sheet). -->
@@ -1117,13 +1301,21 @@
                 </div>
               {/if}
             </div>
+            <span
+              class="miniToggle grip"
+              role="button"
+              tabindex="-1"
+              draggable="true"
+              ondragstart={(e) => dragClip(e, null)}
+              title={segments.length ? `Drag to the Edit window: its ${segments.length} segment${segments.length === 1 ? "" : "s"}` : "Drag to the Edit window (the whole clip)"}
+            >⠿ To Edit</span>
             <button class="miniToggle" class:on={infoVisible} onclick={() => (infoVisible = !infoVisible)} title="Show file information overlay">Info</button>
             <button
               class="miniToggle"
               class:on={clipToolsOpen}
               onclick={() => (clipToolsOpen = !clipToolsOpen)}
               title="Trim, mark ranges, and export subclips"
-            >Clip tools{#if !clipToolsOpen && (canExport || segments.length)}<span class="ctdot"></span>{/if}</button>
+            >Clip tools{#if !clipToolsOpen && (segments.length || marks.open != null)}<span class="ctdot"></span>{/if}</button>
           </div>
           {#if clipToolsOpen}
             <!-- Clip tools live in their own bordered panel, visually separated
@@ -1134,28 +1326,29 @@
                  numbers already show on the In/Out buttons and the range span. -->
             <div class="clippanel">
               <div class="ctrls">
-                <button onclick={setIn} title="Set in point to current time">In {fmt(inS)}</button>
-                <button onclick={setOut} title="Set out point to current time">Out {fmt(outS ?? dur)}</button>
-                <span class="len">range {fmt((outS ?? dur) - inS)}</span>
-                <button onclick={addSegment} disabled={!canExport} title="Remember this range as one subclip">Mark range</button>
-                {#each segments as segment, i (i)}
+                <button onclick={markInHere} title="Mark an in point here ([). Again moves it.">[ In</button>
+                <button onclick={markOutHere} title="Mark the out point here (]). Again moves it.">Out ]</button>
+                {#each segments as sg, i (i)}
                   <span class="segmentPill">
-                    <button class="segLabel" onclick={() => useSegment(segment)} title={`Use subclip ${i + 1}: ${fmt(segment.in_s)}-${fmt(segment.out_s)}`}>
+                    <button class="segLabel" onclick={() => jumpToSegment(i)} oncontextmenu={(e) => openMarkMenu(e, i, null)} title={`Segment ${i + 1}: ${fmtT(sg.in_s)}–${fmtT(sg.out_s)} · click to jump`}>
                       <strong>{i + 1}</strong>
-                      <span>{fmt(segment.in_s)}-{fmt(segment.out_s)}</span>
+                      <span>{fmtT(sg.in_s)}–{fmtT(sg.out_s)}</span>
                     </button>
-                    <button class="segRemove" onclick={() => removeSegment(i)} title="Remove subclip">×</button>
+                    <button class="segRemove" onclick={() => { marks = removeSeg(marks, i); selMark = null; persistMarks(); }} title="Remove this segment">×</button>
                   </span>
                 {/each}
+                {#if marks.open != null}<span class="len">in at {fmt(marks.open)}, press ] to close it</span>{/if}
+                {#if segments.length}<span class="len">{segments.length} segment{segments.length === 1 ? "" : "s"} · {fmt(totalLen(segments))}</span>{/if}
                 <span class="spacer"></span>
-                {#if canExport}<button class="reset" onclick={resetTrim}>Reset</button>{/if}
-                <button class="exp" onclick={exportCut} disabled={!canExport || exporting}>
-                  {exporting ? "Saving..." : "Save current range"}
-                </button>
-                <button class="exp secondary" onclick={exportSegments} disabled={!segments.length || exportingSegments}>
-                  {exportingSegments ? "Saving..." : `Save ${segments.length || ""} marked`}
+                {#if segments.length}
+                  <button onclick={playSegments} title="Play just the marked parts, one after another">▶ Play segments</button>
+                  <button class="reset" onclick={() => { marks = emptyMarks(); selMark = null; persistMarks(); }}>Clear all</button>
+                {/if}
+                <button class="exp secondary" onclick={exportSegments} disabled={!segments.length || exportingSegments} title="Save each segment as its own file next to the clip (no re-encode)">
+                  {exportingSegments ? "Saving..." : `Save ${segments.length || ""} as clips`}
                 </button>
               </div>
+              <p class="cthint">[ marks an in, ] the out; pressing again moves it. Then [ starts the next segment. Drag a marker to adjust it frame by frame (or pick it and use ←/→). Right-click a segment to remove it.</p>
             </div>
           {/if}
           {#if exportNote}<div class="note">{exportNote}</div>{/if}
@@ -1192,6 +1385,10 @@
     </div>
   {/if}
 </div>
+
+{#if menu}
+  <ContextMenu x={menu.x} y={menu.y} entries={menu.entries} onclose={() => (menu = null)} />
+{/if}
 
 <style>
   .loupe {
@@ -1473,26 +1670,96 @@
   .track.scrubbing {
     cursor: grabbing;
   }
-  .range {
+  /* A marked segment: a bright span on the bar, numbered. The segment the
+     keys last touched is a touch brighter. */
+  .seg {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    min-width: 3px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--pick) 62%, transparent);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.3);
+    cursor: grab;
+    z-index: 3;
+    overflow: hidden;
+  }
+  .seg.last { background: color-mix(in srgb, var(--pick) 78%, transparent); }
+  /* An open in, running to the playhead until ] closes it. */
+  .seg.pending {
+    background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--pick) 45%, transparent) 0 6px, transparent 6px 10px);
+    box-shadow: none;
+    pointer-events: none;
+  }
+  .segno {
+    position: absolute;
+    left: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 9.5px;
+    font-weight: 800;
+    color: rgba(0, 0, 0, 0.7);
+    pointer-events: none;
+  }
+  /* In / out markers: a tall bar with a bracket flag above the track, big
+     enough to grab; dragged frame by frame. */
+  .mark {
+    position: absolute;
+    top: -9px;
+    bottom: -5px;
+    width: 12px;
+    margin-left: -6px;
+    z-index: 5;
+    cursor: ew-resize;
+    touch-action: none;
+  }
+  .mark::before {
+    content: "";
+    position: absolute;
+    left: 5px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    border-radius: 1px;
+    background: #fff;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+  }
+  .mark::after {
+    position: absolute;
+    top: -12px;
+    font-size: 11px;
+    font-weight: 800;
+    color: #fff;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  }
+  .mark.in::after { content: "["; left: 6px; }
+  .mark.out::after { content: "]"; right: 6px; }
+  .mark.open::before { background: var(--pick); }
+  .mark.sel::before { background: var(--accent); width: 3px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5), 0 0 8px var(--accent); }
+  .mark.sel::after { color: var(--accent); }
+  .thinseg {
     position: absolute;
     top: 0;
     bottom: 0;
-    background: color-mix(in srgb, var(--accent) 55%, transparent);
-    border-radius: 999px;
-    pointer-events: none;
+    background: color-mix(in srgb, var(--pick) 70%, transparent);
   }
-  .segmark {
+  .marktoast {
     position: absolute;
-    top: -3px;
-    bottom: -3px;
-    min-width: 3px;
-    border: 1px solid rgba(255, 255, 255, 0.75);
-    border-radius: 5px;
-    background: color-mix(in srgb, var(--pick) 56%, transparent);
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.28);
-    cursor: pointer;
-    z-index: 3;
+    left: 50%;
+    top: 18px;
+    transform: translateX(-50%);
+    z-index: 30;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: rgba(8, 10, 13, 0.78);
+    color: #fff;
+    font-size: 12.5px;
+    pointer-events: none;
+    white-space: nowrap;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
   }
+  .grip { cursor: grab; user-select: none; }
+  .cthint { margin: 8px 0 0; color: rgba(255, 255, 255, 0.55); font-size: 11.5px; line-height: 1.4; }
   .cursor {
     position: absolute;
     top: -5px;

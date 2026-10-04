@@ -110,6 +110,9 @@
     void activity.tick;
     return running && !st?.paused ? activity.eta("merge") : "";
   });
+  /** "6 clips", or "6 clips (8 parts)" when some went in as their segments. */
+  const clipsText = (st: MergeStatus) =>
+    `${st.clips} clip${st.clips === 1 ? "" : "s"}${st.parts && st.parts !== st.clips ? ` (${st.parts} parts)` : ""}`;
   const folderName = (p: string | undefined) => (p ?? "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p || "";
   const fmtLen = (s: number) => {
     const t = Math.round(s);
@@ -148,7 +151,7 @@
         {/if}
       </div>
       <h3 title={st.out_path}>
-        {#if st.state === "done"}Merged {st.clips} clips{:else if st.state === "error"}The merge didn't finish{:else if st.state === "cancelled"}Merge stopped{:else if st.paused}Paused{:else}{st.convert ? "Converting and merging" : "Merging"} {st.clips} clips{/if}
+        {#if st.state === "done"}Merged {clipsText(st)}{:else if st.state === "error"}The merge didn't finish{:else if st.state === "cancelled"}Merge stopped{:else if st.paused}Paused{:else}{st.convert ? "Converting and merging" : "Merging"} {clipsText(st)}{/if}
       </h3>
       <p class="file" title={st.out_path}>{st.name}</p>
       <p class="where">in <button class="link" onclick={() => void api.reveal(st!.state === "done" ? st!.out_path : st!.dest_dir)}>{folderName(st.dest_dir)}</button> · {fmtLen(st.total_s)} of video</p>

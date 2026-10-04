@@ -82,6 +82,8 @@ export interface MergeStatus {
   out_path: string;
   dest_dir: string;
   clips: number;
+  /** Pieces joined: more than `clips` when some go in as their segments. */
+  parts: number;
   total_s: number;
   in_bytes: number;
   convert: boolean;

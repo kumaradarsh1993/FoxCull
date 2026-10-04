@@ -19,9 +19,17 @@
   //     re-encoded to one format at a generous bitrate. Different shapes,
   //     HDR mixed with SDR, and photos can't, and stay flagged.
   //   * Chronological (oldest first) by default; rows can be dragged to reorder.
-  //   * Clicking a row previews it on the right (photo, or a video tile you
-  //     hover to scrub). No Play: playing a 4K original from a card was slow,
-  //     and a merge window isn't where you watch footage (owner, 2026-10-04).
+  //   * Clicking a row previews it on the right. A video opens paused at its
+  //     first in point; Play plays only what goes in (its checked segments,
+  //     one after another, or the whole clip), and the bar scrubs. Nothing
+  //     autoplays: playing a 4K original from a card is slow, so it's always
+  //     the owner's click (owner, 2026-10-04).
+  //   * Segments (docs/design/segments-and-reel-mode.md §B): a clip with in/out
+  //     segments marked in the library gets a checkbox, checked by default =
+  //     only its segments go in; unchecked = the whole clip. The column's
+  //     header checks or unchecks them all and shows a mixed state. Clips
+  //     without segments say so and go in whole. Lengths, sizes and the space
+  //     check follow the choice.
   //   * This is the Merge WINDOW's review step (its own OS window since
   //     2026-10-04). Once the merge starts the window switches to a progress
   //     view (MergeWindow.svelte) and can be closed: the merge runs in the
@@ -30,7 +38,9 @@
   import { api } from "$lib/api";
   import type { MediaItem, MergeClip, MergeConvert } from "$lib/types";
   import Thumb from "./Thumb.svelte";
+  import SegPlayer from "./SegPlayer.svelte";
   import ContextMenu, { type MenuEntry } from "./ContextMenu.svelte";
+  import { normalize, totalLen, type Seg } from "$lib/segments";
 
   let {
     items,
@@ -67,6 +77,44 @@
   let dests = $state<Dest[]>([]);
 
   const itemFor = (p: string) => items.find((i) => i.path === p);
+
+  // ── segments ──────────────────────────────────────────────────────────────
+  /** Each video's in/out segments as marked in the library (clamped to the clip). */
+  let segsByPath = $state<Record<string, Seg[]>>({});
+  /** Clips whose segments go in instead of the whole clip. */
+  let useSegs = $state<Set<string>>(new Set());
+  const segsOf = (p: string) => segsByPath[p] ?? [];
+  /** What this clip puts in the merge: its segments, or [] for the whole clip. */
+  const piecesOf = (p: string) => (useSegs.has(p) ? segsOf(p) : []);
+  /** Seconds a clip contributes. */
+  const lenOf = (c: MergeClip) => (piecesOf(c.path).length ? totalLen(piecesOf(c.path)) : c.duration);
+
+  /** Segments from the catalog, for the clips in the list. On opening, a clip
+   *  with segments starts checked; later (the window came back to the front,
+   *  maybe after marking more in the library) only clips that newly have
+   *  segments are checked, so a box the owner unticked stays unticked. */
+  async function loadSegments(first: boolean) {
+    const vids = order.filter((p) => byPath[p]?.kind === "video" && !byPath[p]?.error);
+    if (!vids.length) return;
+    let got: Record<string, Seg[]>;
+    try {
+      got = await api.videoRanges(vids);
+    } catch {
+      // Older backend or a hiccup: what the library sent along.
+      if (!first) return;
+      got = Object.fromEntries(vids.map((p) => [p, itemFor(p)?.ranges ?? []]));
+    }
+    const next: Record<string, Seg[]> = {};
+    const fresh: string[] = [];
+    for (const p of vids) {
+      const segs = normalize(got[p] ?? [], byPath[p]?.duration || Infinity);
+      if (segs.length && (first || !segsByPath[p]?.length)) fresh.push(p);
+      next[p] = segs;
+    }
+    segsByPath = next;
+    const gone = vids.filter((p) => !next[p].length);
+    if (fresh.length || gone.length) useSegs = new Set([...useSegs, ...fresh].filter((p) => !gone.includes(p)));
+  }
 
   // ── what "compatible" means ─────────────────────────────────────────────
   const bitDepth = (c: MergeClip) => (/10|12/.test(c.pix_fmt) ? "10-bit" : "8-bit");
@@ -164,11 +212,29 @@
   // What blocks the Merge button, and what goes in.
   let flagged = $derived(converting ? hardFlagged : list.filter((c) => issues[c.path]));
   let clean = $derived(list.filter((c) => (converting ? !issues[c.path]?.hard : !issues[c.path])));
-  let totalSecs = $derived(clean.reduce((s, c) => s + c.duration, 0));
-  // Leave convert mode by itself once there's nothing left it would fix.
+  let totalSecs = $derived(clean.reduce((s, c) => s + lenOf(c), 0));
+  /** Clips in the list that have segments marked (the ones with a checkbox). */
+  let segClips = $derived(list.filter((c) => c.kind === "video" && !c.error && segsOf(c.path).length));
+  let segChecked = $derived(segClips.filter((c) => useSegs.has(c.path)));
+  let headState = $derived<"all" | "some" | "none">(!segChecked.length ? "none" : segChecked.length === segClips.length ? "all" : "some");
+  /** The clips going in that are cut to their segments. */
+  let cutClips = $derived(clean.filter((c) => piecesOf(c.path).length));
+  /** How many pieces the merge joins (a whole clip is one). */
+  let pieceCount = $derived(clean.reduce((n, c) => n + (piecesOf(c.path).length || 1), 0));
+  // Leave convert mode by itself once there's nothing left it would do
+  // (it also makes segment cuts exact, so segments keep it available).
   $effect(() => {
-    if (mode === "convert" && !fixable.length) mode = "copy";
+    if (mode === "convert" && !fixable.length && !cutClips.length) mode = "copy";
   });
+
+  function setSegs(paths: string[], on: boolean) {
+    const next = new Set(useSegs);
+    for (const p of paths) if (segsOf(p).length) on ? next.add(p) : next.delete(p);
+    useSegs = next;
+  }
+  function toggleAllSegs() {
+    setSegs(segClips.map((c) => c.path), headState !== "all");
+  }
 
   /** The format a conversion writes: the dominant clip's rate, colour and bit
    *  depth, at the size of the largest clip of that shape (so nothing is
@@ -217,11 +283,14 @@
   // DJI clips carry a ~5 Mbps debug track the merge drops, so the plain sum
   // slightly over-estimates: fine for a space check.
   let totalBytes = $derived(
-    converting && target ? Math.round((totalSecs * (target.bitrateKbps + 320) * 1000) / 8) : clean.reduce((s, c) => s + c.size, 0),
+    converting && target
+      ? Math.round((totalSecs * (target.bitrateKbps + 320) * 1000) / 8)
+      : clean.reduce((s, c) => s + (c.duration > 0 ? c.size * Math.min(1, lenOf(c) / c.duration) : c.size), 0),
   );
   /** Free space the job needs: a conversion keeps its converted parts until
-   *  they're joined, so it briefly needs the result's size twice. */
-  let needBytes = $derived(converting ? totalBytes * 2 : totalBytes);
+   *  they're joined, and a lossless join of segments copies them out first,
+   *  so both briefly need the result's size twice. */
+  let needBytes = $derived(converting || cutClips.length ? totalBytes * 2 : totalBytes);
   let dest = $derived(dests.find((d) => d.path === destDir));
   const MARGIN = 1024 ** 3; // the backend's 1 GB margin
   const fits = (d: Dest | undefined) => !!d && (d.free === null || d.free >= needBytes + MARGIN);
@@ -232,7 +301,7 @@
       const n = `${flagged.length} highlighted item${flagged.length === 1 ? "" : "s"}`;
       return !converting && !hardFlagged.length ? `Remove the ${n}, or choose Convert to match` : `Remove the ${n} to merge`;
     }
-    if (clean.length < 2) return "Add at least two videos";
+    if (pieceCount < 2) return cutClips.length ? "Mark a second segment, or add another video" : "Add at least two videos";
     if (!name.trim()) return "Give the file a name";
     if (!destDir) return "Choose where to save it";
     if (dest && dest.free !== null && !fits(dest)) return "Not enough space there: pick another drive";
@@ -284,6 +353,7 @@
     order = [...chronological];
     name = defaultName(clips.filter((c) => c.kind === "video"));
     previewPath = order[0] ?? null;
+    await loadSegments(true);
     phase = "ready";
     void loadDestinations();
   });
@@ -394,6 +464,15 @@
     }
     const targets = order.filter((p) => sel.has(p));
     const n = targets.length > 1 ? ` (${targets.length})` : "";
+    const withSegs = targets.filter((p) => segsOf(p).length);
+    const sn = withSegs.length > 1 ? ` (${withSegs.length})` : "";
+    const segEntries: MenuEntry[] = withSegs.length
+      ? [
+          { separator: true },
+          { label: `Use the marked segments${sn}`, icon: "✂", disabled: withSegs.every((p) => useSegs.has(p)), action: () => setSegs(withSegs, true) },
+          { label: `Use the whole clip${sn}`, icon: "▭", disabled: withSegs.every((p) => !useSegs.has(p)), action: () => setSegs(withSegs, false) },
+        ]
+      : [];
     menu = {
       x: e.clientX,
       y: e.clientY,
@@ -402,7 +481,9 @@
         { separator: true },
         { label: `Move to start${n}`, icon: "⤒", action: () => moveTo(targets, "top") },
         { label: `Move to end${n}`, icon: "⤓", action: () => moveTo(targets, "bottom") },
+        ...segEntries,
         { separator: true },
+        { label: "Show in library", icon: "◎", action: () => void api.showInLibrary(path).catch((err) => (error = String(err))) },
         { label: "Show in folder", icon: "⤴", action: () => api.reveal(path) },
       ],
     };
@@ -451,6 +532,11 @@
       sel = new Set();
       return;
     }
+    if (e.key === " " && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      void player?.toggle();
+      return;
+    }
     if (e.key === "Delete" || e.key === "Backspace") {
       e.preventDefault();
       removePaths(sel);
@@ -493,8 +579,16 @@
     phase = "starting";
     const t0 = Date.now();
     let settled = false;
+    // With segments in play, the pieces in order: each cut clip's segments,
+    // the rest whole.
+    const parts = cutClips.length
+      ? clean.flatMap((c) => {
+          const segs = piecesOf(c.path);
+          return segs.length ? segs.map((g) => ({ path: c.path, in_s: g.in_s, out_s: g.out_s })) : [{ path: c.path }];
+        })
+      : null;
     void api
-      .mergeVideos({ paths: clean.map((c) => c.path), destDir, name, convert: converting ? target : null })
+      .mergeVideos({ paths: clean.map((c) => c.path), destDir, name, convert: converting ? target : null, parts })
       .catch((e) => {
         if (settled) return;
         settled = true;
@@ -514,11 +608,12 @@
   }
 
   let preview = $derived(previewPath ? byPath[previewPath] : undefined);
+  let player = $state<ReturnType<typeof SegPlayer> | null>(null);
   let previewItem = $derived(previewPath ? itemFor(previewPath) : undefined);
   let reordered = $derived(order.join("\n") !== chronological.filter((p) => order.includes(p)).join("\n"));
 </script>
 
-<svelte:window {onkeydown} />
+<svelte:window {onkeydown} onfocus={() => phase === "ready" && void loadSegments(false)} />
 
 <!-- The backdrop is inert on purpose: a stray click must not throw away a
      half-reviewed list. -->
@@ -580,12 +675,18 @@
           <button class="btn sm" disabled={!reordered || phase !== "ready"} onclick={() => (order = chronological.filter((p) => order.includes(p)))} title="Put the list back in the order the clips were shot">Sort by time shot</button>
         </div>
 
-        <div class="table" bind:this={listEl} role="listbox" aria-multiselectable="true" aria-label="Merge sequence">
-          <div class="row head" aria-hidden="true">
-            <span class="c-idx">#</span>
-            <span class="c-name">Name</span>
-            <span class="c-when">Recorded</span>
-            <span class="c-len">Length</span>
+        <div class="table" class:segcol={segClips.length > 0} bind:this={listEl} role="listbox" aria-multiselectable="true" aria-label="Merge sequence">
+          <div class="row head">
+            <span class="c-idx" aria-hidden="true">#</span>
+            <span class="c-name" aria-hidden="true">Name</span>
+            <span class="c-when" aria-hidden="true">Recorded</span>
+            <span class="c-len" aria-hidden="true">Length</span>
+            {#if segClips.length}
+              <label class="c-segs" title={headState === "all" ? "Every clip uses its marked segments. Untick to merge them whole." : "Use the marked segments of every clip that has them"}>
+                <input type="checkbox" checked={headState === "all"} indeterminate={headState === "some"} disabled={phase !== "ready"} onchange={toggleAllSegs} aria-label="Use marked segments for all clips" />
+                <span>Segments</span>
+              </label>
+            {/if}
             <span class="c-frame">Frame</span>
             <span class="c-fps">FPS</span>
             <span class="c-codec">Video</span>
@@ -629,7 +730,21 @@
                   {iss?.kind}
                 </span>
               {:else}
-                <span class="c-len">{fmtDur(c.duration)}</span>
+                {@const segs = segsOf(c.path)}
+                {@const cut = useSegs.has(c.path) && segs.length > 0}
+                <span class="c-len" class:cut title={cut ? `${fmtDur(lenOf(c))} of the ${fmtDur(c.duration)} clip goes in (${segs.length} segment${segs.length === 1 ? "" : "s"})` : `${fmtDur(c.duration)}`}>{fmtDur(lenOf(c))}</span>
+                {#if segClips.length}
+                  {#if segs.length}
+                    <!-- svelte-ignore a11y_click_events_have_key_events -->
+                    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+                    <label class="c-segs" onclick={(e) => e.stopPropagation()} title={cut ? `Only the ${segs.length} marked segment${segs.length === 1 ? "" : "s"} go in. Untick to merge the whole clip.` : `The whole clip goes in. Tick to use only its ${segs.length} marked segment${segs.length === 1 ? "" : "s"}.`}>
+                      <input type="checkbox" checked={cut} disabled={phase !== "ready"} onchange={(e) => setSegs([c.path], (e.currentTarget as HTMLInputElement).checked)} aria-label="Use the marked segments of {c.name}" />
+                      <span class:dimSeg={!cut}>{segs.length} · {fmtDur(totalLen(segs))}</span>
+                    </label>
+                  {:else}
+                    <span class="c-segs none" title="No in/out segments marked in the library: the whole clip goes in">None marked</span>
+                  {/if}
+                {/if}
                 {@const soft = converting && !!iss && !iss.hard}
                 <span class="c-frame" class:bad={!!iss?.frame && !soft} class:conv={!!iss?.frame && soft} title={cellTitle(iss?.frame, soft) ?? `${frameLabel(c)} ${shape(c)}`}>{frameLabel(c)}</span>
                 <span class="c-fps" class:bad={!!iss?.fps && !soft} class:conv={!!iss?.fps && soft} title={cellTitle(iss?.fps, soft) ?? fpsTitle(c)}>{fpsLabel(c)}</span>
@@ -656,11 +771,10 @@
           {#if preview && previewItem}
             {#if preview.kind === "photo"}
               {#if photoSrc}<img src={photoSrc} alt={preview.name} />{:else}<div class="stage"><Thumb item={previewItem} size={480} /></div>{/if}
+            {:else if preview.kind === "video" && !preview.error}
+              <SegPlayer bind:this={player} item={previewItem} path={preview.path} duration={preview.duration} segments={piecesOf(preview.path)} />
             {:else}
               <div class="stage"><Thumb item={previewItem} size={480} armed /></div>
-              {#if preview.kind === "video"}
-                <div class="playbar"><span class="hint">Hover to scrub</span></div>
-              {/if}
             {/if}
           {:else}
             <div class="noPreview">Click a row to preview it</div>
@@ -670,28 +784,36 @@
           <div class="pcap">
             <span class="pname" title={preview.path}>{preview.name}</span>
             <span class="pmeta">
-              {#if preview.kind === "video" && !preview.error}{fmtDur(preview.duration)} · {frameLabel(preview)} · {fpsLabel(preview)} fps · {codecLabel(preview)} · {gb(preview.size)}{:else}{preview.kind === "photo" ? "Photo" : "Not a video"} · {gb(preview.size)}{/if}
+              {#if preview.kind === "video" && !preview.error}{#if piecesOf(preview.path).length}{piecesOf(preview.path).length} segment{piecesOf(preview.path).length === 1 ? "" : "s"}, {fmtDur(lenOf(preview))} of{" "}{/if}{fmtDur(preview.duration)} · {frameLabel(preview)} · {fpsLabel(preview)} fps · {codecLabel(preview)} · {gb(preview.size)}{:else}{preview.kind === "photo" ? "Photo" : "Not a video"} · {gb(preview.size)}{/if}
             </span>
           </div>
         {/if}
 
         <div class="settings">
-            {#if fixable.length || converting}
+            {#if fixable.length || converting || cutClips.length}
               <span class="fl">How to join</span>
               <div class="modes" role="radiogroup" aria-label="How to join">
                 <button class="mode" class:on={!converting} role="radio" aria-checked={!converting} disabled={phase === "starting"} onclick={() => (mode = "copy")}>
                   <span class="mt">Lossless</span>
-                  <span class="md">Exact camera quality. Only clips in the same format.</span>
+                  <span class="md">{cutClips.length ? "Exact camera quality. Segments start at the nearest keyframe." : "Exact camera quality. Only clips in the same format."}</span>
                 </button>
                 <button class="mode" class:on={converting} role="radio" aria-checked={converting} disabled={phase === "starting"} onclick={() => (mode = "convert")}>
-                  <span class="mt">Convert to match</span>
-                  <span class="md">Brings in the {fixable.length} that differ. Re-encoded; takes a few minutes.</span>
+                  <span class="mt">{fixable.length ? "Convert to match" : "Convert (exact cuts)"}</span>
+                  <span class="md">{fixable.length ? `Brings in the ${fixable.length} that differ${cutClips.length ? ", cuts segments exactly" : ""}.` : "Cuts every segment on its exact frame."} Re-encoded; takes a few minutes.</span>
                 </button>
               </div>
+              {#if cutClips.length && !converting}
+                <p class="segNote">
+                  A lossless cut can only start on a keyframe, so each segment starts at the keyframe at or just before its in point (on Osmo footage, up to half a second early) and ends on its out point. For frame-exact cuts, choose Convert.
+                </p>
+              {/if}
             {/if}
 
             <div class="summary">
-              <div class="big">{clean.length} clip{clean.length === 1 ? "" : "s"} · {fmtLong(totalSecs)} · about {gb(totalBytes)}</div>
+              <div class="big">{clean.length} clip{clean.length === 1 ? "" : "s"}{#if cutClips.length}{" "}<span class="pieces">as {pieceCount} parts</span>{/if} · {fmtLong(totalSecs)} · about {gb(totalBytes)}</div>
+              {#if cutClips.length}
+                <div class="small dim">{cutClips.length === clean.length ? "Every clip" : `${cutClips.length} of the clips`} cut to {cutClips.length === 1 ? "its" : "their"} marked segments{cutClips.length < clean.length ? "; the rest go in whole" : ""}. Needs {gb(needBytes)} free while it works.</div>
+              {/if}
               {#if converting && target}
                 <div class="small dim">
                   Re-encoded at {Math.round(target.bitrateKbps / 1000)} Mbps{sourceMbps ? ` (the clips are ${sourceMbps})` : ""}, so it looks the same.
@@ -722,7 +844,7 @@
               <span class="grow"></span>
               <button class="btn" onclick={onclose} disabled={phase === "starting"}>Cancel</button>
               <button class="btn accent" disabled={!!blocker || phase === "starting"} onclick={start}>
-                {phase === "starting" ? "Starting…" : `${converting ? "Convert and merge" : "Merge"} ${clean.length} clips`}
+                {phase === "starting" ? "Starting…" : `${converting ? "Convert and merge" : "Merge"} ${cutClips.length ? `${pieceCount} parts` : `${clean.length} clips`}`}
               </button>
             </div>
         </div>
@@ -805,6 +927,16 @@
   .nmB { flex: none; white-space: nowrap; }
   .c-when, .c-len, .c-size { color: var(--text-dim); }
   .c-span { grid-column: 4 / span 5; display: flex; align-items: center; gap: 6px; color: color-mix(in srgb, var(--reject) 80%, var(--text-dim)); font-size: 12px; }
+  /* The Segments column, only when some clip has segments. */
+  .table.segcol .row { grid-template-columns: 44px minmax(150px, 1fr) 84px 50px 92px 86px 54px 88px 70px 62px 30px; }
+  .table.segcol .c-span { grid-column: 4 / span 6; }
+  .row > .c-segs { display: flex; align-items: center; gap: 6px; color: var(--text-dim); }
+  .row.head > .c-segs { cursor: pointer; }
+  .c-segs input { flex: none; width: 14px; height: 14px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+  .c-segs span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .c-segs .dimSeg { color: var(--text-faint); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--text-faint) 60%, transparent); }
+  .c-segs.none { color: var(--text-faint); font-size: 11.5px; }
+  .c-len.cut { color: var(--accent); font-weight: 600; }
   .c-span svg { flex: none; opacity: 0.85; }
   .conv { justify-self: start; max-width: 100%; padding: 1px 5px; border-radius: 5px; background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); font-weight: 600; cursor: help; }
   .bad { justify-self: start; max-width: 100%; padding: 1px 5px; border-radius: 5px; background: color-mix(in srgb, var(--star) 17%, transparent); color: var(--star); font-weight: 620; cursor: help; }
@@ -817,22 +949,33 @@
 
   /* Narrow list: drop the columns you can live without (the row's hover
      titles and the preview caption still carry them), so the name keeps room. */
+  /* With the Segments column the full set needs ~900px. */
+  @container (max-width: 900px) {
+    .table.segcol .row { grid-template-columns: 40px minmax(140px, 1fr) 50px 92px 86px 54px 88px 70px 28px; }
+    .table.segcol .c-when, .table.segcol .c-size { display: none; }
+    .table.segcol .c-span { grid-column: 3 / span 6; }
+  }
   @container (max-width: 760px) {
     .row { grid-template-columns: 40px minmax(150px, 1fr) 50px 86px 54px 88px 70px 28px; }
     .c-when, .c-size { display: none; }
     .c-span { grid-column: 3 / span 5; }
+    .table.segcol .c-span { grid-column: 3 / span 6; }
+  }
+  @container (max-width: 680px) {
+    .table.segcol .row { grid-template-columns: 40px minmax(120px, 1fr) 46px 90px 84px 52px 86px 28px; }
+    .table.segcol .c-audio { display: none; }
+    .table.segcol .c-span { grid-column: 3 / span 5; }
   }
   @container (max-width: 600px) {
     .row { grid-template-columns: 40px minmax(140px, 1fr) 46px 84px 52px 86px 28px; }
     .c-audio { display: none; }
     .c-span { grid-column: 3 / span 4; }
+    .table.segcol .c-span { grid-column: 3 / span 5; }
   }
 
   .preview { position: relative; height: 250px; margin: 12px 14px 0; border-radius: var(--radius-md); overflow: hidden; background: #050607; display: flex; align-items: center; justify-content: center; }
   .preview img { width: 100%; height: 100%; object-fit: contain; background: #050607; }
   .stage { width: 100%; height: 100%; }
-  .playbar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: linear-gradient(transparent, rgba(0, 0, 0, 0.7)); }
-  .playbar .hint { flex: 1; color: rgba(255, 255, 255, 0.7); font-size: 11.5px; }
   .noPreview { color: var(--text-faint); font-size: 12.5px; }
   .pcap { display: flex; flex-direction: column; gap: 2px; margin: 8px 14px 0; }
   .pname { overflow: hidden; color: var(--text); font-size: 12.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
@@ -844,6 +987,8 @@
   .big { color: var(--text); font-size: 14.5px; font-weight: 650; font-variant-numeric: tabular-nums; }
   .small { margin-top: 2px; font-size: 12px; }
   .small.dim { color: var(--text-dim); line-height: 1.45; }
+  .pieces { color: var(--text-dim); font-weight: 560; }
+  .segNote { margin: 0; color: var(--text-dim); font-size: 11.5px; line-height: 1.45; }
   .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .mode { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 9px; background: color-mix(in srgb, var(--bg-elev) 45%, transparent); text-align: left; }
   .mode:hover:not(:disabled) { border-color: var(--border); }

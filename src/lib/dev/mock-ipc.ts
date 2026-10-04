@@ -260,7 +260,7 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
   },
   folder_writable: () => true,
   thumbnail: (a) => artFor(a.path, Math.min(a.max ?? 320, 480)),
-  loupe_src: (a) => artFor(a.path, 1600),
+  loupe_src: (a) => (/\.(mp4|mov)$/i.test(a.path) ? a.path : artFor(a.path, 1600)),
   video_poster: (a) => artFor(a.path, 480),
   video_poster_hires: (a) => artFor(a.path, 1600),
   capture_dates: (a) => (a.paths as string[]).map((path) => ({ path, captured: byPath.get(path)?.mtime ?? 0 })),
@@ -339,7 +339,7 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
     const label = `Merging ${n} clips → ${a.req.name}.mp4`;
     Object.assign(mockMerge, {
       state: "running", paused: false, pct: 0, label, name: `${a.req.name}.mp4`, out_path: `${a.req.destDir}/${a.req.name}.mp4`,
-      dest_dir: a.req.destDir, clips: n, total_s: 60 * n, in_bytes: 63.1e9, convert: !!a.req.convert, detail: null,
+      dest_dir: a.req.destDir, clips: n, parts: a.req.parts?.length || n, total_s: 60 * n, in_bytes: 63.1e9, convert: !!a.req.convert, detail: null,
       started_ms: Date.now(), finished_ms: 0, out_bytes: 0, error: null,
     });
     const ok = await fakeJob("merge", 100, a.req.convert ? 9000 : 6000, {
@@ -384,6 +384,10 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
     return xs;
   },
   tile_windows: () => ({ tiled: true }),
+  show_in_library: (a) => {
+    console.info(`[mock-ipc] show_in_library ${a.path}`);
+    return null;
+  },
   stash_set: (a) => lsSet(`foxcull-mock-stash-${a.key}`, a.value),
   stash_get: (a) => lsGet(`foxcull-mock-stash-${a.key}`),
   quit_app: () => null,
@@ -439,7 +443,17 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
   },
   catalog_scan: () => ({ tracked: 0, missing: 0, relinked: 0, still_missing: 0, scanned_files: 0, elapsed_ms: 3 }),
   get_trim: () => null,
-  get_video_segments: () => [],
+  // Segments persist per tab in localStorage, starting from the item's ranges,
+  // so the Merge tab sees what the library tab marked.
+  get_video_segments: (a) => lsGet(`foxcull-mock-segs-${a.path}`) ?? byPath.get(a.path)?.ranges ?? [],
+  video_ranges: (a) =>
+    Object.fromEntries((a.paths as string[]).map((p) => [p, lsGet(`foxcull-mock-segs-${p}`) ?? byPath.get(p)?.ranges ?? []])),
+  set_video_segments: (a) => {
+    lsSet(`foxcull-mock-segs-${a.path}`, a.segments);
+    const it = byPath.get(a.path);
+    if (it) it.ranges = a.segments;
+    return null;
+  },
   video_scrubstrip_cached: () => null,
   video_filmstrip_cached: () => null,
   video_proxy_cached: () => null,
@@ -507,7 +521,9 @@ export function installMockIpc() {
     },
     transformCallback: () => callbackId++,
     unregisterCallback: () => {},
-    convertFileSrc: (p: string) => p,
+    // Videos play a local sample (static/dev-sample.mp4, generated for QA and
+    // gitignored) so Focus, markers and the Edit preview can be exercised.
+    convertFileSrc: (p: string) => (/\.(mp4|mov)$/i.test(p) ? "/dev-sample.mp4" : p),
     metadata: { currentWindow: { label: "main" }, currentWebview: { windowLabel: "main", label: "main" } },
   };
   // `__setSetting({ filmstripPos: "left" })` then reload: flip any persisted
