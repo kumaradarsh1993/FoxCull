@@ -19,14 +19,16 @@
   // library window, by drag, by ⌘C/⌘V, or with E / "Add to Edit timeline",
   // and each in/out range marked in the library arrives as its own segment.
   // See docs/design/edit-window-rework.md.
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import { api } from "$lib/api";
+  import { loadVideoFilmstrip } from "$lib/thumbnail-loader";
   import type {
     ClipRef,
     EditAdjustments,
     EditExportRequest,
     EditSnapshotRequest,
     EditSourceItem,
+    FilmstripInfo,
     MediaProbe,
   } from "$lib/types";
   import ContextMenu, { type MenuEntry } from "./ContextMenu.svelte";
@@ -185,7 +187,10 @@
 
   const VIDEO_LANES = [0, 1, 2];
   const AUDIO_LANES = [0, 1, 2];
-  const TRACK_HEIGHT = 36;
+  /** Video track height; a vertical drag of this much moves a clip one track. */
+  const TRACK_HEIGHT = 46;
+  /** A video clip's height inside its track (thumbnails are drawn at this). */
+  const CLIP_H = 38;
   /** Snap reach in screen pixels. It used to be a fixed 0.16 s, which is 1-4 px
    *  at the zoom levels people use, so clips never seemed to snap. */
   const SNAP_PX = 10;
@@ -247,7 +252,7 @@
   let timelineViewportEl = $state<HTMLDivElement | null>(null);
   let timelineViewportW = $state(0);
   let inspectorPanelW = $state(320);
-  let timelinePanelH = $state(260);
+  let timelinePanelH = $state(300);
   /** Width of the whole studio, for sharing it out below. */
   let shellW = $state(0);
 
@@ -2299,6 +2304,171 @@
     updateClip(selectedClip.id, { zoom: next });
   }
 
+  // ── 2026-10 redesign helpers: thumbnails, transport, ruler, zoom ─────────
+
+  /** Which inspector tab shows: the look of the whole edit, or the selected clip. */
+  let inspTab = $state<"look" | "clip">("look");
+  /** Group filter for the look presets ("all" or a LOOK_GROUPS id). */
+  let lookFilterGroup = $state<"all" | LookGroupId>("all");
+
+  // Clip thumbnails. A poster first (cheap, usually cached from the grid), then
+  // the clip's Focus filmstrip, built one clip at a time and never while the
+  // timeline is playing, so the frames along each clip are real.
+  let posters = $state<Record<string, string | null>>({});
+  let strips = $state<Record<string, FilmstripInfo | null>>({});
+  const stripQueue: string[] = [];
+  let stripBusy = false;
+  $effect(() => {
+    const paths = [...new Set(clips.map((c) => c.path))];
+    const gone = unavailable;
+    untrack(() => {
+      for (const p of paths) {
+        if (gone.has(p)) continue;
+        if (!(p in posters)) {
+          posters[p] = null;
+          api.videoPoster(p).then((f) => (posters[p] = api.fileSrc(f))).catch(() => {});
+        }
+        if (!(p in strips) && !stripQueue.includes(p)) stripQueue.push(p);
+      }
+    });
+    void pumpStrips();
+  });
+  async function pumpStrips() {
+    if (stripBusy) return;
+    stripBusy = true;
+    while (stripQueue.length) {
+      while (playing) await new Promise((r) => setTimeout(r, 600));
+      const p = stripQueue.shift()!;
+      if (p in strips) continue;
+      strips[p] = null;
+      try {
+        const f = (await api.videoFilmstripCached(p)) ?? (await loadVideoFilmstrip(p));
+        if (f) strips[p] = { ...f, src: api.fileSrc(f.src) };
+      } catch {
+        /* no strip: the clip keeps its poster */
+      }
+    }
+    stripBusy = false;
+  }
+
+  /** The frames along a clip `w` px wide and `h` px tall, as positioned tiles. */
+  function clipTiles(clip: TimelineClip, w: number, h: number): { x: number; w: number; css: string }[] {
+    const f = strips[clip.path];
+    if (!f || !f.count || !f.tile_w || !f.tile_h) return [];
+    const tw = Math.max(24, Math.round((h * f.tile_w) / f.tile_h));
+    const n = Math.min(160, Math.ceil(w / tw));
+    const out: { x: number; w: number; css: string }[] = [];
+    for (let k = 0; k < n; k++) {
+      const x = k * tw;
+      const t = Math.min(clip.outS, clip.inS + (x + tw / 2) / timelineScale);
+      out.push({ x, w: tw, css: spriteCss(f, t, tw, h) });
+    }
+    return out;
+  }
+  function spriteCss(f: FilmstripInfo, t: number, w: number, h: number): string {
+    const i = Math.min(f.count - 1, Math.max(0, Math.floor((t / (f.duration || 1)) * f.count)));
+    const sc = Math.max(w / f.tile_w, h / f.tile_h);
+    const col = i % f.cols;
+    const row = Math.floor(i / f.cols);
+    const dx = (w - f.tile_w * sc) / 2 - col * f.tile_w * sc;
+    const dy = (h - f.tile_h * sc) / 2 - row * f.tile_h * sc;
+    return `background-image:url("${f.src}");background-size:${f.cols * f.tile_w * sc}px ${f.rows * f.tile_h * sc}px;background-position:${dx}px ${dy}px`;
+  }
+  /** The picture the look tiles preview on: the selected clip, else the first. */
+  let lookThumb = $derived((selectedClip && posters[selectedClip.path]) || (clips[0] && posters[clips[0].path]) || null);
+
+  /** "1:04.37": minutes, seconds and hundredths, for the transport (fine
+   *  enough that stepping one frame visibly moves it). */
+  function fmtTC(s: number) {
+    if (!Number.isFinite(s) || s < 0) s = 0;
+    const cs = Math.floor(s * 100 + 1e-6);
+    const h = Math.floor(cs / 360000);
+    const m = Math.floor((cs % 360000) / 6000);
+    const sec = Math.floor((cs % 6000) / 100);
+    const c = cs % 100;
+    const mm = h ? `${h}:${m.toString().padStart(2, "0")}` : `${m}`;
+    return `${mm}:${sec.toString().padStart(2, "0")}.${c.toString().padStart(2, "0")}`;
+  }
+
+  /** One frame of the clip under the playhead (30 fps when unknown). */
+  export function stepFrame(dir: -1 | 1) {
+    if (productionPreview) return;
+    if (playing) stopPlayback();
+    const clip = segAt(playheadS)?.clip;
+    const fps = (clip && probes[clip.path]?.fps) || 30;
+    seekTimeline(playheadS + dir / fps);
+  }
+  export function goToEdge(end: boolean) {
+    if (productionPreview) return;
+    seekTimeline(end ? videoEnd : 0);
+  }
+
+  // The program bar under the preview: drag anywhere on it to scrub.
+  function startProgramScrub(e: PointerEvent) {
+    if (!clips.length || e.button !== 0) return;
+    e.preventDefault();
+    const el = e.currentTarget as HTMLElement;
+    const rect = el.getBoundingClientRect();
+    const toTime = (x: number) => Math.max(0, Math.min(videoEnd, ((x - rect.left) / Math.max(1, rect.width)) * videoEnd));
+    seekTimeline(toTime(e.clientX));
+    const move = (ev: PointerEvent) => seekTimeline(toTime(ev.clientX));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  // Timeline ruler: labelled every `rulerStep` seconds (at least ~64 px
+  // apart at any zoom), with minor ticks between.
+  let rulerStep = $derived([1, 2, 5, 10, 15, 30, 60, 120, 300, 600].find((st) => st * timelineScale >= 64) ?? 600);
+  let rulerMinor = $derived(rulerStep * timelineScale >= 120 ? rulerStep / 5 : rulerStep / 2);
+
+  // The track names stay at the left edge while the timeline scrolls sideways.
+  let tlScrollX = $state(0);
+
+  // The timeline follows the playhead: when it runs (or is sent) off either
+  // side, the view pages so the playhead sits near the left again. Not while
+  // a clip is being dragged, which moves the view itself.
+  // Only the playhead moving triggers this (zooming keeps its own anchor).
+  $effect(() => {
+    const ph = playheadS;
+    const vp = timelineViewportEl;
+    if (!vp || timelineDrag) return;
+    untrack(() => {
+      const x = TIMELINE_TRACK_OFFSET + ph * timelineScale;
+      const left = vp.scrollLeft + TIMELINE_TRACK_OFFSET;
+      const right = vp.scrollLeft + vp.clientWidth - 24;
+      if (x < left || x > right) vp.scrollLeft = Math.max(0, x - TIMELINE_TRACK_OFFSET - 60);
+    });
+  });
+
+  function zoomBy(f: number) {
+    const vp = timelineViewportEl;
+    const old = timelineScale;
+    const next = clampTimelineScale(old * f);
+    if (next === old) return;
+    // Keep the playhead where it is on screen.
+    const anchor = vp ? TIMELINE_TRACK_OFFSET + playheadS * old - vp.scrollLeft : 0;
+    timelineScale = next;
+    void tick().then(() => {
+      if (vp) vp.scrollLeft = Math.max(0, TIMELINE_TRACK_OFFSET + playheadS * next - anchor);
+    });
+  }
+  function fitTimeline() {
+    timelineScale = timelineZoomMin;
+    if (timelineViewportEl) timelineViewportEl.scrollLeft = 0;
+  }
+
+  /** A small rectangle in the output's shape, for the aspect buttons. */
+  function aspectGlyph(id: string): string {
+    const p = PRESETS[id as PresetId];
+    if (!p || !p.w) return "width:14px;height:10px";
+    const r = p.w / p.h;
+    return r >= 1 ? `width:14px;height:${Math.round(14 / r)}px` : `width:${Math.round(14 * r)}px;height:14px`;
+  }
+
   async function onTimelineWheel(e: WheelEvent) {
     if (!e.ctrlKey) return;
     const viewport = e.currentTarget as HTMLDivElement;
@@ -2329,26 +2499,42 @@
 >
   <section class="workPane">
     <div class="editTop">
-      <div class="presetGroup">
-        {#each Object.entries(PRESETS) as [id, p]}
-          <button class:on={preset === id} onclick={() => setPreset(id as PresetId)}>
-            <strong>{p.label}</strong>
-            <span>{p.detail}</span>
+      <div class="brand">
+        <span class="brandIco" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3" /><path d="M3 15h18M8 15v4M13 15v4" /></svg>
+        </span>
+        <span class="brandText">
+          <strong>Edit</strong>
+          <span>{clips.length ? `${clips.length} clip${clips.length === 1 ? "" : "s"} · ${fmt(programSeconds)}` : "Empty timeline"}</span>
+        </span>
+      </div>
+      <div class="aspects" role="radiogroup" aria-label="Output shape">
+        {#each Object.entries(PRESETS) as [id, p] (id)}
+          <button class:on={preset === id} role="radio" aria-checked={preset === id} onclick={() => setPreset(id as PresetId)} title={`${p.label} · ${p.detail}`}>
+            <i class="ar" class:free={p.fit === "original"} style={aspectGlyph(id)}></i>
+            <span>{p.label}</span>
           </button>
         {/each}
       </div>
-      <div class="layoutTools">
-        <button class="miniBtn" class:on={!timelineCollapsed} onclick={() => (timelineCollapsed = !timelineCollapsed)}>Timeline</button>
-        <button class="miniBtn" class:on={!inspectorCollapsed} onclick={() => (inspectorCollapsed = !inspectorCollapsed)}>Look</button>
-        {#if onsidebyside}
-          <button class="miniBtn" onclick={onsidebyside} title="Library on the left, Edit on the right">Side by side</button>
-        {/if}
-      </div>
       <span class="topGap"></span>
-      <button class="miniBtn" class:on={productionPreview} onclick={toggleProductionPreview} disabled={!selectedClip}>
-        Preview
-      </button>
       {#if frameToast}<span class="topToast" aria-live="polite">{frameToast}</span>{/if}
+      <div class="viewTools">
+        {#if onsidebyside}
+          <button class="iconBtn" onclick={onsidebyside} title="Library on the left, Edit on the right" aria-label="Put the library beside this window">
+            <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5" /><path d="M10 4.5v15" /></svg>
+          </button>
+        {/if}
+        <button class="iconBtn" class:on={!timelineCollapsed} onclick={() => (timelineCollapsed = !timelineCollapsed)} title={timelineCollapsed ? "Show the timeline" : "Hide the timeline"} aria-pressed={!timelineCollapsed} aria-label="Timeline">
+          <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5" /><path d="M3 13h18M7 16.2h6M9 9h8" /></svg>
+        </button>
+        <button class="iconBtn" class:on={!inspectorCollapsed} onclick={() => (inspectorCollapsed = !inspectorCollapsed)} title={inspectorCollapsed ? "Show the Look panel" : "Hide the Look panel"} aria-pressed={!inspectorCollapsed} aria-label="Look panel">
+          <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5" /><path d="M15 4.5v15M17.5 8.5h1M17.5 11.5h1" /></svg>
+        </button>
+      </div>
+      <button class="pillBtn" class:on={productionPreview} onclick={toggleProductionPreview} disabled={!selectedClip} title="See the selected clip exactly as it will export (F for full screen)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12s-3.5 6.5-9.5 6.5S2.5 12 2.5 12z" /><circle cx="12" cy="12" r="2.8" /></svg>
+        <span class="pillText">Preview</span>
+      </button>
       <div class="exportOpts">
         {#if exporting}
           <div class="exportProgress" title="Export in progress">
@@ -2367,6 +2553,7 @@
             disabled={!clips.length}
             title={needsRender ? "Export — this aspect/look needs a re-render (details in the dialog)" : "Export — stream copy ready (details in the dialog)"}
           >
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14" /></svg>
             Export{#if needsRender}<span class="reDot" aria-hidden="true"></span>{/if}
           </button>
           <button
@@ -2376,7 +2563,7 @@
             disabled={!clips.length}
             aria-label="Export options"
             title="Quick export"
-          >▾</button>
+          ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg></button>
         </div>
         {/if}
         {#if exportMenuOpen}
@@ -2499,17 +2686,53 @@
     </div>
 
     <div class="transport">
-      <button class="play" onclick={togglePlay} disabled={!clips.length}>{playing ? "Pause" : "Play"}</button>
-      <span class="time">{fmt(playheadS)} / {fmt(videoEnd)}</span>
-      <input
-        type="range"
-        min="0"
-        max={videoEnd || 1}
-        step="0.01"
-        value={playheadS}
-        disabled={!clips.length}
-        oninput={(e) => seekTimeline(Number((e.currentTarget as HTMLInputElement).value))}
-      />
+      <div class="tc" aria-label="Playhead time">
+        <span class="tcNow">{fmtTC(playheadS)}</span>
+        <span class="tcTotal">{fmtTC(videoEnd)}</span>
+      </div>
+      <div class="tBtns">
+        <button class="tBtn" onclick={() => goToEdge(false)} disabled={!clips.length} title="Go to start (Home)" aria-label="Go to start">
+          <svg viewBox="0 0 24 24"><path d="M6 5v14" /><path d="M18 6.5v11a.6.6 0 0 1-.92.5L9.6 12.5a.6.6 0 0 1 0-1l7.48-5.5a.6.6 0 0 1 .92.5z" class="fill" /></svg>
+        </button>
+        <button class="tBtn" onclick={() => stepFrame(-1)} disabled={!clips.length} title="Back one frame (←)" aria-label="Back one frame">
+          <svg viewBox="0 0 24 24"><path d="m14.5 6-6 6 6 6" /></svg>
+        </button>
+        <button class="tPlay" class:on={playing} onclick={togglePlay} disabled={!clips.length} title={playing ? "Pause (Space)" : "Play (Space)"} aria-label={playing ? "Pause" : "Play"}>
+          {#if playing}
+            <svg viewBox="0 0 24 24"><rect x="7" y="5.5" width="3.6" height="13" rx="1" class="fill" /><rect x="13.4" y="5.5" width="3.6" height="13" rx="1" class="fill" /></svg>
+          {:else}
+            <svg viewBox="0 0 24 24"><path d="M8.5 6.2v11.6a.7.7 0 0 0 1.06.6l9.2-5.8a.7.7 0 0 0 0-1.2l-9.2-5.8a.7.7 0 0 0-1.06.6z" class="fill" /></svg>
+          {/if}
+        </button>
+        <button class="tBtn" onclick={() => stepFrame(1)} disabled={!clips.length} title="Forward one frame (→)" aria-label="Forward one frame">
+          <svg viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6" /></svg>
+        </button>
+        <button class="tBtn" onclick={() => goToEdge(true)} disabled={!clips.length} title="Go to end (End)" aria-label="Go to end">
+          <svg viewBox="0 0 24 24"><path d="M18 5v14" /><path d="M6 6.5v11a.6.6 0 0 0 .92.5l7.48-5.5a.6.6 0 0 0 0-1L6.92 6a.6.6 0 0 0-.92.5z" class="fill" /></svg>
+        </button>
+      </div>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="progBar"
+        class:off={!clips.length}
+        onpointerdown={startProgramScrub}
+        role="slider"
+        tabindex="-1"
+        aria-label="Scrub the edit"
+        aria-valuemin={0}
+        aria-valuemax={Math.round(videoEnd)}
+        aria-valuenow={Math.round(playheadS)}
+      >
+        <span class="pTrack">
+          {#each program as seg (seg.start)}
+            {#if seg.clip && videoEnd > 0}
+              <i class="pSeg" style="left:{(seg.start / videoEnd) * 100}%; width:{((seg.end - seg.start) / videoEnd) * 100}%"></i>
+            {/if}
+          {/each}
+          <i class="pFill" style="width:{videoEnd > 0 ? (playheadS / videoEnd) * 100 : 0}%"></i>
+        </span>
+        <i class="pKnob" style="left:{videoEnd > 0 ? (playheadS / videoEnd) * 100 : 0}%"></i>
+      </div>
     </div>
 
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -2517,45 +2740,84 @@
 
     <section class="timeline" aria-label="Edit timeline">
       <div class="timelineHead">
-        <strong>Timeline</strong>
-        <span>{clips.length} video · {audioClips.length} audio · {fmt(programSeconds)}</span>
-        <label class="scale">Zoom <input type="range" min={timelineZoomMin} max={TIMELINE_ZOOM_MAX} step="0.1" bind:value={timelineScale} /></label>
-        <button class="snap" class:off={!snapOn} onclick={() => (snapOn = !snapOn)} aria-pressed={snapOn} title={snapOn ? "Snapping on: clip edges catch on other edges and the playhead. Hold ⌥ while dragging to place freely." : "Snapping off"}>Snap</button>
+        <div class="tlTitle">
+          <strong>Timeline</strong>
+          <span>{clips.length} video · {audioClips.length} audio</span>
+        </div>
+        <div class="tlTools">
+          <button class="tool" onclick={cutAtPlayhead} disabled={!clips.length} title="Split at the playhead (C)">
+            <svg viewBox="0 0 24 24"><circle cx="6.5" cy="6.5" r="2.5" /><circle cx="6.5" cy="17.5" r="2.5" /><path d="M8.6 8 20 18.5M8.6 16 20 5.5" /></svg>
+            <span>Split</span>
+          </button>
+          <button class="tool" class:on={snapOn} onclick={() => (snapOn = !snapOn)} aria-pressed={snapOn} title={snapOn ? "Snapping on: clip edges catch on other edges and the playhead. Hold ⌥ while dragging to place freely." : "Snapping off"}>
+            <svg viewBox="0 0 24 24"><path d="M6 4v7a6 6 0 0 0 12 0V4" /><path d="M6 4h3.5v7a2.5 2.5 0 0 0 5 0V4H18" /><path d="M6 8h3.5M14.5 8H18" /></svg>
+            <span>Snap</span>
+          </button>
+          <button class="tool" onclick={pickAudio} title="Add a song or a sound to the audio tracks">
+            <svg viewBox="0 0 24 24"><path d="M9 18V5.5l10-2V16" /><circle cx="6.5" cy="18" r="2.5" /><circle cx="16.5" cy="16" r="2.5" /></svg>
+            <span>Music</span>
+          </button>
+        </div>
         <span class="spacer"></span>
-        <button class="ghost" onclick={cutAtPlayhead} disabled={!clips.length} title="Split at playhead (C)">✂ Cut</button>
-        <button class="ghost" onclick={() => (timelineCollapsed = true)}>Collapse</button>
-        <button class="ghost" onclick={clearTimeline} disabled={!clips.length && !audioClips.length}>Clear</button>
+        <div class="zoomCtl" title="Zoom (pinch, or ⌘/Ctrl + scroll on the timeline)">
+          <button class="tool icon" onclick={() => zoomBy(0.8)} aria-label="Zoom out"><svg viewBox="0 0 24 24"><path d="M6 12h12" /></svg></button>
+          <input type="range" min={timelineZoomMin} max={TIMELINE_ZOOM_MAX} step="0.1" bind:value={timelineScale} aria-label="Zoom" />
+          <button class="tool icon" onclick={() => zoomBy(1.25)} aria-label="Zoom in"><svg viewBox="0 0 24 24"><path d="M6 12h12M12 6v12" /></svg></button>
+          <button class="tool" onclick={fitTimeline} title="Fit the whole edit">Fit</button>
+        </div>
+        <button class="tool" onclick={clearTimeline} disabled={!clips.length && !audioClips.length} title="Remove everything from the timeline">
+          <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2M6.5 7l1 12.5h9l1-12.5" /></svg>
+          <span>Clear</span>
+        </button>
+        <button class="tool icon" onclick={() => (timelineCollapsed = true)} title="Hide the timeline" aria-label="Hide the timeline">
+          <svg viewBox="0 0 24 24"><path d="m7 10 5 5 5-5" /></svg>
+        </button>
       </div>
-      <div class="timelineViewport" bind:this={timelineViewportEl} onwheel={onTimelineWheel}>
+      <div class="timelineViewport" bind:this={timelineViewportEl} onwheel={onTimelineWheel} onscroll={(e) => (tlScrollX = (e.currentTarget as HTMLElement).scrollLeft)}>
         <div class="timelineCanvas" style="width:{timelineWidth}px">
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="ruler" onpointerdown={startRulerScrub} role="slider" tabindex="-1" aria-label="Scrub playhead" aria-valuenow={Math.round(playheadS)}>
-            {#each Array(Math.ceil(timelineEnd / 5) + 1) as _, i}
-              <span style="left:{i * 5 * timelineScale}px">{fmt(i * 5)}</span>
+          <div
+            class="ruler"
+            onpointerdown={startRulerScrub}
+            role="slider"
+            tabindex="-1"
+            aria-label="Scrub playhead"
+            aria-valuenow={Math.round(playheadS)}
+            style="--minor:{rulerMinor * timelineScale}px"
+          >
+            {#each Array(Math.ceil(timelineEnd / rulerStep) + 1) as _, i (i)}
+              <span style="left:{i * rulerStep * timelineScale}px">{fmt(i * rulerStep)}</span>
             {/each}
           </div>
 
-          {#each VIDEO_LANES as lane}
+          {#each VIDEO_LANES as lane (lane)}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="track videoTrack" onpointerdown={onTrackClick} ondragover={allowDrop} ondrop={(e) => dropOnLane(e, "video", lane)}>
-              <span class="trackLabel">V{lane + 1}</span>
               {#each clips.filter((c) => c.lane === lane) as clip (clip.id)}
                 {@const why = mismatchOf(clip.path)}
+                {@const w = Math.max(42, clipLen(clip) * timelineScale)}
                 <button
                   class="timelineClip video"
                   class:on={selectedIds.has(clip.id)}
                   class:gone={unavailable.has(clip.path)}
-                  style="left:{clip.start * timelineScale}px; width:{Math.max(42, clipLen(clip) * timelineScale)}px"
+                  style="left:{clip.start * timelineScale}px; width:{w}px"
                   onclick={(e) => onClipClick(e, clip)}
                   oncontextmenu={(e) => openTimelineMenu(e, clip)}
                   onpointerdown={(e) => startTimelinePointer(e, "video", clip.id, "move")}
                   title={unavailable.has(clip.path) ? `${clip.path}\nNot available — is its drive plugged in?` : why ? `${clip.path}\nDiffers from the timeline: ${why}` : clip.path}
                 >
+                  <span class="thumbs" style={!strips[clip.path] && posters[clip.path] ? `background-image:url("${posters[clip.path]}")` : ""} aria-hidden="true">
+                    {#each clipTiles(clip, w, CLIP_H) as t (t.x)}
+                      <i style="left:{t.x}px; width:{t.w}px; {t.css}"></i>
+                    {/each}
+                  </span>
                   <!-- svelte-ignore a11y_no_static_element_interactions -->
                   <span class="handle left" onpointerdown={(e) => startTimelinePointer(e, "video", clip.id, "trimIn")}></span>
-                  {#if why}<span class="mm" aria-label="Differs from the timeline">≠</span>{/if}
-                  <strong>{clip.name}</strong>
-                  <em>{fmt(clipLen(clip))}</em>
+                  <span class="clipLabel">
+                    {#if why}<span class="mm" aria-label="Differs from the timeline">≠</span>{/if}
+                    <strong>{clip.name}</strong>
+                    <em>{fmt(clipLen(clip))}</em>
+                  </span>
                   <!-- svelte-ignore a11y_no_static_element_interactions -->
                   <span class="handle right" onpointerdown={(e) => startTimelinePointer(e, "video", clip.id, "trimOut")}></span>
                 </button>
@@ -2563,10 +2825,11 @@
             </div>
           {/each}
 
-          {#each AUDIO_LANES as lane}
+          <div class="laneGap" aria-hidden="true"></div>
+
+          {#each AUDIO_LANES as lane (lane)}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="track audioTrack" class:firstAudio={lane === 0} onpointerdown={onTrackClick} ondragover={allowDrop} ondrop={(e) => dropOnLane(e, "audio", lane)}>
-              <span class="trackLabel">A{lane + 1}</span>
+            <div class="track audioTrack" onpointerdown={onTrackClick} ondragover={allowDrop} ondrop={(e) => dropOnLane(e, "audio", lane)}>
               <!-- Source-audio mirrors: slim, non-interactive bars echoing every video clip
                    on Vn. Derived from `clips`, not stored — they play/export with the clip. -->
               {#each clips.filter((c) => c.lane === lane) as v (v.id)}
@@ -2586,12 +2849,28 @@
                   onpointerdown={(e) => startTimelinePointer(e, "audio", clip.id, "move")}
                   title={clip.path}
                 >
-                  <strong>{clip.name}</strong>
-                  <em>{fmt(clip.duration)}</em>
+                  <span class="clipLabel">
+                    <svg class="note" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5.5l10-2V16" /><circle cx="6.5" cy="18" r="2.5" /><circle cx="16.5" cy="16" r="2.5" /></svg>
+                    <strong>{clip.name}</strong>
+                    <em>{fmt(clip.duration)}</em>
+                  </span>
                 </button>
               {/each}
             </div>
           {/each}
+
+          <!-- Track names: a column that stays at the left edge while the
+               timeline scrolls sideways (clips slide under it). -->
+          <div class="trackHeads" style="transform:translateX({tlScrollX}px)" aria-hidden="true">
+            <div class="thCorner"></div>
+            {#each VIDEO_LANES as lane (lane)}
+              <div class="th video"><span>V{lane + 1}</span></div>
+            {/each}
+            <div class="thGap"></div>
+            {#each AUDIO_LANES as lane (lane)}
+              <div class="th audio"><span>A{lane + 1}</span></div>
+            {/each}
+          </div>
 
           {#if clips.length}
             <div class="playhead" style="left:{TIMELINE_TRACK_OFFSET + playheadS * timelineScale}px"></div>
@@ -2608,146 +2887,137 @@
   <div class="panelSplitter inspectorSplitter" onpointerdown={startInspectorResize} role="separator" title="Resize look panel"></div>
 
   <aside class="inspector">
-    <div class="block segmentBlock">
-      <h3>Segment</h3>
-      {#if selectedClip}
-        <div class="row">
-          <button class="miniBtn" onclick={setIn}>Set in</button>
-          <input type="number" min="0" max={selectedClip.outS} step="0.01" value={selectedClip.inS} oninput={(e) => updateSelectedClip({ inS: Number((e.currentTarget as HTMLInputElement).value) })} onchange={clampTrim} />
-        </div>
-        <div class="row">
-          <button class="miniBtn" onclick={setOut}>Set out</button>
-          <input type="number" min={selectedClip.inS} max={selectedClip.duration} step="0.01" value={selectedClip.outS} oninput={(e) => updateSelectedClip({ outS: Number((e.currentTarget as HTMLInputElement).value) })} onchange={clampTrim} />
-        </div>
-        <div class="small">Length {fmt(selectedClip.outS - selectedClip.inS)} · Track V{selectedClip.lane + 1}</div>
-        {#if outPreset.fit !== "original"}
-          <label>Crop X <input type="range" min="0" max="1" step="0.001" value={selectedClip.cropX} oninput={(e) => updateSelectedClip({ cropX: Number((e.currentTarget as HTMLInputElement).value) })} /></label>
-          <label>Crop Y <input type="range" min="0" max="1" step="0.001" value={selectedClip.cropY} oninput={(e) => updateSelectedClip({ cropY: Number((e.currentTarget as HTMLInputElement).value) })} /></label>
-          <label>Zoom <input type="range" min="1" max="4" step="0.01" value={selectedClip.zoom} oninput={(e) => updateSelectedClip({ zoom: Number((e.currentTarget as HTMLInputElement).value) })} /></label>
-        {/if}
-        <button class="dangerBtn" onclick={() => removeClip(selectedClip.id)}>Remove clip</button>
-      {:else if selectedAudio}
-        <p class="small">{selectedAudio.name}</p>
-        <button class="dangerBtn" onclick={() => removeAudio(selectedAudio.id)}>Remove audio</button>
-      {:else}
-        <p class="small">Select a timeline clip.</p>
-      {/if}
-    </div>
-
-    <div class="block lookBlock">
-      <button class="blockHead" onclick={() => (inspectorCollapsed = true)} title="Collapse look panel">
-        <h3>Look</h3>
-        <span>Hide</span>
+    <div class="inspHead">
+      <div class="inspTabs" role="tablist" aria-label="Panel">
+        <button role="tab" aria-selected={inspTab === "look"} class:on={inspTab === "look"} onclick={() => (inspTab = "look")}>Look</button>
+        <button role="tab" aria-selected={inspTab === "clip"} class:on={inspTab === "clip"} onclick={() => (inspTab = "clip")}>Clip</button>
+      </div>
+      <button class="iconBtn sm" onclick={() => (inspectorCollapsed = true)} title="Hide this panel" aria-label="Hide this panel">
+        <svg viewBox="0 0 24 24"><path d="m10 7 5 5-5 5" /></svg>
       </button>
-      <div class="lookGroupsHead">
-        <p class="groupLabel">Presets</p>
-        <button class="miniBtn ghost" onclick={resetColor} title="Clear the look — back to the untouched image" disabled={neutralLook}>Reset look</button>
-      </div>
-      <div class="lookGroups">
-        {#each LOOK_GROUPS as group (group.id)}
-          {@const activeInGroup = group.presets.some((id) => id === activeLook)}
-          <section class="lookGroup" class:open={lookGroupOpen[group.id]}>
-            <button
-              class="lookGroupHead"
-              onclick={() => toggleLookGroup(group.id)}
-              aria-expanded={lookGroupOpen[group.id]}
-              title={lookGroupOpen[group.id] ? `Collapse ${group.label}` : `Expand ${group.label}`}
-            >
-              <span class="lgCaret" aria-hidden="true">▸</span>
-              <span class="lgTitle">{group.label}</span>
-              {#if activeInGroup}<span class="lgDot" title="A look in this group is active"></span>{/if}
-              <span class="lgCount">{group.presets.length}</span>
-            </button>
-            {#if lookGroupOpen[group.id]}
-              <div class="lookPresets">
-                {#each group.presets as id (id)}
-                  {@const look = LOOK_PRESETS[id]}
-                  <button
-                    class="lookPreset"
-                    class:active={activeLook === id}
-                    onclick={() => applyLook(id)}
-                    title={look.hint}
-                  >
-                    <span class="swatch" style="filter:{lookFilter(look.values)}"></span>
-                    <span class="lpText">
-                      <strong>{look.label}</strong>
-                      <span>{look.hint}</span>
-                    </span>
-                  </button>
-                {/each}
-              </div>
-            {/if}
-          </section>
-        {/each}
-      </div>
-      {#if activeLook}
-        <label class="lookIntensity">
-          <span class="adjLabel">Intensity <em class="adjVal">{Math.round(lookIntensity * 100)}%</em></span>
-          <input
-            type="range"
-            min="0"
-            max="1.5"
-            step="0.01"
-            value={lookIntensity}
-            oninput={(e) => setLookIntensity(Number((e.currentTarget as HTMLInputElement).value))}
-            ondblclick={() => setLookIntensity(1)}
-          />
-        </label>
-      {/if}
-      <div class="groupDivider">
-        <span class="groupLabel">Adjust</span>
-        <button class="miniBtn ghost" onclick={resetColor} title="Reset all adjustments">Reset all</button>
-      </div>
-      <p class="adjHint">Double-click a slider to reset just that control.</p>
-      <label><span class="adjLabel">Brightness <em class="adjVal">{adjReadout("brightness")}</em></span><input type="range" min="-0.5" max="0.5" step="0.01" bind:value={adjustments.brightness} oninput={detachLook} ondblclick={() => resetAdj("brightness")} /></label>
-      <label><span class="adjLabel">Contrast <em class="adjVal">{adjReadout("contrast")}</em></span><input type="range" min="0.5" max="1.8" step="0.01" bind:value={adjustments.contrast} oninput={detachLook} ondblclick={() => resetAdj("contrast")} /></label>
-      <label><span class="adjLabel">Saturation <em class="adjVal">{adjReadout("saturation")}</em></span><input type="range" min="0" max="2" step="0.01" bind:value={adjustments.saturation} oninput={detachLook} ondblclick={() => resetAdj("saturation")} /></label>
-      <label><span class="adjLabel">Warmth <em class="adjVal">{adjReadout("warmth")}</em></span><input type="range" min="-0.5" max="0.5" step="0.01" bind:value={adjustments.warmth} oninput={detachLook} ondblclick={() => resetAdj("warmth")} /></label>
-      <label><span class="adjLabel">Split tone <em class="adjVal">{adjReadout("splitTone")}</em></span><input type="range" min="0" max="1" step="0.01" bind:value={adjustments.splitTone} oninput={detachLook} ondblclick={() => resetAdj("splitTone")} /></label>
-      <label><span class="adjLabel">Sharpen <em class="adjVal">{adjReadout("sharpen")}</em></span><input type="range" min="0" max="1" step="0.01" bind:value={adjustments.sharpen} oninput={detachLook} ondblclick={() => resetAdj("sharpen")} /></label>
     </div>
 
-    {#if selectedClip}
-      <div class="block clipInfo">
-        <p class="groupLabel">Source → Output</p>
-        <dl>
-          <div><dt>Resolution</dt><dd>{probes[selectedClip.path]?.width ?? "–"}×{probes[selectedClip.path]?.height ?? "–"}</dd></div>
-          <div><dt>Frame rate</dt><dd>{probes[selectedClip.path]?.fps ? `${Math.round(probes[selectedClip.path]?.fps ?? 0)} fps` : "–"}</dd></div>
-          <div><dt>Codec</dt><dd>{probes[selectedClip.path]?.codec ?? "–"}{probes[selectedClip.path]?.hdr ? " · HDR" : ""}</dd></div>
-          <div><dt>Trim</dt><dd>{fmt(selectedClip.outS - selectedClip.inS)} of {fmt(selectedClip.duration)}</dd></div>
-          <div><dt>Output</dt><dd>{outPreset.fit === "original" ? "Original" : `${outPreset.w}×${outPreset.h}`}</dd></div>
-        </dl>
+    {#if inspTab === "look"}
+      <div class="inspBody">
+        <div class="secHead">
+          <span>Presets</span>
+          <button class="linkBtn" onclick={resetColor} title="Clear the look: back to the untouched picture" disabled={neutralLook}>Reset</button>
+        </div>
+        <div class="lookChips" role="radiogroup" aria-label="Preset group">
+          <button class:on={lookFilterGroup === "all"} role="radio" aria-checked={lookFilterGroup === "all"} onclick={() => (lookFilterGroup = "all")}>All</button>
+          {#each LOOK_GROUPS as g (g.id)}
+            <button class:on={lookFilterGroup === g.id} role="radio" aria-checked={lookFilterGroup === g.id} onclick={() => (lookFilterGroup = g.id)}>
+              {g.label}{#if g.presets.some((id) => id === activeLook)}<i class="chipDot"></i>{/if}
+            </button>
+          {/each}
+        </div>
+        <div class="lookGrid">
+          {#each LOOK_GROUPS.filter((g) => lookFilterGroup === "all" || g.id === lookFilterGroup).flatMap((g) => g.presets) as id (id)}
+            {@const look = LOOK_PRESETS[id]}
+            <button class="lookTile" class:active={activeLook === id} onclick={() => applyLook(id)} title={look.hint}>
+              <span
+                class="lookImg"
+                class:fallback={!lookThumb}
+                style={`${lookThumb ? `background-image:url("${lookThumb}");` : ""}filter:${lookFilter(look.values)}`}
+              ></span>
+              <span class="lookName">{look.label}</span>
+            </button>
+          {/each}
+        </div>
+        {#if activeLook}
+          <label class="slider">
+            <span class="sLabel">Intensity <em>{Math.round(lookIntensity * 100)}%</em></span>
+            <input
+              type="range"
+              min="0"
+              max="1.5"
+              step="0.01"
+              value={lookIntensity}
+              oninput={(e) => setLookIntensity(Number((e.currentTarget as HTMLInputElement).value))}
+              ondblclick={() => setLookIntensity(1)}
+            />
+          </label>
+        {/if}
+
+        <div class="secHead adjust">
+          <span>Adjust</span>
+          <button class="linkBtn" onclick={resetColor} title="Reset every adjustment" disabled={neutralLook}>Reset all</button>
+        </div>
+        <div class="sliders" title="Double-click a slider to reset just that one">
+          <label class="slider"><span class="sLabel">Brightness <em>{adjReadout("brightness")}</em></span><input type="range" min="-0.5" max="0.5" step="0.01" bind:value={adjustments.brightness} oninput={detachLook} ondblclick={() => resetAdj("brightness")} /></label>
+          <label class="slider"><span class="sLabel">Contrast <em>{adjReadout("contrast")}</em></span><input type="range" min="0.5" max="1.8" step="0.01" bind:value={adjustments.contrast} oninput={detachLook} ondblclick={() => resetAdj("contrast")} /></label>
+          <label class="slider"><span class="sLabel">Saturation <em>{adjReadout("saturation")}</em></span><input type="range" min="0" max="2" step="0.01" bind:value={adjustments.saturation} oninput={detachLook} ondblclick={() => resetAdj("saturation")} /></label>
+          <label class="slider"><span class="sLabel">Warmth <em>{adjReadout("warmth")}</em></span><input type="range" min="-0.5" max="0.5" step="0.01" bind:value={adjustments.warmth} oninput={detachLook} ondblclick={() => resetAdj("warmth")} /></label>
+          <label class="slider"><span class="sLabel">Split tone <em>{adjReadout("splitTone")}</em></span><input type="range" min="0" max="1" step="0.01" bind:value={adjustments.splitTone} oninput={detachLook} ondblclick={() => resetAdj("splitTone")} /></label>
+          <label class="slider"><span class="sLabel">Sharpen <em>{adjReadout("sharpen")}</em></span><input type="range" min="0" max="1" step="0.01" bind:value={adjustments.sharpen} oninput={detachLook} ondblclick={() => resetAdj("sharpen")} /></label>
+        </div>
+        <p class="hint">Double-click a slider to reset just that one. The look applies to the whole edit.</p>
+      </div>
+    {:else}
+      <div class="inspBody">
+        {#if selectedClip}
+          <div class="clipCard">
+            <span class="ccThumb" style={posters[selectedClip.path] ? `background-image:url("${posters[selectedClip.path]}")` : ""}></span>
+            <span class="ccText">
+              <strong title={selectedClip.path}>{selectedClip.name}</strong>
+              <span>V{selectedClip.lane + 1} · {fmt(selectedClip.outS - selectedClip.inS)} of {fmt(selectedClip.duration)}</span>
+            </span>
+          </div>
+
+          <div class="secHead"><span>Trim</span></div>
+          <div class="trimGrid">
+            <label class="field">
+              <span>In</span>
+              <input type="number" min="0" max={selectedClip.outS} step="0.01" value={selectedClip.inS.toFixed(2)} oninput={(e) => updateSelectedClip({ inS: Number((e.currentTarget as HTMLInputElement).value) })} onchange={clampTrim} />
+            </label>
+            <label class="field">
+              <span>Out</span>
+              <input type="number" min={selectedClip.inS} max={selectedClip.duration} step="0.01" value={selectedClip.outS.toFixed(2)} oninput={(e) => updateSelectedClip({ outS: Number((e.currentTarget as HTMLInputElement).value) })} onchange={clampTrim} />
+            </label>
+            <button class="softBtn" onclick={setIn} title="In point at the playhead ([)">Set in <kbd>[</kbd></button>
+            <button class="softBtn" onclick={setOut} title="Out point at the playhead (])">Set out <kbd>]</kbd></button>
+          </div>
+
+          {#if outPreset.fit !== "original"}
+            <div class="secHead"><span>Framing</span></div>
+            <p class="hint">Drag the frame on the picture to move it; ⌘/Ctrl + scroll zooms.</p>
+            <div class="sliders">
+              <label class="slider"><span class="sLabel">Left / right <em>{Math.round(selectedClip.cropX * 100)}%</em></span><input type="range" min="0" max="1" step="0.001" value={selectedClip.cropX} oninput={(e) => updateSelectedClip({ cropX: Number((e.currentTarget as HTMLInputElement).value) })} ondblclick={() => updateSelectedClip({ cropX: 0.5 })} /></label>
+              <label class="slider"><span class="sLabel">Up / down <em>{Math.round(selectedClip.cropY * 100)}%</em></span><input type="range" min="0" max="1" step="0.001" value={selectedClip.cropY} oninput={(e) => updateSelectedClip({ cropY: Number((e.currentTarget as HTMLInputElement).value) })} ondblclick={() => updateSelectedClip({ cropY: 0.5 })} /></label>
+              <label class="slider"><span class="sLabel">Zoom <em>{selectedClip.zoom.toFixed(2)}×</em></span><input type="range" min="1" max="4" step="0.01" value={selectedClip.zoom} oninput={(e) => updateSelectedClip({ zoom: Number((e.currentTarget as HTMLInputElement).value) })} ondblclick={() => updateSelectedClip({ zoom: 1 })} /></label>
+            </div>
+          {/if}
+
+          <div class="secHead"><span>Source → output</span></div>
+          <dl class="facts">
+            <div><dt>Resolution</dt><dd>{probes[selectedClip.path]?.width ?? "–"}×{probes[selectedClip.path]?.height ?? "–"}</dd></div>
+            <div><dt>Frame rate</dt><dd>{probes[selectedClip.path]?.fps ? `${Math.round(probes[selectedClip.path]?.fps ?? 0)} fps` : "–"}</dd></div>
+            <div><dt>Codec</dt><dd>{probes[selectedClip.path]?.codec ?? "–"}{probes[selectedClip.path]?.hdr ? " · HDR" : ""}</dd></div>
+            <div><dt>Output</dt><dd>{outPreset.fit === "original" ? "Original" : `${outPreset.w}×${outPreset.h}`}</dd></div>
+          </dl>
+
+          <button class="softBtn danger wide" onclick={() => removeClip(selectedClip.id)}>Remove from the timeline</button>
+        {:else if selectedAudio}
+          <div class="clipCard audio">
+            <span class="ccThumb note"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5.5l10-2V16" /><circle cx="6.5" cy="18" r="2.5" /><circle cx="16.5" cy="16" r="2.5" /></svg></span>
+            <span class="ccText">
+              <strong title={selectedAudio.path}>{selectedAudio.name}</strong>
+              <span>A{selectedAudio.lane + 1} · {fmt(selectedAudio.duration)}</span>
+            </span>
+          </div>
+          <label class="checkRow"><input type="checkbox" bind:checked={preserveSourceAudio} disabled={audioClips.length > 0} /> Keep the clips' own sound</label>
+          <button class="softBtn danger wide" onclick={() => removeAudio(selectedAudio.id)}>Remove from the timeline</button>
+        {:else}
+          <div class="emptyClip">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3" /><path d="M3 15h18M8 15v4M13 15v4" /></svg>
+            <strong>No clip selected</strong>
+            <span>Click a clip on the timeline to trim it, frame it or see what it is.</span>
+          </div>
+        {/if}
       </div>
     {/if}
 
     {#if exportNote}<p class="note sideNote">{exportNote}</p>{/if}
-
-    <div class="block exportBlock">
-      <h3>Audio & Export</h3>
-      <label>Encoder
-        <select bind:value={encoder}>
-          <option value="auto">Auto</option>
-          <option value="x264">x264</option>
-          <option value="nvenc">NVIDIA</option>
-        </select>
-      </label>
-      <label>Quality
-        <select bind:value={quality}>
-          <option value="best">Best</option>
-          <option value="high">High</option>
-          <option value="standard">Standard</option>
-          <option value="small">Small</option>
-        </select>
-      </label>
-      <label class="check"><input type="checkbox" bind:checked={preserveSourceAudio} disabled={audioClips.length > 0} /> Keep source audio</label>
-      <div class="music">
-        <button class="miniBtn" onclick={pickAudio}>Choose audio</button>
-        {#if audioClips.length}
-          <span class="small">{audioClips[0].name}</span>
-        {/if}
-      </div>
-      {#if exportNote}<p class="note">{exportNote}</p>{/if}
-    </div>
   </aside>
   {#if sourceMenu}
     <ContextMenu x={sourceMenu.x} y={sourceMenu.y} entries={sourceMenu.entries} onclose={() => (sourceMenu = null)} />
@@ -2933,7 +3203,14 @@
 </div>
 
 <style>
+  /* Edit studio, redesigned 2026-10-04: one quiet chrome (the app's tokens),
+     a dark stage for the picture, icon tools with words where they help,
+     clips drawn with their own frames. The export dialog's styles are kept as
+     they were (further down). */
+
+  /* ── shell ───────────────────────────────────────────────────────────── */
   .editShell {
+    --stage: #07080a;
     width: 100%;
     height: 100%;
     display: grid;
@@ -2952,318 +3229,283 @@
     grid-template-columns: minmax(0, 1fr) 0 0;
     background: #000;
   }
-  
-  .inspector {
-    grid-row: 1;
-    min-width: 0;
-    min-height: 0;
-    background: var(--bg-panel);
-    border-right: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-  }
-  /* The work pane stacks ABOVE the inspector: its popups (export menu) must
-     drop over the Look panel, never slide behind it. */
-  .inspector {
-    grid-column: 3;
-    border-right: 0;
-    border-left: 1px solid var(--border);
-    overflow-y: auto;
-    position: relative;
-    z-index: 1;
-  }
-  
-  .inspectorCollapsed .inspector {
-    border: 0;
-    overflow: hidden;
-  }
-  
-  .inspectorCollapsed .inspector > * {
-    display: none;
-  }
-  .panelSplitter {
-    grid-row: 1;
-    min-width: 6px;
-    cursor: col-resize;
-    background: color-mix(in srgb, var(--border) 35%, transparent);
-    transition: background 0.12s ease;
-  }
-  .inspectorSplitter {
-    grid-column: 2;
-  }
-  
-  .inspectorCollapsed .inspectorSplitter {
-    display: none;
-  }
-  .panelSplitter:hover,
-  .panelSplitter:active {
-    background: color-mix(in srgb, var(--accent) 58%, var(--border));
-  }
-  
-  .productionPreviewMode .panelSplitter,
-  .productionPreviewMode .inspector {
-    display: none;
-  }
-  
-  .editTop,
-  .timelineHead {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 46px;
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-panel);
-  }
-  .miniIcon {
-    width: 28px;
-    height: 24px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-elev);
-    color: var(--text-dim);
-    font-size: 11px;
-    line-height: 1;
-  }
-  .miniIcon:hover {
-    background: var(--bg-hover);
-    color: var(--text);
-  }
-  
-  .timelineHead span,
-  .small,
-  .note,
-  .time {
-    color: var(--text-faint);
-    font-size: 12px;
-  }
-  .seg {
-    display: flex;
-    align-items: center;
-    gap: 3px;
-  }
-  .chip {
-    padding: 4px 8px;
-    border-radius: 6px;
-    color: var(--text-dim);
-    border: 1px solid var(--border);
-    background: var(--bg-elev);
-    font-size: 12px;
-  }
-  .chip.on {
-    background: var(--accent);
-    color: var(--accent-on);
-    border-color: var(--accent);
-  }
-  /* Scrolling columns: rows keep their height and the column scrolls. With the
-     default flex-shrink the list squashed each 76px row to 74px and the rating
-     and tag chips ran into the next clip's name (seen at 1280x820). Same for
-     the Look panel, where the slider labels were squashed. */
-  
-  .inspector > *,
-  .block > *,
-  .igDialog > * {
-    flex-shrink: 0;
-  }
-  
-  .timelineClip strong {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
   .workPane {
     grid-column: 1;
     min-width: 0;
     min-height: 0;
     display: grid;
-    /* max-content for the top bar: as `auto` it gave up height whenever the
-       column was short (TV size on a 1280x788 Mac window), and the wrapped
-       format presets spilled over the preview. When height is short the
-       timeline yields first (down to 120px), then the preview's 180px floor. */
+    /* max-content for the top bar (it wraps on narrow panes and must keep its
+       height); when height is short the timeline yields first (down to
+       120px), then the preview's 180px floor. */
     grid-template-rows:
       max-content
       minmax(180px, 1fr)
       auto
       6px
-      minmax(min(120px, var(--timeline-h, 260px)), var(--timeline-h, 260px));
+      minmax(min(120px, var(--timeline-h, 300px)), var(--timeline-h, 300px));
     position: relative;
     overflow: visible;
     z-index: 2;
     container-type: inline-size;
   }
+  .timelineCollapsed .workPane {
+    grid-template-rows: max-content minmax(180px, 1fr) auto 0 0;
+  }
   .productionPreviewMode .workPane {
-    grid-column: 1;
     grid-template-rows: minmax(0, 1fr);
   }
   .productionPreviewMode .editTop,
   .productionPreviewMode .transport,
   .productionPreviewMode .timelineResize,
-  .productionPreviewMode .timeline {
+  .productionPreviewMode .timeline,
+  .productionPreviewMode .panelSplitter,
+  .productionPreviewMode .inspector {
     display: none;
   }
-  /* Wrap instead of spilling: on tighter widths the top bar's buttons flow to a
-     second row inside the pane, never under the Look panel. */
-  .editTop {
+
+  /* Splitters: a hairline that thickens into the accent under the pointer. */
+  .panelSplitter,
+  .timelineResize {
     position: relative;
-    z-index: 6;
-    overflow: visible;
-    flex-wrap: wrap;
+    background: transparent;
   }
-  .timelineCollapsed .workPane {
-    grid-template-rows: max-content minmax(180px, 1fr) auto 0 0;
+  .panelSplitter {
+    grid-row: 1;
+    grid-column: 2;
+    min-width: 6px;
+    cursor: col-resize;
   }
+  .timelineResize {
+    min-height: 6px;
+    cursor: row-resize;
+  }
+  .panelSplitter::after,
+  .timelineResize::after {
+    content: "";
+    position: absolute;
+    background: var(--border-soft);
+    transition: background 120ms ease;
+  }
+  .panelSplitter::after { top: 0; bottom: 0; left: 2.5px; width: 1px; }
+  .timelineResize::after { left: 0; right: 0; top: 2.5px; height: 1px; }
+  .panelSplitter:hover::after,
+  .panelSplitter:active::after { left: 1.5px; width: 3px; background: var(--accent); }
+  .timelineResize:hover::after,
+  .timelineResize:active::after { top: 1.5px; height: 3px; background: var(--accent); }
+  .inspectorCollapsed .inspectorSplitter,
   .timelineCollapsed .timelineResize {
     display: none;
   }
-  .layoutTools {
+
+  /* ── top bar ─────────────────────────────────────────────────────────── */
+  .editTop {
+    position: relative;
+    z-index: 6;
     display: flex;
     align-items: center;
-    gap: 4px;
-    flex: 0 0 auto;
-  }
-  .presetGroup {
-    display: flex;
-    flex: 0 0 auto;
-    gap: 4px;
-    padding: 2px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg-elev);
-  }
-  .presetGroup button {
-    min-width: 76px;
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    padding: 5px 8px;
-    border-radius: 6px;
-    text-align: left;
-    color: var(--text-dim);
-  }
-  .presetGroup button.on {
-    background: var(--accent);
-    color: var(--accent-on);
-  }
-  .presetGroup span {
-    font-size: 10.5px;
-    opacity: 0.75;
-  }
-  .exportOpts {
-    position: relative;
-    flex: 0 0 auto;
-  }
-  /* Exporting: the split button gives way to a progress pill + two-step cancel. */
-  .exportProgress {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .epBar {
-    position: relative;
-    width: 130px;
-    height: 8px;
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--border) 60%, transparent);
-    overflow: hidden;
-  }
-  .epBar span {
-    position: absolute;
-    inset: 0 auto 0 0;
-    background: var(--accent);
-    border-radius: 999px;
-    transition: width 0.25s ease;
-  }
-  .epPct {
-    min-width: 34px;
-    color: var(--text-dim);
-    font-size: 12px;
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-  }
-  .epCancel.armed {
-    color: var(--reject);
-    border-color: color-mix(in srgb, var(--reject) 60%, var(--border));
-  }
-  /* Source→Output facts card — fills the inspector space below the sliders. */
-  .clipInfo dl {
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .clipInfo dl > div {
-    display: flex;
-    justify-content: space-between;
+    flex-wrap: wrap;
     gap: 10px;
-    font-size: 12px;
+    min-height: 54px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-soft);
+    background: var(--bg-panel);
   }
-  .clipInfo dt {
-    color: var(--text-faint);
-  }
-  .clipInfo dd {
-    margin: 0;
-    color: var(--text);
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-  }
-  .miniBtn.on {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-  .exportMenu {
-    position: absolute;
-    right: 0;
-    top: 34px;
-    z-index: 240;
-    width: 280px;
-    padding: 10px;
+  .brand {
     display: flex;
-    flex-direction: column;
+    align-items: center;
     gap: 9px;
-    background: var(--bg-elev);
-    border: 1px solid var(--border);
-    border-radius: 9px;
-    box-shadow: var(--shadow);
+    min-width: 0;
+    margin-right: 4px;
   }
+  .brandIco {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 30px;
+    height: 30px;
+    border-radius: 9px;
+    color: #fff;
+    background: linear-gradient(160deg, #f0717f, #d94a5d);
+    box-shadow: 0 2px 8px rgba(217, 74, 93, 0.3);
+  }
+  .brandIco svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+  .brandText { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+  .brandText strong { font-family: var(--font-display); font-size: 14px; font-weight: 650; letter-spacing: -0.01em; }
+  .brandText span { font-size: 11.5px; color: var(--text-faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+  .aspects {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 10px;
+    border: 1px solid var(--border-soft);
+    background: color-mix(in srgb, var(--bg) 75%, transparent);
+  }
+  .aspects button {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 30px;
+    padding: 0 11px;
+    border-radius: 8px;
+    color: var(--text-dim);
+    font-size: 12px;
+    font-weight: 560;
+    white-space: nowrap;
+  }
+  .aspects button:hover:not(.on) { color: var(--text); background: color-mix(in srgb, var(--bg-hover) 60%, transparent); }
+  .aspects button.on {
+    color: var(--text);
+    background: var(--bg-elev);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 1px var(--border-soft);
+  }
+  .ar { display: block; flex: none; border: 1.5px solid currentColor; border-radius: 2.5px; opacity: 0.75; }
+  .ar.free { border-style: dashed; }
+  .aspects button.on .ar { border-color: var(--accent); opacity: 1; }
+  .topGap { flex: 1 1 auto; min-width: 8px; }
+
+  .viewTools { display: inline-flex; gap: 2px; }
+  .iconBtn {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    color: var(--text-dim);
+  }
+  .iconBtn.sm { width: 28px; height: 28px; }
+  .iconBtn:hover { color: var(--text); background: var(--bg-hover); }
+  .iconBtn.on { color: var(--accent); }
+  .iconBtn svg,
+  .pillBtn svg,
+  .tool svg,
+  .exportBtn svg {
+    width: 17px;
+    height: 17px;
+    flex: none;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .pillBtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 32px;
+    padding: 0 12px;
+    border-radius: 9px;
+    border: 1px solid var(--border-soft);
+    background: color-mix(in srgb, var(--bg-elev) 80%, transparent);
+    color: var(--text);
+    font-size: 12.5px;
+    font-weight: 560;
+  }
+  .pillBtn:hover:not(:disabled) { border-color: var(--border-strong); background: var(--bg-hover); }
+  .pillBtn.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev)); }
   .topToast {
-    max-width: 220px;
+    max-width: 240px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    padding: 5px 8px;
-    border: 1px solid color-mix(in srgb, var(--pick) 50%, var(--border));
-    border-radius: 7px;
-    background: color-mix(in srgb, var(--pick) 16%, var(--bg-elev));
+    padding: 6px 11px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--pick) 45%, transparent);
+    background: color-mix(in srgb, var(--pick) 14%, var(--bg-elev));
     color: var(--text);
     font-size: 12px;
   }
-  /* A small, non-growing gap between the left cluster (presets + layout) and the
-     right cluster (Preview + Export). Previously flex:1 which shoved Export to the
-     far edge — on a wide pane that left a huge dead gap, and on a tight pane it
-     forced Export to wrap to a second row. A capped gap keeps the controls
-     grouped together and left-aligned instead. */
-  .topGap {
-    flex: 0 1 22px;
-    min-width: 12px;
-  }
-  .spacer {
-    flex: 1 1 auto;
-    min-width: 8px;
-  }
-  /* Render-required marker on the Export button (replaces the old toolbar pill;
-     the full breakdown lives in the export dialog). */
-  .exportBtn.main {
+
+  .exportOpts { position: relative; flex: none; }
+  .exportGroup { display: inline-flex; }
+  .exportBtn {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 7px;
+    height: 32px;
+    padding: 0 14px;
+    border-radius: 9px;
+    background: var(--accent);
+    color: var(--accent-on);
+    font-size: 12.5px;
+    font-weight: 650;
+    white-space: nowrap;
   }
-  .reDot {
-    width: 6px;
+  .exportBtn:hover:not(:disabled) { background: var(--accent-hover); }
+  .exportBtn.main {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+    box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 26%, transparent);
+  }
+  .exportBtn.caret {
+    padding: 0 8px;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-left: 1px solid color-mix(in srgb, var(--accent-on) 25%, transparent);
+  }
+  .exportBtn.caret.on { background: color-mix(in srgb, var(--accent) 82%, #000); }
+  .reDot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-on); opacity: 0.85; }
+  /* Exporting: the split button gives way to a progress pill + two-step cancel. */
+  .exportProgress { display: flex; align-items: center; gap: 8px; }
+  .epBar {
+    position: relative;
+    width: 130px;
     height: 6px;
-    border-radius: 50%;
-    background: var(--accent-on);
-    opacity: 0.85;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--text-faint) 22%, transparent);
+    overflow: hidden;
   }
+  .epBar span { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: var(--accent); transition: width 0.25s ease; }
+  .epPct { min-width: 34px; color: var(--text-dim); font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; }
+  .epCancel.armed { color: var(--reject); border-color: color-mix(in srgb, var(--reject) 60%, var(--border)); }
+  .exportMenu {
+    position: absolute;
+    right: 0;
+    top: 40px;
+    z-index: 240;
+    width: 270px;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--bg-elev) 96%, transparent);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(20px);
+  }
+  .exportChoice {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 8px;
+    color: var(--text);
+    text-align: left;
+  }
+  .exportChoice:hover:not(:disabled) { background: var(--bg-hover); }
+  .exportChoice strong { font-size: 12.5px; font-weight: 650; }
+  .exportChoice span { font-size: 11px; color: var(--text-faint); }
+  .exportChoice.sub { color: var(--text-dim); font-size: 12px; }
+  .menuSep { height: 1px; margin: 3px 4px; background: var(--border-soft); }
+
+  /* Plain buttons still used by the export dialog and the empty state. */
+  .miniBtn {
+    padding: 5px 10px;
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg-elev) 82%, transparent);
+    color: var(--text);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .miniBtn:hover:not(:disabled) { border-color: var(--border-strong); background: var(--bg-hover); }
+  .miniBtn.on { border-color: var(--accent); color: var(--accent); }
+  .small { color: var(--text-faint); font-size: 12px; }
+
+  /* ── the stage (preview) ─────────────────────────────────────────────── */
   .preview {
     position: relative;
     z-index: 0;
@@ -3271,41 +3513,28 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: #050505;
     overflow: hidden;
+    background: radial-gradient(ellipse at center, #14171c 0%, var(--stage) 72%);
   }
+  .preview video { width: 100%; height: 100%; object-fit: contain; }
+  .productionPreviewMode .preview { grid-row: 1; background: #000; }
+  .lookFilterDefs { position: absolute; width: 0; height: 0; pointer-events: none; }
   .restoreTab {
     position: absolute;
     z-index: 75;
-    border: 1px solid var(--border);
-    background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
-    color: var(--text);
-    box-shadow: var(--shadow);
-    font-weight: 700;
-    font-size: 12px;
-  }
-  .restoreLook {
-    right: 10px;
-    top: 12px;
-    padding: 7px 10px;
-    border-radius: 8px;
-  }
-  .restoreTimeline {
-    left: 50%;
-    bottom: 12px;
-    transform: translateX(-50%);
     padding: 7px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
     border-radius: 999px;
+    background: rgba(24, 28, 34, 0.82);
+    color: #f3f5f7;
+    font-size: 12px;
+    font-weight: 600;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(14px);
   }
-  .preview video {
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-  }
-  .productionPreviewMode .preview {
-    grid-row: 1;
-    background: #000;
-  }
+  .restoreTab:hover { background: rgba(36, 42, 50, 0.92); }
+  .restoreLook { right: 12px; top: 12px; }
+  .restoreTimeline { left: 50%; bottom: 12px; transform: translateX(-50%); }
   .previewExit {
     position: absolute;
     z-index: 100;
@@ -3315,30 +3544,20 @@
     align-items: center;
     gap: 7px;
     min-height: 34px;
-    padding: 7px 11px;
-    border: 1px solid rgba(255,255,255,.2);
-    border-radius: 9px;
-    background: rgba(20,24,29,.86);
+    padding: 7px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 999px;
+    background: rgba(20, 24, 29, 0.86);
     color: #f6f7f8;
-    box-shadow: 0 8px 24px rgba(0,0,0,.34);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
     backdrop-filter: blur(12px);
     font-size: 12px;
-    font-weight: 700;
+    font-weight: 650;
   }
-  .previewExit:hover{ background: rgba(34,40,47,.94); border-color: rgba(255,255,255,.34); }
-  .previewExit svg{ width: 15px; height: 15px; }
-  .productionFrame {
-    position: absolute;
-    overflow: hidden;
-    background: #000;
-    box-shadow: 0 18px 70px rgba(0, 0, 0, 0.5);
-  }
-  .preview video.productionVideo {
-    position: absolute;
-    max-width: none;
-    max-height: none;
-    object-fit: fill;
-  }
+  .previewExit:hover { background: rgba(34, 40, 47, 0.94); border-color: rgba(255, 255, 255, 0.34); }
+  .previewExit svg { width: 15px; height: 15px; }
+  .productionFrame { position: absolute; overflow: hidden; background: #000; box-shadow: 0 18px 70px rgba(0, 0, 0, 0.5); }
+  .preview video.productionVideo { position: absolute; max-width: none; max-height: none; object-fit: fill; }
   .productionControls {
     position: absolute;
     left: 50%;
@@ -3348,64 +3567,46 @@
     align-items: center;
     gap: 10px;
     width: min(760px, calc(100% - 48px));
-    padding: 9px 10px;
-    border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
-    border-radius: 9px;
-    background: color-mix(in srgb, var(--bg-panel) 84%, transparent);
+    padding: 9px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 14px;
+    background: rgba(20, 24, 29, 0.84);
+    color: #f3f5f7;
     box-shadow: var(--shadow);
+    backdrop-filter: blur(16px);
   }
-  .productionControls input {
-    flex: 1;
-    accent-color: var(--accent);
-  }
-  .previewBusy {
-    position: absolute;
-    left: 12px;
-    bottom: 12px;
-    padding: 6px 9px;
-    border-radius: 7px;
-    background: color-mix(in srgb, var(--bg-elev) 88%, transparent);
-    border: 1px solid var(--border);
-    color: var(--text-dim);
-    font-size: 12px;
-  }
+  .productionControls input { flex: 1; accent-color: var(--accent); }
+  .productionControls .play { padding: 5px 12px; border-radius: 8px; background: rgba(255, 255, 255, 0.12); color: inherit; font-size: 12px; font-weight: 600; }
+  .productionControls .time { font-size: 12px; color: rgba(255, 255, 255, 0.7); font-variant-numeric: tabular-nums; }
+  .previewBusy,
   .trimCaption {
     position: absolute;
     left: 12px;
-    top: 12px;
-    padding: 5px 9px;
-    border-radius: 7px;
-    background: color-mix(in srgb, var(--bg-elev) 88%, transparent);
-    border: 1px solid var(--border);
-    color: var(--text);
+    padding: 6px 11px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 999px;
+    background: rgba(20, 24, 29, 0.82);
+    color: #f3f5f7;
     font-size: 12px;
     font-variant-numeric: tabular-nums;
+    backdrop-filter: blur(12px);
   }
-  .emptyState {
-    color: var(--text-faint);
-    font-size: 13px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    width: 100%;
-    min-height: 120px;
-    border: 1px dashed color-mix(in srgb, var(--text-faint) 36%, transparent);
-    border-radius: 8px;
-  }
+  .previewBusy { bottom: 12px; }
+  .trimCaption { top: 12px; }
   .cropFrame {
     position: absolute;
-    border: 2px solid rgba(255, 255, 255, 0.95);
-    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.34), 0 6px 26px rgba(0, 0, 0, 0.45);
-    cursor: move;
     padding: 0;
+    border: 2px solid rgba(255, 255, 255, 0.95);
+    border-radius: 2px;
     background: transparent;
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45), 0 6px 26px rgba(0, 0, 0, 0.45);
+    cursor: move;
   }
   .cropFrame span {
     position: absolute;
     inset: 33.333% 0;
-    border-top: 1px solid rgba(255, 255, 255, 0.45);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.45);
+    border-top: 1px solid rgba(255, 255, 255, 0.4);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.4);
   }
   .cropFrame::before {
     content: "";
@@ -3414,128 +3615,573 @@
     bottom: 0;
     left: 33.333%;
     width: 33.333%;
-    border-left: 1px solid rgba(255, 255, 255, 0.45);
-    border-right: 1px solid rgba(255, 255, 255, 0.45);
+    border-left: 1px solid rgba(255, 255, 255, 0.4);
+    border-right: 1px solid rgba(255, 255, 255, 0.4);
   }
+  .emptyState {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    min-height: 120px;
+    color: var(--text-faint);
+    font-size: 13px;
+  }
+  .emptyEdit {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    max-width: 440px;
+    height: auto;
+    margin: auto;
+    padding: 28px 26px;
+    border: 1px dashed color-mix(in srgb, var(--text-faint) 34%, transparent);
+    border-radius: var(--radius-lg);
+    text-align: center;
+    line-height: 1.5;
+  }
+  .emptyEdit strong { font-size: 15px; color: var(--text); }
+  .emptyEdit .dim { color: var(--text-faint); font-size: 12px; }
+  .emptyEdit kbd {
+    padding: 0 5px;
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    font-size: 11px;
+  }
+
+  /* ── transport ───────────────────────────────────────────────────────── */
   .transport {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    align-items: center;
+    gap: 14px;
+    min-height: 54px;
+    padding: 8px 18px 8px 16px;
+    border-top: 1px solid var(--border-soft);
+    background: var(--bg-panel);
+  }
+  .tc { display: flex; align-items: baseline; gap: 6px; min-width: 136px; font-variant-numeric: tabular-nums; }
+  .tcNow { font-size: 17px; font-weight: 620; letter-spacing: -0.01em; color: var(--text); }
+  .tcTotal { font-size: 12px; color: var(--text-faint); }
+  .tcTotal::before { content: "/ "; }
+  .tBtns { display: inline-flex; align-items: center; gap: 2px; }
+  .tBtn {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    color: var(--text-dim);
+  }
+  .tBtn:hover:not(:disabled) { color: var(--text); background: var(--bg-hover); }
+  .tBtn svg,
+  .tPlay svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .tBtn svg .fill,
+  .tPlay svg .fill { fill: currentColor; stroke: none; }
+  .tPlay {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    margin: 0 6px;
+    border-radius: 50%;
+    background: var(--text);
+    color: var(--bg);
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.3);
+    transition: transform 90ms ease, background 120ms ease;
+  }
+  .tPlay:hover:not(:disabled) { transform: scale(1.06); }
+  .tPlay:active:not(:disabled) { transform: scale(0.97); }
+  .tPlay svg { width: 18px; height: 18px; }
+  .progBar { position: relative; display: flex; align-items: center; height: 30px; cursor: pointer; touch-action: none; }
+  .progBar.off { cursor: default; opacity: 0.45; }
+  .pTrack {
+    position: relative;
+    flex: 1;
+    height: 6px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--text-faint) 16%, transparent);
+    transition: height 120ms ease;
+  }
+  .progBar:hover .pTrack { height: 8px; }
+  .pSeg {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: color-mix(in srgb, var(--text-faint) 30%, transparent);
+    box-shadow: inset -1px 0 var(--bg-panel);
+  }
+  .pFill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); }
+  .pKnob {
+    position: absolute;
+    top: 50%;
+    width: 14px;
+    height: 14px;
+    margin: -7px 0 0 -7px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45), 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+    pointer-events: none;
+  }
+
+  /* ── timeline ────────────────────────────────────────────────────────── */
+  .timeline {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-panel);
+  }
+  .timelineCollapsed .timeline { overflow: hidden; }
+  .timelineCollapsed .timeline > * { display: none; }
+  .timelineHead {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-height: 46px;
+    padding: 6px 10px 6px 14px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .tlTitle { display: flex; align-items: baseline; gap: 8px; margin-right: 6px; }
+  .tlTitle strong { font-size: 13px; font-weight: 650; }
+  .tlTitle span { font-size: 11.5px; color: var(--text-faint); white-space: nowrap; }
+  .tlTools { display: inline-flex; gap: 2px; padding-left: 8px; border-left: 1px solid var(--border-soft); }
+  .tool {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 9px;
+    border-radius: 8px;
+    color: var(--text-dim);
+    font-size: 12px;
+    font-weight: 560;
+    white-space: nowrap;
+  }
+  .tool svg { width: 16px; height: 16px; }
+  .tool:hover:not(:disabled) { color: var(--text); background: var(--bg-hover); }
+  .tool.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .tool.icon { width: 30px; padding: 0; justify-content: center; }
+  .zoomCtl { display: inline-flex; align-items: center; gap: 2px; margin-right: 4px; }
+  .zoomCtl input[type="range"] { width: 110px; min-width: 0; accent-color: var(--accent); }
+  .spacer { flex: 1 1 auto; min-width: 8px; }
+  .snapGuide {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-left: 1px dashed color-mix(in srgb, var(--star) 85%, transparent);
+    pointer-events: none;
+    z-index: 6;
+  }
+  .timelineViewport {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    background: color-mix(in srgb, var(--bg) 90%, black 10%);
+  }
+  .timelineCanvas { position: relative; min-height: 100%; padding-top: 26px; }
+  .ruler {
+    position: absolute;
+    top: 0;
+    left: 44px;
+    right: 0;
+    height: 26px;
+    z-index: 3;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border-soft);
+    background-color: var(--bg-panel);
+    background-image: repeating-linear-gradient(90deg, color-mix(in srgb, var(--text-faint) 45%, transparent) 0 1px, transparent 1px var(--minor, 10px));
+    background-size: 100% 5px;
+    background-repeat: repeat-x;
+    background-position: 0 100%;
+  }
+  .ruler span {
+    position: absolute;
+    top: 0;
+    height: 26px;
+    padding: 4px 0 0 4px;
+    border-left: 1px solid color-mix(in srgb, var(--text-faint) 65%, transparent);
+    color: var(--text-faint);
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+  .track { position: relative; margin-left: 44px; border-bottom: 1px solid var(--border-soft); }
+  .videoTrack { height: 46px; }
+  .audioTrack { height: 34px; background: color-mix(in srgb, var(--pick) 3%, transparent); }
+  .track:hover { background-color: color-mix(in srgb, var(--bg-hover) 28%, transparent); }
+  .laneGap { height: 8px; margin-left: 44px; border-bottom: 1px solid var(--border-soft); }
+  /* Track names: pinned to the left edge (moved with the scroll position). */
+  .trackHeads {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 44px;
+    z-index: 7;
+    pointer-events: none;
+    background: var(--bg-panel);
+    border-right: 1px solid var(--border-soft);
+  }
+  .thCorner { height: 26px; border-bottom: 1px solid var(--border-soft); }
+  .th { display: flex; align-items: center; justify-content: center; border-bottom: 1px solid var(--border-soft); }
+  .th.video { height: 46px; }
+  .th.audio { height: 34px; }
+  .thGap { height: 8px; border-bottom: 1px solid var(--border-soft); }
+  .th span {
+    padding: 2px 6px;
+    border-radius: 5px;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    color: var(--text-dim);
+    background: color-mix(in srgb, var(--accent) 13%, transparent);
+  }
+  .th.audio span { background: color-mix(in srgb, var(--pick) 15%, transparent); }
+
+  .timelineClip {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    display: block;
+    min-width: 36px;
+    padding: 0;
+    overflow: hidden;
+    border-radius: 7px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: color-mix(in srgb, var(--accent) 30%, #1a2027);
+    color: #fff;
+    text-align: left;
+    cursor: grab;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  }
+  .timelineClip:active { cursor: grabbing; }
+  .timelineClip.on { z-index: 2; box-shadow: 0 0 0 2px var(--accent), 0 4px 14px rgba(0, 0, 0, 0.35); }
+  .thumbs {
+    position: absolute;
+    inset: 0;
+    background-size: auto 100%;
+    background-repeat: repeat-x;
+    pointer-events: none;
+  }
+  .thumbs i { position: absolute; top: 0; bottom: 0; background-repeat: no-repeat; box-shadow: inset -1px 0 rgba(0, 0, 0, 0.35); }
+  .clipLabel {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px 12px;
+    background: linear-gradient(180deg, rgba(0, 0, 0, 0.66), rgba(0, 0, 0, 0));
+    font-size: 11px;
+    pointer-events: none;
+  }
+  .clipLabel strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6); }
+  .clipLabel em { font-style: normal; font-size: 10.5px; opacity: 0.85; font-variant-numeric: tabular-nums; }
+  .timelineClip.audio {
+    color: var(--text);
+    border-color: color-mix(in srgb, var(--pick) 45%, transparent);
+    background-color: color-mix(in srgb, var(--pick) 24%, var(--bg-elev));
+    background-image: repeating-linear-gradient(90deg, color-mix(in srgb, var(--pick) 55%, transparent) 0 2px, transparent 2px 5px);
+    background-size: 100% 36%;
+    background-position: 0 78%;
+    background-repeat: no-repeat;
+  }
+  .timelineClip.audio .clipLabel { padding: 3px 8px; background: none; }
+  .timelineClip.audio .clipLabel strong { text-shadow: none; }
+  .clipLabel .note { width: 13px; height: 13px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+  .handle { position: absolute; top: 0; bottom: 0; z-index: 2; width: 9px; cursor: ew-resize; }
+  .handle::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    width: 3px;
+    height: 16px;
+    margin-top: -8px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.9);
+    box-shadow: 0 0 3px rgba(0, 0, 0, 0.5);
+    opacity: 0;
+    transition: opacity 100ms ease;
+  }
+  .handle.left { left: 0; }
+  .handle.left::after { left: 3px; }
+  .handle.right { right: 0; }
+  .handle.right::after { right: 3px; }
+  .handle:hover { background: rgba(255, 255, 255, 0.16); }
+  .timelineClip:hover .handle::after,
+  .timelineClip.on .handle::after { opacity: 1; }
+  /* A clip that differs from the timeline's format (see mismatchOf). */
+  .mm {
+    flex: none;
+    padding: 0 4px;
+    border-radius: 4px;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #1b1300;
+    background: var(--star);
+  }
+  /* Its file wasn't there when the timeline came back (drive unplugged). */
+  .timelineClip.gone { border-style: dashed; opacity: 0.55; }
+  /* Slim, non-interactive mirror of a video clip's linked source audio. */
+  .sourceAudioBar {
+    position: absolute;
+    top: 9px;
+    bottom: 9px;
+    border-radius: 4px;
+    pointer-events: none;
+    background: color-mix(in srgb, var(--pick) 15%, transparent);
+    border: 1px solid color-mix(in srgb, var(--pick) 26%, transparent);
+  }
+  .playhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+    z-index: 5;
+    pointer-events: none;
+    background: var(--accent);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  .playhead::before {
+    content: "";
+    position: absolute;
+    top: 3px;
+    left: -6px;
+    width: 14px;
+    height: 13px;
+    border-radius: 4px 4px 7px 7px;
+    background: var(--accent);
+  }
+
+  /* ── inspector ───────────────────────────────────────────────────────── */
+  .inspector {
+    grid-row: 1;
+    grid-column: 3;
+    position: relative;
+    z-index: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    background: var(--bg-panel);
+    border-left: 1px solid var(--border-soft);
+  }
+  .inspector > * { flex-shrink: 0; }
+  .inspectorCollapsed .inspector { border: 0; overflow: hidden; }
+  .inspectorCollapsed .inspector > * { display: none; }
+  .inspHead {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 10px 10px 12px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .inspTabs {
+    flex: 1;
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 9px;
+    border: 1px solid var(--border-soft);
+    background: color-mix(in srgb, var(--bg) 75%, transparent);
+  }
+  .inspTabs button { flex: 1; height: 28px; border-radius: 7px; color: var(--text-dim); font-size: 12.5px; font-weight: 600; }
+  .inspTabs button:hover:not(.on) { color: var(--text); }
+  .inspTabs button.on { color: var(--text); background: var(--bg-elev); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22), 0 0 0 1px var(--border-soft); }
+  .inspBody { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px 18px; }
+  .inspBody > * { flex-shrink: 0; }
+  .secHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 4px;
+    font-size: 11.5px;
+    font-weight: 650;
+    color: var(--text-faint);
+  }
+  .secHead.adjust { margin-top: 8px; padding-top: 14px; border-top: 1px solid var(--border-soft); }
+  .linkBtn { padding: 2px 5px; border-radius: 5px; color: var(--accent); font-size: 11.5px; font-weight: 560; }
+  .linkBtn:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .linkBtn:disabled { color: var(--text-faint); opacity: 0.6; cursor: default; }
+  .lookChips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .lookChips button {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 25px;
+    padding: 0 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border-soft);
+    background: color-mix(in srgb, var(--bg-elev) 70%, transparent);
+    color: var(--text-dim);
+    font-size: 11.5px;
+    font-weight: 560;
+  }
+  .lookChips button:hover:not(.on) { color: var(--text); border-color: var(--border); }
+  .lookChips button.on { border-color: transparent; background: var(--text); color: var(--bg); }
+  .chipDot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  .lookGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 10px 8px; }
+  .lookTile { display: flex; flex-direction: column; gap: 5px; padding: 0; text-align: left; }
+  .lookImg {
+    display: block;
+    aspect-ratio: 4 / 3;
+    border-radius: 9px;
+    background-color: #20252c;
+    background-size: cover;
+    background-position: center;
+    box-shadow: 0 0 0 1px var(--border-soft);
+    transition: box-shadow 120ms ease;
+  }
+  .lookImg.fallback { background-image: linear-gradient(135deg, #2b6cb0 0%, #38a169 45%, #dd9b34 100%); }
+  .lookTile:hover .lookImg { box-shadow: 0 0 0 1px var(--border-strong), 0 4px 12px rgba(0, 0, 0, 0.25); }
+  .lookTile.active .lookImg { box-shadow: 0 0 0 2px var(--accent), 0 0 0 5px color-mix(in srgb, var(--accent) 20%, transparent); }
+  .lookName { overflow: hidden; color: var(--text-dim); font-size: 11.5px; font-weight: 560; white-space: nowrap; text-overflow: ellipsis; }
+  .lookTile.active .lookName { color: var(--text); }
+  .sliders { display: flex; flex-direction: column; gap: 2px; }
+  label.slider { display: flex; flex-direction: column; gap: 0; color: var(--text-dim); font-size: 12px; }
+  .sLabel { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .sLabel em { font-style: normal; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  .slider input[type="range"] { width: 100%; margin: 7px 0 6px; accent-color: var(--accent); }
+  .hint { margin: 0; color: var(--text-faint); font-size: 11px; line-height: 1.45; }
+  .clipCard {
     display: flex;
     align-items: center;
     gap: 10px;
-    min-height: 42px;
-    padding: 7px 10px;
-    border-top: 1px solid var(--border);
-    background: var(--bg-panel);
+    padding: 8px;
+    border-radius: 11px;
+    border: 1px solid var(--border-soft);
+    background: color-mix(in srgb, var(--bg-elev) 70%, transparent);
   }
-  .timelineResize {
-    min-height: 6px;
-    cursor: row-resize;
-    background: color-mix(in srgb, var(--border) 35%, transparent);
-    border-top: 1px solid var(--border);
-    transition: background 0.12s ease;
-  }
-  .timelineResize:hover,
-  .timelineResize:active {
-    background: color-mix(in srgb, var(--accent) 58%, var(--border));
-  }
-  .transport input,
-  label input[type="range"],
-  .scale input {
-    flex: 1;
-    accent-color: var(--accent);
-  }
-  /* The app-wide slider has a 3px track and a thumb that hangs ~6px either
-     side of it, outside the input's box, so a stacked label's thumb touched the
-     next label's text. Reserve that room inside the row. */
-  label input[type="range"] {
-    margin-block: 6px;
-  }
-  .play,
-  .miniBtn,
-  .ghost,
-  .dangerBtn {
-    border: 1px solid var(--border);
-    background: var(--bg-elev);
-    border-radius: 7px;
-    padding: 5px 9px;
-    font-size: 12px;
-    white-space: nowrap;
-  }
-  .play:hover,
-  .miniBtn:hover,
-  .ghost:hover,
-  .dangerBtn:hover {
-    background: var(--bg-hover);
-  }
-  .dangerBtn {
-    color: var(--reject);
-    border-color: color-mix(in srgb, var(--reject) 55%, var(--border));
-  }
-  .exportGroup {
-    display: inline-flex;
-    align-items: stretch;
-  }
-  .exportBtn {
-    padding: 7px 12px;
+  .ccThumb { flex: none; width: 64px; height: 40px; border-radius: 6px; background: #000 center / cover no-repeat; }
+  .ccThumb.note { display: grid; place-items: center; color: var(--pick); background: color-mix(in srgb, var(--pick) 18%, var(--bg-elev)); }
+  .ccThumb.note svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+  .ccText { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .ccText strong { overflow: hidden; font-size: 12.5px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+  .ccText span { color: var(--text-faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .trimGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  label.field { display: flex; flex-direction: column; gap: 4px; color: var(--text-faint); font-size: 11.5px; }
+  .field input {
+    width: 100%;
+    height: 30px;
+    padding: 0 8px;
     border-radius: 8px;
-    background: var(--accent);
-    color: var(--accent-on);
-    font-weight: 700;
-    white-space: nowrap;
+    border: 1px solid var(--border-soft);
+    background: color-mix(in srgb, var(--bg) 70%, transparent);
+    color: var(--text);
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
   }
-  /* Split button: main Export + a caret that opens the presets menu. */
-  .exportBtn.main {
-    border-top-right-radius: 0;
-    border-bottom-right-radius: 0;
+  .field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+  .softBtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border-soft);
+    background: color-mix(in srgb, var(--bg-elev) 80%, transparent);
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 560;
   }
-  .exportBtn.caret {
-    padding: 7px 8px;
-    border-top-left-radius: 0;
-    border-bottom-left-radius: 0;
-    border-left: 1px solid color-mix(in srgb, var(--accent-on) 28%, var(--accent));
-    font-weight: 700;
-  }
-  .exportBtn.caret.on {
-    background: color-mix(in srgb, var(--accent) 82%, #000);
-  }
-  .exportMenu.choices {
-    width: 260px;
-    gap: 4px;
-    padding: 6px;
-  }
-  .exportChoice {
+  .softBtn:hover:not(:disabled) { border-color: var(--border-strong); background: var(--bg-hover); }
+  .softBtn kbd { padding: 0 4px; border: 1px solid var(--border); border-radius: 4px; color: var(--text-faint); font-size: 10.5px; }
+  .softBtn.danger { color: var(--reject); }
+  .softBtn.danger:hover:not(:disabled) { border-color: color-mix(in srgb, var(--reject) 55%, var(--border)); background: color-mix(in srgb, var(--reject) 10%, var(--bg-elev)); }
+  .softBtn.wide { width: 100%; margin-top: 6px; }
+  .facts { display: flex; flex-direction: column; margin: 0; overflow: hidden; border-radius: 10px; border: 1px solid var(--border-soft); }
+  .facts > div { display: flex; justify-content: space-between; gap: 10px; padding: 7px 10px; font-size: 12px; }
+  .facts > div + div { border-top: 1px solid var(--border-soft); }
+  .facts dt { color: var(--text-faint); }
+  .facts dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; text-align: right; }
+  label.checkRow { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 12px; }
+  .emptyClip {
     display: flex;
     flex-direction: column;
-    gap: 1px;
-    width: 100%;
-    text-align: left;
-    padding: 7px 9px;
-    border: 1px solid transparent;
-    border-radius: 7px;
-    background: transparent;
-    color: var(--text);
-  }
-  .exportChoice:hover {
-    background: var(--bg-hover);
-    border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
-  }
-  .exportChoice strong {
-    font-size: 12.5px;
-    font-weight: 700;
-  }
-  .exportChoice span {
-    font-size: 11px;
+    align-items: center;
+    gap: 6px;
+    padding: 40px 12px;
     color: var(--text-faint);
+    font-size: 12px;
+    line-height: 1.45;
+    text-align: center;
   }
-  .exportChoice.sub {
+  .emptyClip svg { width: 30px; height: 30px; margin-bottom: 4px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+  .emptyClip strong { color: var(--text-dim); font-size: 13px; }
+  .note { margin: 0; color: var(--text-faint); font-size: 12px; }
+  .sideNote {
+    margin: 0 14px 14px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-soft);
+    border-radius: 9px;
+    background: var(--bg-elev);
     color: var(--text-dim);
     font-size: 12px;
   }
-  .menuSep {
-    height: 1px;
-    margin: 3px 2px;
-    background: var(--border);
+
+  /* Form basics the export dialog relies on. */
+  input[type="number"],
+  select {
+    width: 100%;
+    padding: 5px 7px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--bg-elev);
+    color: var(--text);
   }
+  label { display: grid; gap: 4px; color: var(--text-dim); font-size: 12px; }
+  .check { display: flex; align-items: center; gap: 7px; }
+  .music { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .dim { color: var(--text-faint); }
+
+  /* ── narrow work panes ───────────────────────────────────────────────── */
+  @container (max-width: 980px) {
+    .brandText span { display: none; }
+    .tlTitle span { display: none; }
+  }
+  @container (max-width: 820px) {
+    .brand { display: none; }
+    .editTop { gap: 6px; }
+    .aspects button { gap: 5px; padding: 0 7px; }
+    .pillText { display: none; }
+    .pillBtn { padding: 0 9px; }
+    .tool span { display: none; }
+    .tool { padding: 0 7px; }
+    .zoomCtl input[type="range"] { width: 80px; }
+    .tc { min-width: 0; }
+  }
+  @container (max-width: 640px) {
+    .aspects { order: 5; width: 100%; overflow-x: auto; }
+    .aspects button { flex: 1 0 auto; justify-content: center; }
+    .tcTotal { display: none; }
+    .tBtns .tBtn:first-child,
+    .tBtns .tBtn:last-child { display: none; }
+  }
+
   /* Export dialog */
+  /* Rows keep their height and the dialog scrolls: with the default
+     flex-shrink the Source → Output table squashed to its header. */
+  .igDialog > * {
+    flex-shrink: 0;
+  }
   .igBackdrop {
     position: fixed;
     inset: 0;
@@ -3885,564 +4531,5 @@
   button:disabled {
     opacity: 0.42;
     cursor: not-allowed;
-  }
-  .timeline {
-    min-width: 0;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    border-top: 1px solid var(--border);
-    background: var(--bg-panel);
-  }
-  .timelineCollapsed .timeline {
-    overflow: hidden;
-    border-top: 0;
-  }
-  .timelineCollapsed .timeline > * {
-    display: none;
-  }
-  .timelineHead {
-    min-height: 38px;
-    flex-wrap: wrap;
-  }
-  .scale {
-    width: 140px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--text-faint);
-    font-size: 12px;
-  }
-  /* A range input keeps its ~130px intrinsic width inside a flex row, so the
-     140px Zoom label overflowed onto the Snap chip. Let it take what's left. */
-  .scale input[type="range"] {
-    flex: 1;
-    min-width: 0;
-    width: auto;
-  }
-  .snap {
-    padding: 3px 7px;
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--accent) 16%, transparent);
-    color: var(--accent);
-  }
-  .snap.off {
-    background: transparent;
-    color: var(--text-faint);
-    box-shadow: inset 0 0 0 1px var(--border);
-  }
-  .snapGuide {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 0;
-    border-left: 1px dashed color-mix(in srgb, var(--star) 85%, transparent);
-    pointer-events: none;
-    z-index: 6;
-  }
-  .timelineViewport {
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
-  }
-  .timelineCanvas {
-    position: relative;
-    min-height: 100%;
-    padding-top: 24px;
-  }
-  .ruler {
-    position: absolute;
-    top: 0;
-    left: 44px;
-    right: 0;
-    height: 24px;
-    border-bottom: 1px solid var(--border);
-    cursor: pointer;
-    z-index: 3;
-  }
-  /* Playhead: a vertical accent line spanning ruler + all tracks. */
-  .playhead {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 2px;
-    margin-left: -1px;
-    background: var(--accent);
-    pointer-events: none;
-    z-index: 5;
-  }
-  .playhead::before {
-    content: "";
-    position: absolute;
-    top: 0;
-    left: -4px;
-    border: 5px solid transparent;
-    border-top-color: var(--accent);
-  }
-  /* Slim, non-interactive mirror of a video clip's linked source audio. */
-  .sourceAudioBar {
-    position: absolute;
-    top: 12px;
-    bottom: 12px;
-    border-radius: 4px;
-    pointer-events: none;
-    background: color-mix(in srgb, var(--pick) 22%, transparent);
-    border: 1px solid color-mix(in srgb, var(--pick) 30%, transparent);
-  }
-  .ruler span {
-    position: absolute;
-    top: 5px;
-    color: var(--text-faint);
-    font-size: 11px;
-    transform: translateX(-1px);
-  }
-  .track {
-    position: relative;
-    height: 36px;
-    margin-left: 44px;
-    border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
-    background: color-mix(in srgb, var(--viewport-bg) 70%, transparent);
-  }
-  .videoTrack {
-    background: color-mix(in srgb, var(--accent) 6%, var(--viewport-bg));
-  }
-  .audioTrack {
-    background: color-mix(in srgb, var(--pick) 7%, var(--viewport-bg));
-  }
-  .audioTrack.firstAudio {
-    margin-top: 10px;
-    border-top: 2px solid color-mix(in srgb, var(--accent) 65%, var(--border));
-  }
-  .audioTrack.firstAudio::before {
-    content: "Audio";
-    position: absolute;
-    left: -38px;
-    top: -12px;
-    color: var(--accent);
-    font-size: 10px;
-    font-weight: 800;
-    text-transform: uppercase;
-  }
-  .track:hover {
-    background: color-mix(in srgb, var(--accent) 8%, var(--viewport-bg));
-  }
-  .trackLabel {
-    position: absolute;
-    left: -38px;
-    top: 7px;
-    width: 30px;
-    text-align: right;
-    color: var(--text-faint);
-    font-size: 11px;
-    font-weight: 700;
-  }
-  .timelineClip {
-    position: absolute;
-    top: 5px;
-    bottom: 5px;
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    min-width: 36px;
-    padding: 0 10px;
-    border-radius: 6px;
-    color: var(--text);
-    text-align: left;
-    cursor: grab;
-    overflow: hidden;
-    border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
-    background: color-mix(in srgb, var(--accent) 22%, var(--bg-elev));
-  }
-  .timelineClip.audio {
-    border-color: color-mix(in srgb, var(--pick) 55%, var(--border));
-    background: color-mix(in srgb, var(--pick) 18%, var(--bg-elev));
-  }
-  .timelineClip.on {
-    box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 1px var(--accent);
-  }
-  .timelineClip em {
-    color: var(--text-faint);
-    font-size: 11px;
-    font-style: normal;
-    margin-left: auto;
-  }
-  .handle {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 7px;
-    background: rgba(255, 255, 255, 0.22);
-    cursor: ew-resize;
-  }
-  .handle.left{ left: 0; }
-  .handle.right{ right: 0; }
-  .block {
-    padding: 12px;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    gap: 9px;
-  }
-  .segmentBlock,
-  .exportBlock {
-    display: none;
-  }
-  .block h3 {
-    margin: 0 0 2px;
-    font-size: 13px;
-  }
-  .blockHead {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    width: 100%;
-    padding: 0;
-    color: var(--text);
-    background: transparent;
-    text-align: left;
-  }
-  .blockHead span {
-    color: var(--text-faint);
-    font-size: 11.5px;
-  }
-  .lookPresets {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
-    gap: 6px;
-  }
-  .lookPreset {
-    padding: 0;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg-elev);
-    color: var(--text);
-    text-align: left;
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-    overflow: hidden;
-  }
-  .lookPreset:hover {
-    border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  }
-  .lookPreset.active {
-    border-color: var(--accent);
-    box-shadow: inset 0 0 0 1px var(--accent);
-  }
-  /* Collapsible preset groups. */
-  .lookGroupsHead {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-  }
-  .lookGroups {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-  .lookGroup {
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: color-mix(in srgb, var(--bg-elev) 55%, transparent);
-    overflow: hidden;
-  }
-  .lookGroup.open {
-    background: color-mix(in srgb, var(--bg-elev) 30%, transparent);
-  }
-  .lookGroupHead {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    padding: 7px 9px;
-    background: transparent;
-    color: var(--text);
-    text-align: left;
-    font-size: 12px;
-    font-weight: 600;
-  }
-  .lookGroupHead:hover {
-    background: var(--bg-hover);
-  }
-  .lgCaret {
-    color: var(--text-faint);
-    font-size: 10px;
-    transition: transform 0.14s ease;
-  }
-  .lookGroup.open .lgCaret {
-    transform: rotate(90deg);
-  }
-  .lgTitle {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .lgDot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--accent);
-    flex: 0 0 auto;
-  }
-  .lgCount {
-    color: var(--text-faint);
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
-  }
-  .lookGroup .lookPresets {
-    padding: 0 7px 8px;
-  }
-  /* SVG-only filter host (warmth + split-tone). Never painted itself. */
-  .lookFilterDefs {
-    position: absolute;
-    width: 0;
-    height: 0;
-    pointer-events: none;
-  }
-  /* The per-preset intensity control sits between presets and the divider. */
-  .lookIntensity {
-    margin-top: 8px;
-  }
-  .lookPreset .swatch {
-    height: 26px;
-    width: 100%;
-    background: linear-gradient(120deg, #2b6cb0 0%, #38a169 45%, #dd9b34 100%);
-  }
-  .lpText {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    padding: 6px 8px;
-  }
-  .lpText strong {
-    font-size: 12px;
-  }
-  .lpText span {
-    color: var(--text-faint);
-    font-size: 10.5px;
-  }
-  /* Section labels + divider that separate the one-tap Presets from the manual
-     Adjust sliders (Lightroom-style demarcation). */
-  .groupLabel {
-    margin: 0;
-    font-size: 10.5px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--text-faint);
-  }
-  .groupDivider {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    margin-top: 2px;
-    padding-top: 9px;
-    border-top: 1px solid var(--border);
-  }
-  .adjHint {
-    margin: -4px 0 0;
-    font-size: 10.5px;
-    color: var(--text-faint);
-  }
-  .miniBtn.ghost {
-    background: transparent;
-    border-color: transparent;
-    color: var(--text-faint);
-  }
-  .miniBtn.ghost:hover {
-    color: var(--text);
-    background: var(--bg-hover);
-  }
-  .row {
-    display: grid;
-    grid-template-columns: 72px 1fr;
-    gap: 8px;
-    align-items: center;
-  }
-  input[type="number"],
-  select {
-    width: 100%;
-    background: var(--bg-elev);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    padding: 5px 7px;
-  }
-  label {
-    display: grid;
-    gap: 4px;
-    color: var(--text-dim);
-    font-size: 12px;
-  }
-  .adjLabel {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
-  }
-  .adjVal {
-    font-style: normal;
-    color: var(--text-faint);
-    font-variant-numeric: tabular-nums;
-    font-size: 11px;
-  }
-  .check {
-    display: flex;
-    grid-template-columns: auto 1fr;
-    align-items: center;
-    gap: 7px;
-  }
-  .music {
-    display: flex;
-    gap: 7px;
-    align-items: center;
-    min-width: 0;
-  }
-  .note {
-    margin: 0;
-  }
-  .sideNote {
-    margin: 10px 12px 0;
-    padding: 8px 10px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg-elev);
-    color: var(--text-dim);
-    font-size: 12px;
-  }
-  @media (max-width: 1180px) {
-    .editShell {
-      grid-template-columns:
-        minmax(0, 1fr)
-        var(--inspector-splitter-w, 6px)
-        minmax(0, var(--inspector-w, 260px));
-    }
-    .presetGroup button {
-      min-width: 64px;
-    }
-  }
-
-  /* The work pane can be narrow even when the outer window is wide because the
-     folder tree and Look panel consume width. Respond to this pane itself. */
-  @container (max-width: 720px) {
-    .editTop { align-items: center; }
-    .layoutTools { order: 1; }
-    .topGap { order: 1; }
-    .exportOpts { order: 1; }
-    .presetGroup {
-      order: 2;
-      width: 100%;
-      max-width: 100%;
-      min-width: 0;
-      overflow-x: auto;
-      overscroll-behavior-inline: contain;
-      scrollbar-width: thin;
-    }
-    .presetGroup button { min-width: 68px; }
-  }
-
-  /* ── 2026 studio finish ─────────────────────────────────────────────── */
-  .editShell{ background: #0a0c0f; }
-  
-  .inspector {
-    border-color: var(--border-soft);
-    background: linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 97%, white 3%), var(--bg-panel));
-  }
-  
-  .editTop,
-  .timelineHead {
-    min-height: 50px;
-    border-bottom-color: var(--border-soft);
-    background: color-mix(in srgb, var(--bg-panel) 94%, transparent);
-  }
-  .panelSplitter,
-  .timelineResize{ background: transparent; border-color: var(--border-soft); }
-  .panelSplitter:hover,
-  .panelSplitter:active,
-  .timelineResize:hover,
-  .timelineResize:active{ background: color-mix(in srgb, var(--accent) 50%, transparent); }
-  .chip,
-  .miniIcon,
-  .play,
-  .miniBtn,
-  .ghost,
-  .dangerBtn {
-    min-height: 29px;
-    border-color: var(--border-soft);
-    border-radius: 8px;
-    background: color-mix(in srgb, var(--bg-elev) 82%, transparent);
-    transition: background 100ms ease, border-color 100ms ease, color 100ms ease, transform 90ms ease;
-  }
-  .chip:hover,
-  .miniIcon:hover,
-  .play:hover,
-  .miniBtn:hover,
-  .ghost:hover,
-  .dangerBtn:hover{ border-color: var(--border-strong); }
-  .chip:active,
-  .miniIcon:active,
-  .play:active,
-  .miniBtn:active,
-  .ghost:active,
-  .dangerBtn:active{ transform: translateY(1px); }
-  .presetGroup{ padding: 3px; border-color: var(--border-soft); border-radius: 10px; background: color-mix(in srgb, var(--bg-elev) 74%, transparent); box-shadow: inset 0 1px 4px rgba(0,0,0,.18); }
-  .presetGroup button{ border-radius: 7px; }
-  .exportBtn{ min-height: 32px; border-radius: 9px; box-shadow: 0 5px 14px color-mix(in srgb, var(--accent) 22%, transparent); }
-  .exportMenu{ border-color: var(--border-strong); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--bg-elev) 95%, transparent); box-shadow: var(--shadow); backdrop-filter: blur(22px); }
-  .preview{ background: radial-gradient(circle at center, #11151a, #030405 68%); }
-  .transport{ min-height: 46px; padding-inline: 13px; border-top-color: var(--border-soft); background: color-mix(in srgb, var(--bg-panel) 96%, transparent); }
-  .timeline{ background: color-mix(in srgb, var(--bg) 96%, black 4%); }
-  .timelineHead{ padding-inline: 13px; }
-  .track{ border-color: var(--border-soft); border-radius: 9px; background: color-mix(in srgb, var(--bg-elev) 58%, transparent); }
-  .timelineClip{ border-radius: 7px; box-shadow: 0 3px 10px rgba(0,0,0,.24); }
-  .block{ margin: 10px; border-color: var(--border-soft); border-radius: 12px; background: color-mix(in srgb, var(--bg-elev) 46%, transparent); box-shadow: inset 0 1px rgba(255,255,255,.025); }
-  .blockHead{ border-radius: 9px; }
-  .lookGroup{ border-color: var(--border-soft); border-radius: 10px; overflow: hidden; }
-  .lookGroupHead{ min-height: 34px; }
-  .lookPreset{ border-radius: 9px; }
-  .lookPreset.active{ box-shadow: inset 3px 0 var(--accent); }
-  .restoreTab{ border-color: var(--border-strong); border-radius: 10px; background: rgba(25,30,36,.86); backdrop-filter: blur(14px); }
-  .igBackdrop{ background: rgba(0,0,0,.68); backdrop-filter: blur(7px); }
-  .igDialog{ border-color: var(--border-strong); border-radius: var(--radius-xl); background: color-mix(in srgb, var(--bg-panel) 97%, transparent); box-shadow: var(--shadow); }
-  .igDialog h2{ font-family: var(--font-display); letter-spacing: -.02em; }
-  /* A clip that differs from the timeline's format (see mismatchOf). */
-  .timelineClip .mm {
-    flex: 0 0 auto;
-    margin-right: 4px;
-    padding: 0 4px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 700;
-    color: #1b1300;
-    background: var(--star);
-  }
-  /* Its file wasn't there when the timeline came back (drive unplugged). */
-  .timelineClip.gone {
-    border-style: dashed;
-    opacity: 0.55;
-  }
-  .emptyEdit {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-    max-width: 440px;
-    margin: auto;
-    text-align: center;
-    line-height: 1.5;
-  }
-  .emptyEdit strong { font-size: 15px; color: var(--text); }
-  .emptyEdit .dim { color: var(--text-faint); font-size: 12px; }
-  .emptyEdit kbd {
-    padding: 0 5px;
-    border: 1px solid var(--border);
-    border-bottom-width: 2px;
-    border-radius: 4px;
-    font-size: 11px;
   }
 </style>

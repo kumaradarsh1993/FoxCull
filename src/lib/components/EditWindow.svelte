@@ -130,6 +130,10 @@
     if (e.key === "]") { studio.setOut(); e.preventDefault(); return; }
     if (e.shiftKey && e.key === "ArrowRight") { studio.seekBy(5); e.preventDefault(); return; }
     if (e.shiftKey && e.key === "ArrowLeft") { studio.seekBy(-5); e.preventDefault(); return; }
+    if (e.key === "ArrowLeft") { studio.stepFrame(-1); e.preventDefault(); return; }
+    if (e.key === "ArrowRight") { studio.stepFrame(1); e.preventDefault(); return; }
+    if (e.key === "Home") { studio.goToEdge(false); e.preventDefault(); return; }
+    if (e.key === "End") { studio.goToEdge(true); e.preventDefault(); return; }
     if (k === "f") {
       e.preventDefault();
       const { getCurrentWindow } = await import("@tauri-apps/api/window").catch(() => ({ getCurrentWindow: null }));
@@ -220,7 +224,7 @@
   .notices {
     position: absolute;
     left: 14px;
-    top: 96px;
+    top: 68px;
     z-index: 70;
     display: flex;
     flex-direction: column;

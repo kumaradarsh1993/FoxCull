@@ -976,3 +976,15 @@ for a Windows mouse with a thumb wheel, whose sideways direction comes in
 reversed, and it smoothed every wheel event into a glide. On a trackpad that
 reversed a sideways swipe and made the strip trail the fingers. On a Mac the
 strip now leaves sideways swipes to the system and maps up/down swipes 1:1.
+
+## 2026-10-04 (late) — the Edit window, looked at again
+
+The owner asked for a design review of the Edit window. It had grown by
+layers: a second set of styles painted over the first, a transport that said
+"Play" in words and told the time in whole seconds, flat bars for clips,
+track names that scrolled away, and the clip's own trim and framing controls
+hidden altogether. It was rebuilt on one stylesheet: a top bar that says
+what's on the timeline, a proper transport (frame steps, a bar that shows the
+clips), clips drawn with their own frames, look presets shown on the
+owner's own footage, and the hidden clip controls back in a Clip tab. The
+editing itself, playback and export were left alone.

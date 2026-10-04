@@ -1,5 +1,20 @@
 # Agent Handover: FoxCull
 
+## 2026-10-04 (late) — Edit window redesign (nightly.9)
+
+Ledger: `docs/changes/2026-10-04-edit-redesign.md` (has the design review).
+
+- `EditStudio.svelte` has ONE stylesheet now; the old base + "2026 studio
+  finish" override layers are gone. The export dialog's block is kept as it
+  was; keep `.igDialog > * { flex-shrink: 0 }` or its table collapses.
+- Clip thumbnails: poster first, then the clip's Focus filmstrip
+  (`videoFilmstripCached` or `loadVideoFilmstrip`), queued one clip at a time
+  and paused while playing.
+- The track-name column is pinned by `translateX(tlScrollX)` inside the
+  scrolling canvas; video tracks are 46 px (`TRACK_HEIGHT`, used by vertical
+  drags) and audio 34 px. Keep the two in step if one changes.
+- The timeline follows the playhead (only playhead moves trigger it).
+
 ## 2026-10-04 (late) — Mac filmstrip scrolling (nightly.8)
 
 Ledger: `docs/changes/2026-10-04-mac-strip-scroll.md`. `VirtualStrip`'s wheel
