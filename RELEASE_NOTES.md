@@ -1,6 +1,63 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
+## New: reels cut to the beat of a song
+
+Select clips in the library, right-click → **Create a reel synced to music…**.
+A Reel window opens.
+
+- **Step 1: clips and a song.** Reorder the clips by dragging. A clip with
+  in/out segments marked gives one piece per segment (untick ✂ to use the
+  whole clip). **Drop a song** from Finder or Explorer (or choose one): FoxCull
+  finds its beats and its strong beats (the start of each bar) by itself.
+  Drag the highlighted part of the waveform to choose which part of the song
+  to use; its edges snap to the strong beats. Click anywhere to listen.
+- **Step 2: the beat board.** Every clip one below the other as a strip of
+  its frames, with a window over the part that plays. Each window is as long
+  as its slot in the song, cut on a beat.
+  - **Drag a window** to choose which part of the clip plays. Its length
+    doesn't change.
+  - **Drag its right edge** to make that cut earlier or later. It snaps to the
+    beats (the strong ones first; hold ⌥ for free) and the marks on the strip
+    show where they fall. The clips after it keep where their windows sit and
+    fit themselves to the beats that are left.
+  - A window longer than what's left of its clip shows the extra in **red**;
+    **Fix for me** slides or shortens it.
+  - Hover a strip to see that frame in the portrait preview; **Play the
+    reel** plays it with the song (Space), ▶ on a row plays just that clip.
+- **Export reel** writes a 1080×1920 portrait video at the clips' frame rate,
+  with the song from the point you chose, fading out at the end. Landscape
+  clips are cropped to their middle for now; choosing the crop comes later.
+- Closing the window keeps the reel for next time.
+
+## In and out points, several per clip
+
+In Focus, on a video:
+
+- **[** marks an in, **]** an out. Press [ again to move that in, ] again to
+  move that out; then [ starts the next segment. A clip can have as many
+  segments as you like, and they never overlap.
+- Segments show as highlighted spans on the scrub bar with [ and ] markers.
+  **Drag a marker** to adjust it (it steps frame by frame; ← and → nudge the
+  selected one). **Right-click** a marker or span to remove the in point, the
+  out point, that segment, or all of them.
+- Open **Clip tools** for the list of segments, Play segments, and Save as
+  clips. Drag **⠿ To Edit** (or one segment) to the Edit window.
+
+## Merge with your segments
+
+- The Merge window has a **Segments** column. A clip with segments gets a
+  checkbox, ticked by default: only its segments go in, one after another.
+  Untick it to merge the whole clip. The box in the column header ticks or
+  unticks them all. Clips without segments say so and go in whole.
+- Lengths, sizes and the free-space check follow your choice.
+- **The preview plays only what goes in**: it opens at the first in point,
+  plays the ticked segments one after another, and the bar under it scrubs.
+- **Right-click → Show in library** takes you to that clip in the library.
+- Lossless merges cut each segment at the nearest keyframe at or just before
+  its in point (on Osmo footage that's within half a second). **Convert**
+  cuts on the exact frame.
+
 ## Edit and Merge in their own windows
 
 - **Edit opens beside the library** instead of replacing it: just the

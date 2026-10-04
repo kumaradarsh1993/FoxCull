@@ -26,25 +26,39 @@ import type {
   ScanReport,
   RelinkOutcome,
   MergeStatus,
+  BeatInfo,
 } from "./types";
 
 export const api = {
   // ── separate windows (Edit, Merge) ────────────────────────────────────────
   /** Open or focus the Edit/Merge window, queueing `payload` (JSON) for it. */
-  openToolWindow: (kind: "edit" | "merge", payload: unknown = null) =>
+  openToolWindow: (kind: "edit" | "merge" | "reel", payload: unknown = null) =>
     invoke<void>("open_tool_window", { kind, payload: payload == null ? null : JSON.stringify(payload) }),
   /** Everything queued for this window since it last looked. */
-  takeToolInbox: <T>(kind: "edit" | "merge") =>
+  takeToolInbox: <T>(kind: "edit" | "merge" | "reel") =>
     invoke<string[]>("take_tool_inbox", { kind }).then((xs) => xs.map((x) => JSON.parse(x) as T)),
   /** "Something new in your inbox" (sent to the window after a queue). */
   onToolInbox: (cb: () => void): Promise<UnlistenFn> => listen("tool-inbox", () => cb()),
   /** Library left half, `kind` right half of the library's screen. */
-  tileWindows: (kind: "edit" | "merge") => invoke<{ tiled: boolean }>("tile_windows", { kind }),
+  tileWindows: (kind: "edit" | "merge" | "reel") => invoke<{ tiled: boolean }>("tile_windows", { kind }),
   /** Shared scratchpad between windows (⌘C clips, the drag in progress). */
   stashSet: (key: string, value: unknown) =>
     invoke<void>("stash_set", { key, value: value == null ? null : JSON.stringify(value) }).catch(() => {}),
   stashGet: <T>(key: string) =>
     invoke<string | null>("stash_get", { key }).then((v) => (v ? (JSON.parse(v) as T) : null)).catch(() => null),
+  /** Beats of a song (every beat, the downbeats, tempo, a loudness outline). */
+  analyzeBeats: (path: string) => invoke<BeatInfo>("analyze_beats", { path }),
+  /** Export a reel: 1080×1920, the pieces in order, the song from `musicStartS`.
+   *  Job "reel-export" (Stop through `cancelJob`). */
+  reelExport: (req: {
+    pieces: { path: string; in_s: number; out_s: number }[];
+    musicPath: string;
+    musicStartS: number;
+    fps: number | null;
+    quality: string;
+    destDir: string;
+    name: string;
+  }) => invoke<{ path: string; mode: string; reencoded: boolean }>("reel_export", { req }),
   /** Bring the library forward with this clip selected in its folder. */
   showInLibrary: (path: string) => invoke<void>("show_in_library", { path }),
   /** A tool window asked the library to show a clip (library window only). */
@@ -135,6 +149,9 @@ export const api = {
   videoScrubstrip: (path: string) =>
     invoke<FilmstripInfo>("video_scrubstrip", { path }),
   /** The hover strip IF already cached — never triggers a build. */
+  /** Frames of one part of a clip (a marked segment), times from `inS`. */
+  videoRangeStrip: (path: string, inS: number, outS: number) =>
+    invoke<FilmstripInfo>("video_range_strip", { path, inS, outS }),
   videoScrubstripCached: (path: string) =>
     invoke<FilmstripInfo | null>("video_scrubstrip_cached", { path }).catch(() => null),
   /** Dense Focus filmstrip IF already cached — never triggers a build. */

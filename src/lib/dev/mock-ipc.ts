@@ -456,6 +456,34 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
   },
   video_scrubstrip_cached: () => null,
   video_filmstrip_cached: () => null,
+  video_filmstrip: () => ({ src: "/dev-sprite.jpg", cols: 8, rows: 5, count: 40, tile_w: 160, tile_h: 90, duration: 40 }),
+  video_range_strip: (a) => ({ src: "/dev-sprite.jpg", cols: 8, rows: 5, count: 40, tile_w: 160, tile_h: 90, duration: Math.max(0.1, a.outS - a.inS) }),
+  // A 112 BPM song, 3 minutes: beats from 0.4 s, a downbeat every 4.
+  analyze_beats: async (a) => {
+    await new Promise((r) => setTimeout(r, 600));
+    if (!/\.(mp3|m4a|wav|aac|flac|ogg|opus|aiff?)$/i.test(a.path)) throw "That isn't an audio file FoxCull can use (MP3, M4A, AAC, WAV, FLAC, OGG, Opus, AIFF).";
+    const period = 60 / 112;
+    const beats = Array.from({ length: Math.floor((180 - 0.4) / period) }, (_, i) => +(0.4 + i * period).toFixed(3));
+    const wave = Array.from({ length: 180 * 40 }, (_, i) => {
+      const t = i / 40;
+      const ph = ((t - 0.4) / period) % 1;
+      const kick = ph >= 0 && ph < 0.12 ? 1 - ph * 5 : 0;
+      return Math.min(1, 0.25 + 0.15 * Math.sin(t / 7) + 0.55 * kick * (Math.round((t - 0.4) / period) % 4 === 0 ? 1 : 0.6));
+    });
+    return { duration: 180, bpm: 112, beats, major: beats.filter((_, i) => i % 4 === 0), wave, wave_rate: 40 };
+  },
+  reel_export: async (a) => {
+    const n = a.req.pieces.length;
+    const ok = await fakeJob("reel-export", 100, 5000, { label: `Exporting reel → ${a.req.name}.mp4`, detail: () => `${n} clips · 1080×1920` });
+    const { activity } = await import("$lib/activity.svelte");
+    const path = `${a.req.destDir}/${a.req.name}.mp4`;
+    if (!ok) {
+      activity.ingest({ id: "reel-export", label: "Export cancelled", done: 100, total: 100, state: "done" });
+      throw "export cancelled";
+    }
+    activity.ingest({ id: "reel-export", label: `Exported ${a.req.name}.mp4`, done: 100, total: 100, state: "done", detail: "48 MB in 5 s", path });
+    return { path, mode: "reencoded-x264", reencoded: true };
+  },
   video_proxy_cached: () => null,
   path_exists: () => true,
   is_system_root: (a) => a.dir === "/",
@@ -523,7 +551,9 @@ export function installMockIpc() {
     unregisterCallback: () => {},
     // Videos play a local sample (static/dev-sample.mp4, generated for QA and
     // gitignored) so Focus, markers and the Edit preview can be exercised.
-    convertFileSrc: (p: string) => (/\.(mp4|mov)$/i.test(p) ? "/dev-sample.mp4" : p),
+    // Songs play the sample's soundtrack; the sprite is static/dev-sprite.jpg
+    // (also generated, 8×5 frames of the sample, gitignored).
+    convertFileSrc: (p: string) => (/\.(mp4|mov|mp3|m4a|wav|aac|flac|ogg)$/i.test(p) ? "/dev-sample.mp4" : p),
     metadata: { currentWindow: { label: "main" }, currentWebview: { windowLabel: "main", label: "main" } },
   };
   // `__setSetting({ filmstripPos: "left" })` then reload: flip any persisted

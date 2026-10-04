@@ -1,3 +1,4 @@
+mod beats;
 mod cast;
 mod catalog;
 mod commands;
@@ -207,6 +208,9 @@ pub fn run() {
             commands::get_video_segments,
             commands::set_video_segments,
             commands::video_ranges,
+            commands::analyze_beats,
+            commands::reel_export,
+            commands::video_range_strip,
             commands::export_video_segments,
             commands::edit_export,
             commands::cancel_edit_export,

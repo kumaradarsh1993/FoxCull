@@ -467,6 +467,12 @@ pub fn filmstrip_path(cache_dir: &Path, src: &Path) -> PathBuf {
     sprite_path(cache_dir, src, "f")
 }
 
+/// The folder holding a clip's range strips (`r<hash>/<in>-<out>.jpg`, one
+/// per marked segment the Reel window showed), so they go with the clip.
+pub fn range_strip_dir(cache_dir: &Path, src: &Path) -> PathBuf {
+    sprite_path(cache_dir, src, "r").with_extension("")
+}
+
 /// Lighter sprite-sheet cache path for grid thumbnail hover skimming.
 pub fn scrubstrip_path(cache_dir: &Path, src: &Path) -> PathBuf {
     sprite_path(cache_dir, src, "s")
@@ -853,6 +859,7 @@ pub fn ensure_filmstrip(
     ensure_sprite(
         ffmpeg,
         src,
+        None,
         filmstrip_path(cache_dir, src),
         FILMSTRIP_COLS,
         FILMSTRIP_TILE_W,
@@ -879,9 +886,41 @@ pub fn ensure_scrubstrip(
     ensure_sprite(
         ffmpeg,
         src,
+        None,
         scrubstrip_path(cache_dir, src),
         SCRUBSTRIP_COLS,
         SCRUBSTRIP_TILE_W,
+        12,
+        40,
+        cancel,
+        on_progress,
+    )
+}
+
+/// A frame strip of one part of a clip (a marked segment, for the Reel
+/// window's beat board): about two frames a second of that part, so a
+/// 5-second segment of a 20-minute clip gets its own frames instead of the
+/// one or two the whole clip's strip has there. `duration` in the result is
+/// the part's length; frame times are relative to `in_s`.
+pub fn ensure_range_strip(
+    cache_dir: &Path,
+    ffmpeg: Option<&Path>,
+    src: &Path,
+    in_s: f64,
+    out_s: f64,
+    cancel: &(dyn Fn() -> bool + Sync),
+    on_progress: &(dyn Fn(u32, u32) + Sync),
+) -> Result<(PathBuf, Filmstrip), String> {
+    let dir = range_strip_dir(cache_dir, src);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let sprite = dir.join(format!("{}-{}.jpg", (in_s * 100.0).round() as i64, (out_s * 100.0).round() as i64));
+    ensure_sprite(
+        ffmpeg,
+        src,
+        Some((in_s, out_s)),
+        sprite,
+        FILMSTRIP_COLS,
+        FILMSTRIP_TILE_W,
         12,
         40,
         cancel,
@@ -893,6 +932,7 @@ pub fn ensure_scrubstrip(
 fn ensure_sprite(
     ffmpeg: Option<&Path>,
     src: &Path,
+    range: Option<(f64, f64)>,
     sprite: PathBuf,
     cols: u32,
     tile_w: u32,
@@ -913,10 +953,15 @@ fn ensure_sprite(
         return Ok((sprite, fs));
     }
     let ff = ffmpeg.ok_or("ffmpeg not available")?;
-    let duration = probe_duration(ff, src).ok_or("could not read video duration")?;
-    // ~1 frame/second, clamped so short clips stay dense and long ones do not
-    // blow up cache or keep the extractor busy longer than a preview should.
-    let count = (duration.round() as u32).clamp(min_frames, max_frames);
+    let (start, duration) = match range {
+        Some((a, b)) if b > a => (a.max(0.0), b - a.max(0.0)),
+        _ => (0.0, probe_duration(ff, src).ok_or("could not read video duration")?),
+    };
+    // ~1 frame/second (2 for a part of a clip), clamped so short clips stay
+    // dense and long ones do not blow up cache or keep the extractor busy
+    // longer than a preview should.
+    let per_s = if range.is_some() { 2.0 } else { 1.0 };
+    let count = ((duration * per_s).round() as u32).clamp(min_frames, max_frames);
     let rows = count.div_ceil(cols);
 
     // One build at a time process-wide; re-check the cache and the cancel token
@@ -964,7 +1009,7 @@ fn ensure_sprite(
                 }
                 // Mid-cell timestamps so the first/last frames aren't the (often
                 // black) container edges.
-                let at = (i as f64 + 0.5) * duration / count as f64;
+                let at = start + (i as f64 + 0.5) * duration / count as f64;
                 let out = scratch.join(format!("{i:03}.jpg"));
                 if !extract_frame_at(ff, src, at, tile_w, true, &out) {
                     // Odd container / no keyframe found there — decode exactly.
@@ -1002,6 +1047,9 @@ fn ensure_sprite(
         // Not one frame came out via seeking — an unseekable container. Fall
         // back to the single-pass keyframe scan (slow but universal).
         cleanup();
+        if range.is_some() {
+            return Err("couldn't read frames from that part of the clip".into());
+        }
         let fps = count as f64 / duration;
         make_filmstrip_fullscan(ff, src, &sprite, cols, rows, fps, tile_w)?;
         let (w, h) = image::image_dimensions(&sprite).map_err(|e| e.to_string())?;

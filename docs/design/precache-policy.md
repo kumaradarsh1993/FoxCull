@@ -62,6 +62,7 @@ by hand.
 | Video poster (grid) | `v<hash>.jpg` | `video::ensure_poster` | 480 px box | grid + filmstrip video tiles |
 | Video poster (Focus) | `w<hash>.jpg` | `video::ensure_poster_hires` | 1280 px box | Focus first frame before playback |
 | **Scrub sprite** | `f<hash>.jpg` + `f<hash>.json` | `video::ensure_filmstrip` | 10 cols × 240 px tiles, 16–48 frames | grid/Focus **fallback only** when live decode cannot take the clip |
+| Range strip (Reel) | `r<hash>/<in>-<out>.jpg` + `.json` (in/out in hundredths of a second) | `video::ensure_range_strip` | 10 cols × 240 px tiles, 12–40 frames (~2/s of the segment) | the Reel window's beat board, for a marked segment (a whole-clip piece uses the `f` sprite). Built only when that board shows the segment, one at a time; removed with the clip (`cache_files_for` lists the folder) |
 | ~~Hover scrub strip~~ (legacy) | `s<hash>.jpg` + `s<hash>.json` | `video::ensure_scrubstrip` | 8 cols × 160 px tiles, 12–40 frames | read-only: still painted if cached, never built |
 | H.264 proxy | `p<hash>.mp4` | `video::ensure_proxy` | ≤1920 long edge, CRF 22 | clips the webview cannot decode |
 | Video length | catalog table `durations` (rel, seconds, mtime, size), not a cache file | `video_durations` → `video::mp4_duration` (MP4/MOV header: a few small reads, ~0.4 ms per 4 GB Osmo clip) or the ffmpeg banner for other containers | one row per clip | grid length badge, multi-selection total, merge dialog. Fetched on folder open in batches of 64 on the warm pool; validated by (mtime, size) like `captures` |
@@ -352,6 +353,15 @@ artifacts:
            is off or ScrubEngine.open() rejected the clip. Nothing pre-builds
            sprites any more — `prepare` and `neighbour_prefetch` were removed as
            triggers."
+  - id: range_strip                    # Reel window, one per marked segment
+    file: "r<hash>/<in>-<out>.jpg + .json"
+    cols: 10
+    tile_w: 240
+    frames: {min: 12, max: 40, rate: "~2/sec of the segment, clamped"}
+    builder: "video::ensure_range_strip"
+    triggers: [reel_board_shows_segment]
+    note: "Built on demand, sequentially, by the Reel window only. Shares the
+           process-wide sprite lock. Removed with its clip."
   - id: scrubstrip                     # legacy; read-only, never built
     file: "s<hash>.jpg + s<hash>.json"
     cols: 8

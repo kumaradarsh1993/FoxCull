@@ -70,6 +70,25 @@ export interface EditInbox {
   mode: "append" | "seed";
 }
 
+/** What the library sends the Reel window. */
+export interface ReelInbox {
+  type: "add";
+  clips: ClipRef[];
+}
+
+/** A song's beats (backend `analyze_beats`). */
+export interface BeatInfo {
+  duration: number;
+  bpm: number;
+  /** Every beat, seconds, ascending. */
+  beats: number[];
+  /** The downbeats (a subset of `beats`): the strong cut points. */
+  major: number[];
+  /** Peak level 0..1 per bucket, `wave_rate` buckets a second. */
+  wave: number[];
+  wave_rate: number;
+}
+
 /** What the library sends the Merge window. */
 export type MergeInbox = { type: "review"; items: MediaItem[]; sourceDir: string } | { type: "show" };
 

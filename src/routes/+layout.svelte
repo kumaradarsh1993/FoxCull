@@ -7,6 +7,7 @@
   import { windowKind } from "$lib/windows";
   import EditWindow from "$lib/components/EditWindow.svelte";
   import MergeWindow from "$lib/components/MergeWindow.svelte";
+  import ReelWindow from "$lib/components/ReelWindow.svelte";
 
   // Every FoxCull window loads this app; its label decides what it is. The
   // library page (children) only ever mounts in the main window.
@@ -37,6 +38,8 @@
   <EditWindow />
 {:else if kind === "merge"}
   <MergeWindow />
+{:else if kind === "reel"}
+  <ReelWindow />
 {:else}
   {@render children()}
 {/if}

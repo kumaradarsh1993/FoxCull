@@ -167,8 +167,10 @@ stamps the tag's version into **both** `tauri.conf.json` and `Cargo.toml`
   window since 2026-10-04, hosted by `EditWindow.svelte`; clips come from the
   library): Look presets (CSS/SVG filter preview ↔ ffmpeg filter export,
   algebraically matched), timeline, export dialog with CRF-labeled quality +
-  time-cost bar. `MergeWindow.svelte` + `MergeDialog.svelte` are the Merge
-  window. `+layout.svelte` picks the view by window label.
+  time-cost bar. `MergeWindow.svelte` + `MergeDialog.svelte` (+ `SegPlayer`)
+  are the Merge window; `ReelWindow.svelte` + `ReelBoard.svelte` the Reel
+  window (rules in `lib/reel.ts`, beats from `beats.rs`). In/out segment rules
+  live in `lib/segments.ts`. `+layout.svelte` picks the view by window label.
 - `lib/components/` — Loupe (zoomable viewer), VirtualGrid/VirtualStrip
   (windowed rendering), SectionedGrid, DetailsView, TrashPanel, ActivityBar,
   ContextMenu, Thumb, TreeNode.

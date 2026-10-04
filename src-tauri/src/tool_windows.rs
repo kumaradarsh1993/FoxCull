@@ -1,7 +1,7 @@
-//! The Edit and Merge windows: separate OS windows beside the library.
+//! The Edit, Merge and Reel windows: separate OS windows beside the library.
 //!
 //! Every window loads the same app (`index.html`); the frontend picks what to
-//! render from the window's label ("main" = library, "edit", "merge"). That
+//! render from the window's label ("main" = library, "edit", "merge", "reel"). That
 //! keeps routing out of it entirely, in dev and in the bundle alike.
 //!
 //! The library hands work to a tool window through an **inbox** held here,
@@ -25,6 +25,7 @@ fn spec(kind: &str) -> Option<(&'static str, &'static str, f64, f64, f64, f64)> 
         // label, title, width, height, min width, min height
         "edit" => Some(("edit", "FoxCull Edit", 1180.0, 780.0, 760.0, 520.0)),
         "merge" => Some(("merge", "FoxCull Merge", 1120.0, 760.0, 680.0, 480.0)),
+        "reel" => Some(("reel", "FoxCull Reel", 1240.0, 860.0, 860.0, 560.0)),
         _ => None,
     }
 }
@@ -42,15 +43,19 @@ pub fn open_tool_window(app: AppHandle, kind: String, payload: Option<String>) -
         let _ = win.show();
         let _ = win.set_focus();
     } else {
-        WebviewWindowBuilder::new(&app, label, WebviewUrl::App("index.html".into()))
+        let mut b = WebviewWindowBuilder::new(&app, label, WebviewUrl::App("index.html".into()))
             .title(title)
             .inner_size(w, h)
-            .min_inner_size(min_w, min_h)
-            // HTML5 drag and drop (clips dragged in from the library) needs the
-            // webview to see drops; the native file-drop handler would eat them.
-            .disable_drag_drop_handler()
-            .build()
-            .map_err(|e| format!("couldn't open the {kind} window: {e}"))?;
+            .min_inner_size(min_w, min_h);
+        // Edit and Merge take clips dragged in from the library (HTML5 drag
+        // and drop), which the native file-drop handler would eat. The Reel
+        // window wants the opposite: a song dropped from Finder/Explorer,
+        // with its path, which only the native handler gives. Its clips come
+        // from the library's menu or ⌘C/⌘V, and it reorders with the pointer.
+        if label != "reel" {
+            b = b.disable_drag_drop_handler();
+        }
+        b.build().map_err(|e| format!("couldn't open the {kind} window: {e}"))?;
     }
     let _ = app.emit_to(label, "tool-inbox", ());
     Ok(())

@@ -1,11 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core capability for FoxCull's windows: the library (main), Edit and Merge",
+  "description": "Core capability for FoxCull's windows: the library (main), Edit, Merge and Reel",
   "windows": [
     "main",
     "edit",
-    "merge"
+    "merge",
+    "reel"
   ],
   "permissions": [
     "core:default",

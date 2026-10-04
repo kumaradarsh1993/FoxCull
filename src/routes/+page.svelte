@@ -1138,6 +1138,7 @@
       ];
     });
     activity.addActions((j) => (j.id === "edit-export" ? [{ label: "Show Edit window", run: () => void api.openToolWindow("edit") }] : []));
+    activity.addActions((j) => (j.id === "reel-export" ? [{ label: "Show Reel window", run: () => void api.openToolWindow("reel") }] : []));
     // A merge, export or saved frame landed: show it if it's in this folder.
     void api
       .onMediaOutput((path) => {
@@ -1548,6 +1549,16 @@
       }
     } catch (e) {
       openAsk({ title: "Couldn't open the Edit window", body: String(e) });
+    }
+  }
+
+  /** Open (or bring forward) the Reel window with the selected videos. */
+  async function openReel() {
+    const refs = clipRefs(targets().filter((i) => i.kind === "video" && !i.missing));
+    try {
+      await api.openToolWindow("reel", refs.length ? { type: "add", clips: refs } : null);
+    } catch (e) {
+      openAsk({ title: "Couldn't open the Reel window", body: String(e) });
     }
   }
 
@@ -2911,6 +2922,15 @@
               label: `Merge ${ts.filter((i) => i.kind === "video" && !i.missing).length} videos into one…`,
               icon: "⧉",
               action: openMerge,
+            } as MenuEntry,
+          ]
+        : []),
+      ...(ctx.kind === "video"
+        ? [
+            {
+              label: "Create a reel synced to music…",
+              icon: "♫",
+              action: () => void openReel(),
             } as MenuEntry,
           ]
         : []),

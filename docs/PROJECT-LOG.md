@@ -914,3 +914,32 @@ writing after the app had gone. The same day the owner described what comes
 next: segments in Merge, a cleaner way to mark them, and a third, music-synced
 reel mode (`docs/design/segments-and-reel-mode.md`).
 
+## 2026-10-04 (evening) — segments, and reels cut to the beat
+
+The owner's "major item" came as one long voice note, and it rests on one
+idea: the library is where clips are chosen and trimmed, for all three ways
+of making something (Merge for YouTube, Edit for anything careful, and a new
+Reel mode for Instagram). So trimming had to get good first. In Focus, `[`
+and `]` now build several pieces of a clip, the way the owner described
+pressing them while a clip plays; the pieces can't overlap, they show on the
+scrub bar, and their edges drag a frame at a time.
+
+Merge then learned to use those pieces: tick a clip and only its marked
+parts go into the YouTube file, untick it and the whole clip does, since
+pieces are sometimes marked for an Instagram cut instead. Doing that without
+re-encoding took some measuring: two obvious ways of cutting gave files whose
+timestamps ran backwards at the joins, and a third (cutting each piece to a
+transport stream first) joined cleanly on a real Osmo clip. The catch, which
+the window states, is that a lossless cut starts on a keyframe, up to half a
+second early on the Osmo; Convert cuts exactly.
+
+The Reel window is the new part. The owner wanted Instagram's "sync to
+music" without its habit of cutting a ten-second clip to two seconds because
+a beat happened to land there. FoxCull finds a song's beats and bar starts
+itself, spreads the clips over the chosen part of the song cut on bar starts,
+and shows every clip as a strip of frames with a window the owner can slide
+or stretch to another beat, the rest of the reel re-flowing behind it. A clip
+too short for its window shows the gap in red. The beat finder was written
+here rather than pulled in, and is tested on drum-machine tracks; how it does
+on the owner's real songs is the next thing to learn. Cropping landscape
+clips by hand is left for later, as the owner suggested.

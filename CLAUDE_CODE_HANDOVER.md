@@ -1,5 +1,31 @@
 # Agent Handover: FoxCull
 
+## 2026-10-04 (evening) — segments everywhere, the Reel window (nightly.5)
+
+Ledger: `docs/changes/2026-10-04-segments-and-reel.md` (has the table of
+decisions the spec left open). Spec: `docs/design/segments-and-reel-mode.md`.
+
+- **Segment rules live in `src/lib/segments.ts`** (pure; `[`/`]` semantics,
+  no overlaps). Loupe only calls them. Change the rules there, and re-run the
+  node test the ledger describes.
+- **Merge with segments:** the frontend sends `parts` (path + optional
+  in/out) in play order. Lossless = each piece copied out as MPEG-TS then
+  joined (`merge_items_copy`); don't go back to concat-demuxer inpoints or
+  cut MP4 parts: both gave backwards timestamps on B-frame footage. Convert =
+  exact `-ss`/`-t` per part.
+- **Windows read segments with `video_ranges`**, which opens the clip's own
+  drive catalog; `get_video_segments` only knows the active drive.
+- **Reel:** layout rules in `src/lib/reel.ts` (pure, node-tested); beats in
+  `src-tauri/src/beats.rs` (own FFT/flux/autocorrelation/DP, tests on click
+  tracks). The export is an Edit export built by `reel_edit_request` and run
+  by `run_edit_export` under job "reel-export" with its own flag. The Reel
+  window keeps Tauri's native drop handler (for song paths), so nothing in it
+  may rely on HTML5 drag and drop.
+- `analyze_beats` adds the song file to the asset scope (the song can live
+  anywhere); nothing else widens the scope.
+- Not verified in the real app: the Reel window's native song drop, playback
+  of the reel preview on real 4K clips, beats on real music.
+
 ## 2026-10-04 (later) — Edit and Merge windows (nightly.4)
 
 Ledger: `docs/changes/2026-10-04-edit-and-merge-windows.md`. **Next, owner's

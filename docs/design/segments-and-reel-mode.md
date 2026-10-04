@@ -2,6 +2,10 @@
 
 **Status:** owner spec, 2026-10-04 (voice brief, captured close to their
 words). A major item. Builds on `docs/design/edit-window-rework.md`.
+**Built in `v1.5.2-nightly.5`**: the decisions this spec left open, and what
+was verified, are in `docs/changes/2026-10-04-segments-and-reel.md`. Still to
+do from here: the landscape crop (below), and tuning the beat detection on
+the owner's real songs.
 
 FoxCull has three edit workflows:
 

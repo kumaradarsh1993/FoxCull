@@ -70,6 +70,8 @@ FoxCull uses cache in a few layers:
   posters for that folder.
 - Live Scrub builds a small hover strip on demand the first time you linger on
   a video tile; the Focus view builds a denser filmstrip for its seek bar.
+- The Reel window's beat board builds a frame strip per marked segment it
+  shows (`r<hash>/` folders beside the other strips), removed with the clip.
   Both are extracted by keyframe seeks (a few seconds per clip, cancellable),
   never a full decode of the footage.
 

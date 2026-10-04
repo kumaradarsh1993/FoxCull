@@ -160,6 +160,7 @@ function classify(id: string): { kind: JobKind; quiet: boolean } {
     case "merge":
       return { kind: "merge", quiet: false };
     case "edit":
+    case "reel":
     case "export":
     case "subclips":
     case "raw":

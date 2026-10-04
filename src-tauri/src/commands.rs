@@ -594,7 +594,7 @@ fn validate_media_anywhere(state: &AppState, path: &str) -> Result<PathBuf, Stri
 fn is_audio_file(path: &Path) -> bool {
     matches!(
         media::ext_lower(path).as_str(),
-        "mp3" | "m4a" | "aac" | "wav" | "flac" | "ogg"
+        "mp3" | "m4a" | "aac" | "wav" | "flac" | "ogg" | "opus" | "aif" | "aiff"
     )
 }
 
@@ -2264,6 +2264,25 @@ pub async fn video_filmstrip(
     .map_err(|e| e.to_string())?
 }
 
+/// A frame strip of one part of a clip (the Reel window's beat board shows a
+/// marked segment with frames of its own). Frame times run from `in_s`.
+#[tauri::command]
+pub async fn video_range_strip(state: State<'_, AppState>, path: String, in_s: f64, out_s: f64) -> Result<FilmstripInfo, String> {
+    let len = out_s - in_s;
+    if len.is_nan() || len <= 0.05 {
+        return Err("empty range".into());
+    }
+    let cache_dir = state.cache_dir.lock().clone();
+    let ffmpeg = state.ffmpeg.clone();
+    let src = validate_media_anywhere(&state, &path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        video::ensure_range_strip(&cache_dir, ffmpeg.as_deref(), &src, in_s, out_s, &|| false, &|_, _| {})
+            .map(|(sprite, fs)| filmstrip_info(sprite, fs))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Lighter sprite for grid/source-thumbnail hover scrubbing. This is separate
 /// from the denser Focus filmstrip so Live Scrub can stay responsive on older
 /// laptops.
@@ -3506,6 +3525,7 @@ fn fmt_secs(s: f64) -> String {
 ///   * TS pieces joined cleanly: on a real Osmo Pocket 3 clip (HEVC 10-bit,
 ///     a keyframe every 0.5 s), segment + whole clip + segment → 794 frames,
 ///     no gaps, nothing backwards, zero decode errors.
+///
 /// A stream copy can only start at a keyframe, so each segment starts at the
 /// keyframe at or before its in point (within 0.5 s on Osmo footage); the
 /// window says so, and Convert gives frame-exact cuts.
@@ -4143,9 +4163,6 @@ mod merge_tests {
         assert!(args(&clip, "videotoolbox").join(" ").contains("-c:a aac -b:a 320k"));
     }
 
-    /// The whole convert-merge on real files. Opt-in:
-    /// FOXCULL_FFMPEG=… FOXCULL_MERGE_FILES="a.mp4\nb.mp4" FOXCULL_MERGE_DEST=out.mp4
-    /// FOXCULL_MERGE_CONVERT="1488x1984@30,hlg,10,37000" cargo test --lib real_convert_merge -- --ignored
     /// Opt-in: a real lossless merge of whole clips and segments.
     /// FOXCULL_FFMPEG, FOXCULL_MERGE_DEST, and FOXCULL_MERGE_PARTS as lines of
     /// `path` or `path|in|out`.
@@ -4169,6 +4186,55 @@ mod merge_tests {
         assert!(dest.is_file());
     }
 
+    /// Opt-in: a real reel export. FOXCULL_FFMPEG, FOXCULL_REEL_DEST (a
+    /// folder), FOXCULL_REEL_SONG, FOXCULL_REEL_START (seconds into the song),
+    /// and FOXCULL_REEL_PARTS as lines of `path|in|out`.
+    #[test]
+    #[ignore]
+    fn real_reel_export() {
+        let ffmpeg = std::env::var("FOXCULL_FFMPEG").expect("FOXCULL_FFMPEG");
+        let dest = std::env::var("FOXCULL_REEL_DEST").expect("FOXCULL_REEL_DEST");
+        let song = std::env::var("FOXCULL_REEL_SONG").expect("FOXCULL_REEL_SONG");
+        let start: f64 = std::env::var("FOXCULL_REEL_START").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let clips: Vec<super::EditClip> = std::env::var("FOXCULL_REEL_PARTS")
+            .expect("FOXCULL_REEL_PARTS")
+            .lines()
+            .map(|l| {
+                let f: Vec<&str> = l.split('|').collect();
+                super::EditClip { path: f[0].into(), in_s: f[1].parse().unwrap(), out_s: f[2].parse().unwrap(), crop_x: 0.5, crop_y: 0.5, zoom: 1.0 }
+            })
+            .collect();
+        let req = super::reel_edit_request(clips, song, start, Some(30), "standard".into(), dest, "Test reel".into());
+        let out = super::edit_output_path(&req, true).unwrap();
+        super::export_reencoded(Path::new(&ffmpeg), &req, &out, "x264", false, false, None).unwrap();
+        assert!(out.is_file());
+        eprintln!("REEL {}", out.display());
+    }
+
+    /// Opt-in: a range strip of a real clip. FOXCULL_FFMPEG, FOXCULL_STRIP_SRC
+    /// (a video at least 8 s long), FOXCULL_STRIP_CACHE (a scratch folder).
+    #[test]
+    #[ignore]
+    fn real_range_strip() {
+        let ffmpeg = std::env::var("FOXCULL_FFMPEG").expect("FOXCULL_FFMPEG");
+        let src = std::path::PathBuf::from(std::env::var("FOXCULL_STRIP_SRC").expect("FOXCULL_STRIP_SRC"));
+        let cache = std::path::PathBuf::from(std::env::var("FOXCULL_STRIP_CACHE").expect("FOXCULL_STRIP_CACHE"));
+        let (sprite, fs) = crate::video::ensure_range_strip(&cache, Some(Path::new(&ffmpeg)), &src, 3.0, 8.0, &|| false, &|_, _| {}).unwrap();
+        assert!(sprite.is_file());
+        assert!((fs.duration - 5.0).abs() < 1e-6);
+        assert!(fs.count >= 10, "{} frames", fs.count);
+        // It goes with the clip.
+        let all = super::cache_files_for(&cache, &src.to_string_lossy());
+        assert!(all.contains(&sprite));
+        for c in all {
+            super::remove_cache_path(&c);
+        }
+        assert!(!crate::video::range_strip_dir(&cache, &src).exists());
+    }
+
+    /// The whole convert-merge on real files. Opt-in:
+    /// FOXCULL_FFMPEG=… FOXCULL_MERGE_FILES="a.mp4\nb.mp4" FOXCULL_MERGE_DEST=out.mp4
+    /// FOXCULL_MERGE_CONVERT="1488x1984@30,hlg,10,37000" cargo test --lib real_convert_merge -- --ignored
     #[test]
     #[ignore]
     fn real_convert_merge() {
@@ -4587,6 +4653,17 @@ pub struct EditExportRequest {
     /// outputs 10-bit HEVC with HLG tags. Falls back to SDR if that encode fails.
     #[serde(default)]
     pub keep_hdr: bool,
+    /// Where in the music track the export starts (the Reel window's chosen
+    /// section of the song). 0 = its beginning.
+    #[serde(default)]
+    pub music_start_s: f64,
+    /// Fade the music out over this many seconds at the end (0 = hard stop).
+    #[serde(default)]
+    pub music_fade_s: f64,
+    /// Keep the name as typed (spaces and all) instead of the Edit window's
+    /// file-safe underscores.
+    #[serde(default)]
+    pub friendly_name: bool,
 }
 
 #[derive(Deserialize)]
@@ -4748,7 +4825,7 @@ fn edit_output_path(req: &EditExportRequest, reencode: bool) -> Result<PathBuf, 
         .basename
         .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .map(clean_name)
+        .map(|b| if req.friendly_name { friendly_file_stem(b) } else { clean_name(b) })
         .or_else(|| {
             Path::new(&first.path)
                 .file_stem()
@@ -5368,6 +5445,9 @@ fn export_reencoded(
     }
     let music = req.music_path.as_ref().filter(|p| !p.trim().is_empty());
     if let Some(music_path) = music {
+        if req.music_start_s > 0.0 {
+            cmd.arg("-ss").arg(format!("{:.6}", req.music_start_s));
+        }
         cmd.args(["-stream_loop", "-1", "-i"]).arg(music_path);
     }
     let filter = build_video_filter(req, &hdr_flags, &src_dims, conform, multi_audio, passthrough)?;
@@ -5375,6 +5455,15 @@ fn export_reencoded(
     if music.is_some() {
         let music_index = req.clips.len();
         cmd.arg("-map").arg(format!("{music_index}:a:0")).arg("-shortest");
+        // A 20 ms fade in (no click on the first cut) and the requested fade
+        // out, timed against the video's length.
+        let total: f64 = req.clips.iter().map(|c| (c.out_s - c.in_s).max(0.0)).sum();
+        let fade = req.music_fade_s.clamp(0.0, total / 2.0);
+        let mut af = String::from("afade=t=in:d=0.02");
+        if fade > 0.0 {
+            af.push_str(&format!(",afade=t=out:st={:.3}:d={fade:.3}", (total - fade).max(0.0)));
+        }
+        cmd.args(["-af", &af]);
     } else if multi_audio {
         cmd.args(["-map", "[aout]"]);
     } else if req.preserve_source_audio && req.clips.len() == 1 {
@@ -5476,124 +5565,314 @@ pub async fn edit_export(
     let my_gen = state.export_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let gen = state.export_gen.clone();
 
-    tauri::async_runtime::spawn_blocking(move || {
-        let total_s: f64 = req
-            .clips
-            .iter()
-            .map(|c| (c.out_s - c.in_s).max(0.0))
-            .sum();
-        let first_name = Path::new(&req.clips[0].path)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "clip".into());
-        let watch = ExportWatch {
-            app,
-            job: "edit-export",
-            gen: Some((gen, my_gen)),
-            flag: None,
-            label: format!("Exporting {first_name}"),
-            detail: None,
-            total_s,
-            base_pct: 0.0,
-            span_pct: 100.0,
-            expect_bytes: 0,
-            started: Instant::now(),
-        };
-        watch.emit(0, "running");
-        // Decide re-encode BEFORE picking the output path — it selects the
-        // container extension. A "lossless" multi-clip export still has to
-        // re-encode when the clips' resolutions don't match (stream-copy concat
-        // would produce a broken file).
-        let reencode =
-            edit_requires_reencode(&req) || concat_needs_reencode(&ffmpeg, &req);
-        let dest = match edit_output_path(&req, reencode) {
-            Ok(d) => d,
-            Err(e) => {
-                emit_activity(&watch.app, "edit-export", &e, 0, 100, "error");
-                return Err(e);
-            }
-        };
-        let w = Some(&watch);
-        let run = || -> Result<EditExportOutcome, String> {
-            if reencode {
-                let mode = if req.normalize && req.keep_hdr {
-                    // Keep HDR: try 10-bit HEVC HLG passthrough. If that encode fails
-                    // (no libx265 / HDR support), fall back to SDR so the export still
-                    // succeeds — the mode string records what actually happened.
-                    match export_reencoded(&ffmpeg, &req, &dest, "x264", false, true, w) {
-                        Ok(()) => "reencoded-hdr".to_string(),
+    tauri::async_runtime::spawn_blocking(move || run_edit_export(app, &ffmpeg, req, "edit-export", Some((gen, my_gen)), None, None))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The body of an Edit export (and a Reel export, which is one with its own
+/// job id and Stop): pick lossless or re-encode, run ffmpeg watched, report.
+fn run_edit_export(
+    app: AppHandle,
+    ffmpeg: &Path,
+    req: EditExportRequest,
+    job: &'static str,
+    gen: Option<(Arc<AtomicU64>, u64)>,
+    flag: Option<Arc<AtomicBool>>,
+    label: Option<String>,
+) -> Result<EditExportOutcome, String> {
+    let ffmpeg = ffmpeg.to_path_buf();
+    let total_s: f64 = req
+        .clips
+        .iter()
+        .map(|c| (c.out_s - c.in_s).max(0.0))
+        .sum();
+    let first_name = Path::new(&req.clips[0].path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "clip".into());
+    let watch = ExportWatch {
+        app,
+        job,
+        gen,
+        flag,
+        label: label.unwrap_or_else(|| format!("Exporting {first_name}")),
+        detail: None,
+        total_s,
+        base_pct: 0.0,
+        span_pct: 100.0,
+        expect_bytes: 0,
+        started: Instant::now(),
+    };
+    watch.emit(0, "running");
+    // Decide re-encode BEFORE picking the output path — it selects the
+    // container extension. A "lossless" multi-clip export still has to
+    // re-encode when the clips' resolutions don't match (stream-copy concat
+    // would produce a broken file).
+    let reencode =
+        edit_requires_reencode(&req) || concat_needs_reencode(&ffmpeg, &req);
+    let dest = match edit_output_path(&req, reencode) {
+        Ok(d) => d,
+        Err(e) => {
+            emit_activity(&watch.app, job, &e, 0, 100, "error");
+            return Err(e);
+        }
+    };
+    let w = Some(&watch);
+    let run = || -> Result<EditExportOutcome, String> {
+        if reencode {
+            let mode = if req.normalize && req.keep_hdr {
+                // Keep HDR: try 10-bit HEVC HLG passthrough. If that encode fails
+                // (no libx265 / HDR support), fall back to SDR so the export still
+                // succeeds — the mode string records what actually happened.
+                match export_reencoded(&ffmpeg, &req, &dest, "x264", false, true, w) {
+                    Ok(()) => "reencoded-hdr".to_string(),
+                    Err(e) if e == EXPORT_CANCELLED => return Err(e),
+                    Err(_) => match reencode_pick_encoder(&ffmpeg, &req, &dest, true, w) {
+                        Ok(m) => format!("{m}-sdr-fallback"),
                         Err(e) if e == EXPORT_CANCELLED => return Err(e),
-                        Err(_) => match reencode_pick_encoder(&ffmpeg, &req, &dest, true, w) {
-                            Ok(m) => format!("{m}-sdr-fallback"),
-                            Err(e) if e == EXPORT_CANCELLED => return Err(e),
-                            Err(_) => reencode_pick_encoder(&ffmpeg, &req, &dest, false, w)?,
-                        },
-                    }
-                } else {
-                    // Try HDR tone-mapping first; if that attempt fails while
-                    // normalising (e.g. the bundled ffmpeg lacks zscale), retry without
-                    // it so the export still succeeds — just without HDR→SDR.
-                    match reencode_pick_encoder(&ffmpeg, &req, &dest, true, w) {
-                        Ok(m) => m,
-                        Err(e) if e == EXPORT_CANCELLED => return Err(e),
-                        Err(e) => {
-                            if req.normalize {
-                                reencode_pick_encoder(&ffmpeg, &req, &dest, false, w)?
-                            } else {
-                                return Err(e);
-                            }
+                        Err(_) => reencode_pick_encoder(&ffmpeg, &req, &dest, false, w)?,
+                    },
+                }
+            } else {
+                // Try HDR tone-mapping first; if that attempt fails while
+                // normalising (e.g. the bundled ffmpeg lacks zscale), retry without
+                // it so the export still succeeds — just without HDR→SDR.
+                match reencode_pick_encoder(&ffmpeg, &req, &dest, true, w) {
+                    Ok(m) => m,
+                    Err(e) if e == EXPORT_CANCELLED => return Err(e),
+                    Err(e) => {
+                        if req.normalize {
+                            reencode_pick_encoder(&ffmpeg, &req, &dest, false, w)?
+                        } else {
+                            return Err(e);
                         }
                     }
-                };
-                Ok(EditExportOutcome {
-                    path: dest.to_string_lossy().to_string(),
-                    mode,
-                    reencoded: true,
-                })
-            } else {
-                if req.clips.len() == 1 {
-                    export_lossless_single(&ffmpeg, &req, &dest)?;
-                } else {
-                    export_lossless_concat(&ffmpeg, &req, &dest, w)?;
                 }
-                Ok(EditExportOutcome {
-                    path: dest.to_string_lossy().to_string(),
-                    mode: "stream-copy".into(),
-                    reencoded: false,
-                })
+            };
+            Ok(EditExportOutcome {
+                path: dest.to_string_lossy().to_string(),
+                mode,
+                reencoded: true,
+            })
+        } else {
+            if req.clips.len() == 1 {
+                export_lossless_single(&ffmpeg, &req, &dest)?;
+            } else {
+                export_lossless_concat(&ffmpeg, &req, &dest, w)?;
             }
-        };
-        let res = run();
-        match &res {
-            Ok(out) => {
-                let name = Path::new(&out.path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                emit_job(
-                    &watch.app,
-                    Activity {
-                        id: "edit-export".into(),
-                        label: format!("Exported {name}"),
-                        done: 100,
-                        total: 100,
-                        state: "done".into(),
-                        detail: Some(format!("{} in {}", fmt_bytes(std::fs::metadata(&out.path).map(|m| m.len()).unwrap_or(0)), fmt_secs(watch.started.elapsed().as_secs_f64()))),
-                        path: Some(out.path.clone()),
-                        ..Default::default()
-                    },
-                );
-                let _ = watch.app.emit("export-progress", 100u64);
-                let _ = watch.app.emit("media-output", out.path.clone());
-            }
-            // Terminal state reaches the frontend via the command result — only
-            // the activity chip needs closing here.
-            Err(e) if e == EXPORT_CANCELLED => {
-                emit_activity(&watch.app, "edit-export", "Export cancelled", 100, 100, "done");
-            }
-            Err(e) => emit_activity(&watch.app, "edit-export", e, 0, 100, "error"),
+            Ok(EditExportOutcome {
+                path: dest.to_string_lossy().to_string(),
+                mode: "stream-copy".into(),
+                reencoded: false,
+            })
         }
-        res
+    };
+    let res = run();
+    match &res {
+        Ok(out) => {
+            let name = Path::new(&out.path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            emit_job(
+                &watch.app,
+                Activity {
+                    id: job.into(),
+                    label: format!("Exported {name}"),
+                    done: 100,
+                    total: 100,
+                    state: "done".into(),
+                    detail: Some(format!("{} in {}", fmt_bytes(std::fs::metadata(&out.path).map(|m| m.len()).unwrap_or(0)), fmt_secs(watch.started.elapsed().as_secs_f64()))),
+                    path: Some(out.path.clone()),
+                    ..Default::default()
+                },
+            );
+            let _ = watch.app.emit("export-progress", 100u64);
+            let _ = watch.app.emit("media-output", out.path.clone());
+        }
+        // Terminal state reaches the frontend via the command result — only
+        // the activity chip needs closing here.
+        Err(e) if e == EXPORT_CANCELLED => {
+            emit_activity(&watch.app, job, "Export cancelled", 100, 100, "done");
+        }
+        Err(e) => emit_activity(&watch.app, job, e, 0, 100, "error"),
+    }
+    res
+}
+
+// ── Reel (docs/design/segments-and-reel-mode.md §C) ─────────────────────────
+
+/// A song's analysis by path, with the size and modified time it was made from.
+type BeatsEntry = (u64, u64, crate::beats::BeatInfo);
+static BEATS_CACHE: std::sync::LazyLock<Mutex<HashMap<String, BeatsEntry>>> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Beats of a song for the Reel window: every beat, the downbeats ("major"),
+/// the tempo and a loudness outline to draw. Remembered per file (size and
+/// time), so going back and forth costs nothing. Also lets the window play
+/// the song: a file the owner dropped or picked, outside any library drive.
+#[tauri::command]
+pub async fn analyze_beats(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<crate::beats::BeatInfo, String> {
+    let p = canonical_file(Path::new(&path)).map_err(|_| "That song isn't there any more.".to_string())?;
+    if !is_audio_file(&p) {
+        return Err("That isn't an audio file FoxCull can use (MP3, M4A, AAC, WAV, FLAC, OGG, Opus, AIFF).".into());
+    }
+    let _ = app.asset_protocol_scope().allow_file(&p);
+    let meta = std::fs::metadata(&p).map_err(|e| e.to_string())?;
+    let stamp = (meta.len(), meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0));
+    let key = p.to_string_lossy().to_string();
+    if let Some((len, mtime, info)) = BEATS_CACHE.lock().get(&key) {
+        if (*len, *mtime) == stamp {
+            return Ok(info.clone());
+        }
+    }
+    let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg not available")?;
+    let src = p.clone();
+    let info = tauri::async_runtime::spawn_blocking(move || -> Result<crate::beats::BeatInfo, String> {
+        let t0 = Instant::now();
+        let x = crate::beats::decode(&ffmpeg, &src)?;
+        let info = crate::beats::analyze_samples(&x);
+        crate::log::line(&format!(
+            "BEATS {:?} dur={:.1}s bpm={} beats={} major={} in {:.2}s",
+            src.file_name().unwrap_or_default(),
+            info.duration,
+            info.bpm,
+            info.beats.len(),
+            info.major.len(),
+            t0.elapsed().as_secs_f64()
+        ));
+        Ok(info)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    let mut cache = BEATS_CACHE.lock();
+    if cache.len() > 16 {
+        cache.clear();
+    }
+    cache.insert(key, (stamp.0, stamp.1, info.clone()));
+    Ok(info)
+}
+
+#[derive(Deserialize)]
+pub struct ReelPiece {
+    pub path: String,
+    pub in_s: f64,
+    pub out_s: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReelExportRequest {
+    /// The clips in reel order, each cut to its window.
+    pub pieces: Vec<ReelPiece>,
+    pub music_path: String,
+    /// Where in the song the reel starts.
+    pub music_start_s: f64,
+    /// Output frame rate (the clips' own, at most 60).
+    pub fps: Option<u32>,
+    /// "best" | "high" | "standard" | "small", as in Edit.
+    pub quality: String,
+    pub dest_dir: String,
+    pub name: String,
+}
+
+/// A reel as an Edit export: 1080×1920 filled (centre crop), SDR, the song
+/// from `music_start_s` faded out over the last second, the name as typed.
+fn reel_edit_request(
+    clips: Vec<EditClip>,
+    music: String,
+    music_start_s: f64,
+    fps: Option<u32>,
+    quality: String,
+    dest: String,
+    name: String,
+) -> EditExportRequest {
+    EditExportRequest {
+        clips,
+        output_w: 1080,
+        output_h: 1920,
+        fit: "crop".into(),
+        encoder: "auto".into(),
+        quality: if quality.is_empty() { "high".into() } else { quality },
+        adjustments: EditAdjustments { brightness: 0.0, contrast: 1.0, saturation: 1.0, warmth: 0.0, sharpen: 0.0, split_tone: 0.0 },
+        music_path: Some(music),
+        preserve_source_audio: false,
+        destination: Some(dest),
+        basename: Some(name),
+        normalize: true,
+        fps: fps.map(|f| f.clamp(1, 60)),
+        keep_hdr: false,
+        music_start_s: music_start_s.max(0.0),
+        music_fade_s: 1.0,
+        friendly_name: true,
+    }
+}
+
+/// Export a reel: the pieces one after another, filling a 1080×1920 portrait
+/// frame (landscape clips are cropped to their centre for now; choosing the
+/// crop is a later step), SDR for Instagram, with the song from the chosen
+/// point, faded out over the last second. Runs as job "reel-export" with its
+/// own Stop, so it can't cancel (or be cancelled by) an Edit export.
+#[tauri::command]
+pub async fn reel_export(app: AppHandle, state: State<'_, AppState>, req: ReelExportRequest) -> Result<EditExportOutcome, String> {
+    if req.pieces.is_empty() {
+        return Err("Add some clips to the reel first.".into());
+    }
+    let mut clips = Vec::with_capacity(req.pieces.len());
+    for p in &req.pieces {
+        let src = validate_media_anywhere(&state, &p.path).map_err(|e| {
+            if !Path::new(&p.path).exists() {
+                format!("{} isn't there any more (was the card or drive removed?)", file_label(&p.path))
+            } else {
+                format!("{}: {e}", file_label(&p.path))
+            }
+        })?;
+        if !matches!(media::classify(&src), Kind::Video) {
+            return Err(format!("not a video: {}", file_label(&p.path)));
+        }
+        let len = p.out_s - p.in_s;
+        if len.is_nan() || len < 0.05 {
+            return Err(format!("{}: its part of the reel is empty", file_label(&p.path)));
+        }
+        clips.push(EditClip {
+            path: src.to_string_lossy().to_string(),
+            in_s: p.in_s.max(0.0),
+            out_s: p.out_s,
+            crop_x: 0.5,
+            crop_y: 0.5,
+            zoom: 1.0,
+        });
+    }
+    let music = canonical_file(Path::new(&req.music_path)).map_err(|_| "The song isn't there any more. Choose it again.".to_string())?;
+    if !is_audio_file(&music) {
+        return Err("The song has to be an audio file.".into());
+    }
+    let dest = canonical_dir(Path::new(&req.dest_dir))
+        .map_err(|_| "That folder isn't available (was the drive removed?). Pick another one.".to_string())?;
+    if dest.components().any(|c| c.as_os_str().to_string_lossy().eq_ignore_ascii_case(LIB_DIRNAME)) || within(&dest, &state.data_root) {
+        return Err("choose a folder outside FoxCull's library".into());
+    }
+    if JOB_CANCELS.lock().contains_key("reel-export") {
+        return Err("A reel is already exporting. Wait for it to finish, or stop it from the progress panel.".into());
+    }
+    let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg not available")?;
+    let name = if req.name.trim().is_empty() { "Reel".to_string() } else { req.name.trim().to_string() };
+    let edit = reel_edit_request(
+        clips,
+        music.to_string_lossy().to_string(),
+        req.music_start_s,
+        req.fps,
+        req.quality.clone(),
+        dest.to_string_lossy().to_string(),
+        name.clone(),
+    );
+    let flag = job_token("reel-export");
+    let label = format!("Exporting reel → {name}.mp4");
+    let res = tauri::async_runtime::spawn_blocking({
+        let flag = flag.clone();
+        move || run_edit_export(app, &ffmpeg, edit, "reel-export", None, Some(flag), Some(label))
+    })
+    .await
+    .map_err(|e| e.to_string());
+    job_finished("reel-export", &flag);
+    res?
 }
 
 /// Cancel the in-flight edit export: the watched ffmpeg child is killed at the
@@ -5978,7 +6257,7 @@ fn transfer_files(
         match result {
             Ok(()) => {
                 for c in caches {
-                    let _ = std::fs::remove_file(c);
+                    remove_cache_path(&c);
                 }
                 pairs.push((rel_under(&plan.root, src), rel_under(&plan.dest_root, &target)));
                 out.moved += 1;
@@ -6714,7 +6993,21 @@ fn cache_files_for(cache_dir: &Path, src: &str) -> Vec<PathBuf> {
     out.push(scrub);
     // H.264 playback proxy (HEVC-without-codec machines) — can be sizable.
     out.push(video::proxy_path(cache_dir, p));
+    // Range strips (the Reel window's segments): the files, then their folder
+    // last, so removing the list in order leaves nothing behind.
+    let ranges = video::range_strip_dir(cache_dir, p);
+    if let Ok(rd) = std::fs::read_dir(&ranges) {
+        out.extend(rd.flatten().map(|e| e.path()));
+        out.push(ranges);
+    }
     out
+}
+
+/// Remove one of `cache_files_for`'s paths (a file, or an emptied folder).
+fn remove_cache_path(p: &Path) {
+    if std::fs::remove_file(p).is_err() {
+        let _ = std::fs::remove_dir(p);
+    }
 }
 
 /// Volume/drive root of an absolute path: `C:\` on Windows; `/Volumes/<name>`
@@ -6912,7 +7205,7 @@ pub async fn dispose_rejected(
                 deleted += 1;
                 forget.push(rel_under(&root_canon, &src));
                 for c in caches {
-                    let _ = std::fs::remove_file(c);
+                    remove_cache_path(&c);
                 }
                 if let Some((stored, orig)) = stored {
                     let name = src
@@ -7165,7 +7458,7 @@ pub fn purge_trash(
             n += 1;
             done.push(s.clone());
             for c in caches {
-                let _ = std::fs::remove_file(c);
+                remove_cache_path(&c);
             }
         }
     }
