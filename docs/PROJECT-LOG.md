@@ -988,3 +988,14 @@ what's on the timeline, a proper transport (frame steps, a bar that shows the
 clips), clips drawn with their own frames, look presets shown on the
 owner's own footage, and the hidden clip controls back in a Clip tab. The
 editing itself, playback and export were left alone.
+
+## 2026-10-04 (end of day) — seven nightlies, one test list
+
+The day produced nightlies 3 to 9, each about one thing, because the owner
+tests fixes apart from bigger changes. None of it has been used in the real
+app yet, so the day ends with a single checklist
+(`docs/TEST-PLAN-2026-10-04.md`) for the owner to work through on the
+latest build, alongside the decisions still theirs to make. The handover now
+also carries what used to live only in this Mac's private Claude memory (how
+the owner likes to work, how to commit and install from this machine), so
+another machine can pick the work up as it stands.

@@ -84,7 +84,8 @@ codesign --verify --deep --strict --verbose=2 /Applications/FoxCull.app
 | Doc | What it is |
 |---|---|
 | `docs/PROJECT-LOG.md` | **Start here if you are new.** Append-only, plain-language story of how the app evolved: what the owner asked for, what broke, what was decided and why. Not a diff — that's `docs/changes/`. |
-| `CLAUDE_CODE_HANDOVER.md` | **Authoritative current state of the world.** Newest dated section first. |
+| `CLAUDE_CODE_HANDOVER.md` | **Authoritative current state of the world.** Newest dated section first. Its "end of day" sections also carry the owner's working preferences and the releases table, so a new machine has continuity without local Claude memory. |
+| `docs/TEST-PLAN-2026-10-04.md` | The owner's checklist for the nightlies of 2026-10-04 (.3–.9), the decisions waiting on them, and what has never been verified. Act on the owner's results first. |
 | `BACKLOG.md` | Prioritized P0–P3 worklist (from the 2026-07 audit). Do P0s next. |
 | `docs/AUDIT-2026-07.md` | Full independent audit writeup (perf/memory/security/Mac). |
 | `docs/UX-AUDIT-2026-08.md` | Visual-system brief: workflow/permutation map, every audited surface, responsive contract and QA matrix. |
@@ -154,6 +155,29 @@ stamps the tag's version into **both** `tauri.conf.json` and `Cargo.toml`
 - The ffmpeg sidecar `src-tauri/binaries/ffmpeg-<target-triple>.exe` is
   gitignored; a stub file satisfies `cargo check` (CI stubs it too).
 
+### Second dev machine: the MacBook (macOS, Apple Silicon)
+
+The owner also works on a MacBook that belongs to their sister, so its
+defaults are someone else's:
+
+- **Git identity:** the Mac's git user is `shivangikumar029`. Commit with
+  `git -c user.name="Kumar Adarsh" -c user.email=kumar.adarsh.cse12@itbhu.ac.in commit …`.
+  Earlier pushed commits carry the other identity; the owner said leave them
+  (don't rewrite history).
+- **Push through gh** (the stored credential is the other account and 403s):
+  `git -c credential.helper= -c credential.helper='!gh auth git-credential' push origin main`
+  (same for tags). `gh auth status` must show `kumaradarsh1993`.
+- **Here `cargo test --lib` links and runs** (unlike the Windows GNU box).
+  The ignored real-media tests use Homebrew's ffmpeg via `FOXCULL_FFMPEG`.
+- **Preview pane:** `.claude/launch.json` (`npm run dev`, port 1460).
+- **Installing a nightly** (only when the owner asks, never while they're
+  testing): `gh release download v1.5.2-nightly.N --repo kumaradarsh1993/FoxCull
+  --pattern "*aarch64.dmg"`, then `hdiutil attach -nobrowse -readonly`. The
+  binary is lowercase `foxcull`, so check that with `pgrep -x foxcull`, and
+  quit it if the owner said to. Move the old `/Applications/FoxCull.app` to
+  `~/.Trash`, `ditto` the new one in and detach. A download by `gh` carries
+  no quarantine flag, and the app is ad-hoc signed (see the macOS section).
+
 ## Architecture in one screen
 
 **Frontend** (`src/`):
@@ -169,13 +193,16 @@ stamps the tag's version into **both** `tauri.conf.json` and `Cargo.toml`
 - `lib/components/EditStudio.svelte` — the Edit window's studio (its own OS
   window since 2026-10-04, hosted by `EditWindow.svelte`; clips come from the
   library): Look presets (CSS/SVG filter preview ↔ ffmpeg filter export,
-  algebraically matched), timeline, export dialog with CRF-labeled quality +
-  time-cost bar. `MergeWindow.svelte` + `MergeDialog.svelte` (+ `SegPlayer`)
+  algebraically matched), timeline (program engine: V1 wins overlaps; an
+  `ended` video ends its segment), export dialog with CRF-labeled quality +
+  time-cost bar. Redesigned 2026-10-04 on one stylesheet (Look/Clip tabs,
+  clip thumbnails from Focus filmstrips, pinned track names). `MergeWindow.svelte` + `MergeDialog.svelte` (+ `SegPlayer`)
   are the Merge window; `ReelWindow.svelte` + `ReelBoard.svelte` the Reel
   window (rules in `lib/reel.ts`, beats from `beats.rs`). In/out segment rules
   live in `lib/segments.ts`. `+layout.svelte` picks the view by window label.
 - `lib/components/` — Loupe (zoomable viewer), VirtualGrid/VirtualStrip
-  (windowed rendering), SectionedGrid, DetailsView, TrashPanel, ActivityBar,
+  (windowed rendering; the strip's wheel handling differs per OS on purpose),
+  SectionedGrid, DetailsView, TrashPanel, ActivityBar (the job centre),
   ContextMenu, Thumb, TreeNode.
 - `lib/api.ts` — every Tauri `invoke` goes through here (typed wrappers).
   `lib/cast.ts` — cast commands. `lib/types.ts` — shared types.
@@ -223,11 +250,14 @@ loads, ffmpeg fan-out is throttled (probe queue = 4). The audit
 - Work directly on `main` — pushing ships nothing (releases are tag-driven).
   Branches/PRs only for isolated independent lines (e.g. audit PR #1).
 - **Release discipline:** nightly = tag `v*-nightly.N` → CI → prerelease
-  draft; stable promotion ONLY on the user's explicit "ship it". Windows and
+  draft; stable promotion ONLY on the user's explicit "ship it". One concern
+  per nightly (fixes apart from big UX changes): the owner tests them
+  separately. Windows and
   macOS artifacts must come from the same tagged commit. Release notes are
   user-friendly prose, not commit logs.
 - Commit author must be `kumar.adarsh.cse12@itbhu.ac.in` (the GitHub-linked
-  email — global git config is set; don't override).
+  email). The Windows machine's global git config has it; on the MacBook pass
+  it per commit (see "Second dev machine").
 - Tauri security baseline (workspace rule): strict CSP (never `"csp": null`),
   no unscoped `fs:` capabilities, secrets keyring-first (n/a here so far).
 - Icons: the canonical app-icon source is **`assets/icon-fox-1024.png`** (the

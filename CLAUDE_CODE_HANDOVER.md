@@ -1,5 +1,74 @@
 # Agent Handover: FoxCull
 
+## 2026-10-04 (end of day) — state of play, for whoever picks this up next
+
+**Start here, then read the dated sections below it.** This one is written so a
+session on another machine (or another agent) can carry on without this
+Mac's local Claude memory, which doesn't travel.
+
+### Releases
+
+- Latest **stable: v1.5.0**. Promote v1.5.2 only on the owner's explicit
+  "ship it".
+- Nightlies cut on 2026-10-04, one concern each (the owner tests fixes apart
+  from big UX changes):
+
+| Tag | What | Ledger |
+|---|---|---|
+| `v1.5.2-nightly.3` | Fixes: job centre, drag moves across drives, missing items in bulk, Day groups, pick/reject tabs | `2026-10-04-job-centre-moves-missing-day.md` |
+| `v1.5.2-nightly.4` | Edit and Merge as their own windows; merges pause/stop/outlive their window | `2026-10-04-edit-and-merge-windows.md` |
+| `v1.5.2-nightly.5` | Segments (`[`/`]` pieces), Merge with segments, the Reel window | `2026-10-04-segments-and-reel.md` |
+| `v1.5.2-nightly.6` | Fixes: Edit Play froze/looped at the first clip's end, snapping reach, Reel song drop on step 2 | `2026-10-04-edit-playback-snap.md` |
+| `v1.5.2-nightly.7` | Settings as one sheet; Prepare in it | `2026-10-04-settings-sheet.md` |
+| `v1.5.2-nightly.8` | Fix: filmstrip scrolling on a Mac | `2026-10-04-mac-strip-scroll.md` |
+| `v1.5.2-nightly.9` | Edit window redesign (design review in the ledger) | `2026-10-04-edit-redesign.md` |
+
+- Installed on the owner's Mac: nightly.9 (installed at their request).
+
+### What the owner is testing, and what's open
+
+`docs/TEST-PLAN-2026-10-04.md`: the checklist for everything above, plus the
+decisions waiting on the owner and what has never been verified (all of it in
+the real app; anything on Windows). When the owner reports back, act on that
+list first.
+
+### How the owner works (mirrors this Mac's local memory)
+
+- **The owner is Kumar Adarsh**, a product manager who builds their own tools. Explain
+  in plain language and give runnable commands. Requests come as long
+  voice-note transcripts: read for intent ("theta memory" = "the memory": the
+  handover docs and Claude's memory).
+- **One concern per nightly**, tagged `v1.5.2-nightly.N`, with builds pushed
+  to GitHub. Work on `main`.
+- **Never replace the installed app while the owner may be testing.** Install
+  a nightly only when asked (steps under "Second dev machine" in CLAUDE.md).
+- **Commits:** author `Kumar Adarsh <kumar.adarsh.cse12@itbhu.ac.in>`. On
+  the Mac, pass it per commit; push through `gh`. Commits pushed between
+  09-30 and 10-04 carry the Mac's default identity (shivangikumar029, the
+  owner's sister's laptop). The owner said leave them: never rewrite pushed
+  history for it.
+- **Keep the owner's files:** Merge never deletes its sources ("if you end up merging these
+  files successfully - dont delete - i need them").
+- **Corner cases and no silent failures:** the owner asks for every
+  permutation to be thought through (formats, sizes, frame rates, drives),
+  and for anything left out to be said out loud.
+
+### Dev harness notes (macOS)
+
+- `.claude/launch.json` starts `npm run dev` on 1460 for Claude's preview
+  pane. `?window=edit|merge|reel` opens a tool window's view; a second tab
+  stands in for a second window (inboxes go through localStorage).
+- The mock probes `static/dev-sample.mp4` (40.000 s) as 40.005 s on purpose
+  (it reproduces the Edit freeze of nightly.5). `static/dev-sample.mp4` and
+  `static/dev-sprite.jpg` are gitignored: make any 40 s H.264 clip and an
+  8×5 JPEG sprite of 160×90 tiles.
+- Hot reload of `EditStudio` remounts it empty and the window then saves
+  the empty timeline over the saved one. Re-seed
+  `localStorage["foxcull-edit-timeline-v1"]` after editing that file.
+- Real-media checks run as ignored cargo tests with `FOXCULL_FFMPEG` (etc.)
+  pointing at Homebrew's ffmpeg: see `real_reel_export`,
+  `real_range_strip`, `real_convert_merge`, `real_cross_drive_move`.
+
 ## 2026-10-04 (late) — Edit window redesign (nightly.9)
 
 Ledger: `docs/changes/2026-10-04-edit-redesign.md` (has the design review).
