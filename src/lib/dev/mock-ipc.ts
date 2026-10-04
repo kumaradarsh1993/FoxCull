@@ -119,7 +119,8 @@ function folderItems(dir: string): Item[] {
       flag: r() < 0.15 ? "pick" : r() < 0.1 ? "reject" : null,
       tags: r() < 0.2 ? [tags[Math.floor(r() * tags.length)], tags[Math.floor(r() * tags.length)]] : [],
       events: i > 20 && i < 70 ? ["Seattle — Discovery Park"] : [],
-      missing: false,
+      // A few "?" entries, for the missing-item menus (folder and grid).
+      missing: i % 23 === 11 && !forgotten.has(path),
       seed: i + n,
       aspect: ASPECTS[Math.floor(r() * ASPECTS.length)],
     };
@@ -154,6 +155,25 @@ function storeWrite(v: Record<string, unknown>) {
 }
 
 let callbackId = 1;
+
+/** Missing entries the user removed from the (fake) catalog. */
+const forgotten = new Set<string>();
+/** Jobs stopped through cancel_job. */
+const stopped = new Set<string>();
+
+/** Play a backend job into the job centre the way `activity` events would. */
+async function fakeJob(id: string, total: number, ms: number, o: { unit?: "bytes"; label?: string; detail?: (f: number) => string } = {}) {
+  const { activity } = await import("$lib/activity.svelte");
+  const steps = Math.max(1, Math.round(ms / 150));
+  for (let k = 0; k <= steps; k++) {
+    if (stopped.delete(id)) return false;
+    const f = k / steps;
+    // Slow start, like a real copy warming up, so the ETA visibly settles.
+    activity.ingest({ id, label: o.label ?? "", done: Math.round(total * f), total, state: "running", unit: o.unit, cancellable: true, detail: o.detail?.(f) });
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  return true;
+}
 
 // A drive's Trash: the first 14 items of a folder, "deleted" over the last few
 // days, so the Trash view has real rows to restore and purge.
@@ -205,7 +225,9 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
         return { ...rest, rating: 0, label: null, flag: null, tags: [], events: [] };
       });
     }
-    return folderItems(a.dir).map(({ seed: _s, aspect: _a, ...rest }) => rest);
+    return folderItems(a.dir)
+      .filter((i) => !(i.missing && forgotten.has(i.path)))
+      .map(({ seed: _s, aspect: _a, ...rest }) => rest);
   },
   folder_writable: () => true,
   thumbnail: (a) => artFor(a.path, Math.min(a.max ?? 320, 480)),
@@ -276,8 +298,45 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
   // The card is nearly full, so the dialog's not-enough-space state shows.
   disk_free: (a) => (a.path.startsWith("/Users") ? 76e9 : a.path === SD ? 9e9 : 1.2e12),
   merge_videos: async (a) => {
-    await new Promise((r) => setTimeout(r, a.req.convert ? 3000 : 1500));
+    const n = (a.req.paths as string[]).length;
+    const label = `Merging ${n} clips → ${a.req.name}.mp4`;
+    const ok = await fakeJob("merge", 100, a.req.convert ? 9000 : 6000, {
+      label,
+      detail: (f) => (a.req.convert ? `Converting clip ${Math.min(n, 1 + Math.floor(f * n))} of ${n}` : `${(f * 63.1).toFixed(1)} of 63.1 GB · 1.1 GB/s`),
+    });
+    const { activity } = await import("$lib/activity.svelte");
+    if (!ok) {
+      activity.ingest({ id: "merge", label: "Merge stopped", done: 0, total: 100, state: "cancelled", detail: "Nothing was saved" });
+      throw "export cancelled";
+    }
+    activity.ingest({ id: "merge", label: label.replace("Merging", "Merged"), done: 100, total: 100, state: "done", detail: "63.1 GB in 1 min 2 s" });
     return { path: `${a.req.destDir}/${a.req.name}.mp4`, bytes: a.req.convert ? 88.4e9 : 63.1e9 };
+  },
+  cancel_job: (a) => {
+    stopped.add(a.id);
+    return true;
+  },
+  // A cross-drive move: bytes, speed and a Stop button in the job centre.
+  move_media_files: async (a) => {
+    const paths = a.paths as string[];
+    const bytes = paths.reduce((t, p) => t + (byPath.get(p)?.size ?? 9e6), 0);
+    const cross = !a.dest.startsWith(SD);
+    const job = a.job ?? "move";
+    const ok = await fakeJob(job, cross || a.copy ? bytes : 0, cross || a.copy ? 7000 : 300, {
+      unit: cross || a.copy ? "bytes" : undefined,
+      detail: (f) => `${Math.min(paths.length, 1 + Math.floor(f * paths.length))} of ${paths.length} · ${paths[Math.min(paths.length - 1, Math.floor(f * paths.length))].split("/").pop()}`,
+    });
+    const moved = ok ? paths.length : Math.floor(paths.length / 2);
+    return {
+      moved,
+      dest: a.dest,
+      files: paths.slice(0, moved).map((p) => ({ from: p, to: `${a.dest}/${p.split("/").pop()}` })),
+      failed: [],
+      errors: [],
+      copied: !!a.copy,
+      cross_drive: cross,
+      cancelled: !ok,
+    };
   },
   list_tags: () => [
     ["family", 42],
@@ -302,7 +361,11 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
     trashRows = trashFor(SD).filter((r) => !(a.stored as string[]).includes(r.stored));
     return n - trashRows.length;
   },
-  list_missing: () => [],
+  list_missing: () => [...byPath.values()].filter((i) => i.missing && !forgotten.has(i.path)).map((i) => i.rel),
+  forget_missing: (a) => {
+    for (const it of byPath.values()) if ((a.rels as string[]).includes(it.rel)) forgotten.add(it.path);
+    return (a.rels as string[]).length;
+  },
   catalog_scan: () => ({ tracked: 0, missing: 0, relinked: 0, still_missing: 0, scanned_files: 0, elapsed_ms: 3 }),
   get_trim: () => null,
   get_video_segments: () => [],

@@ -178,8 +178,10 @@ stamps the tag's version into **both** `tauri.conf.json` and `Cargo.toml`
 
 - `commands.rs` — the bulk: folder walking (skips dotfiles/AppleDouble),
   thumbnails + bounded background warming (`warm_thumbnails`; `heavy` flag =
-  explicit Prepare pre-builds RAW previews/video posters), loupe sources,
-  file moves (safe cross-volume fallback), delete-to-trash, export pipeline
+  folder-menu "Build previews" pre-builds RAW previews/video posters), loupe sources,
+  file moves and copies (`move_media_files`: rename on one volume, chunked
+  copy with progress across drives, the catalog follows into the destination
+  drive's own catalog), job cancel registry (`cancel_job`), delete-to-trash, export pipeline
   (ffmpeg filtergraphs mirroring the preview math).
 - `media.rs` — classification (Image/Raw/Video), EXIF orientation, ICC.
 - `thumbs.rs` — decode/resize/cache (DCT-scaled JPEG decode is the perf core).

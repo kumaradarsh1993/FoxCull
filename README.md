@@ -53,14 +53,16 @@ FoxCull has three separate caching layers:
    small-preview work for scrolling and poster frames.
 2. Focus view prefetch keeps a few nearby full previews warm around the active
    item, biased in the direction you are moving.
-3. The **Prepare** button explicitly builds full-size Focus previews and video
-   posters for the current folder/filter set up front.
+3. **Folder right-click → Build previews for this folder** builds every
+   full-size Focus preview and video poster up front.
 
-Prepare is optional. It is useful before a serious culling pass because moving
-through Focus view should then avoid blur/loading waits. It runs in chunks on the
-backend warmer, shows progress/ETA, and abandons itself if you switch folders.
+You rarely need the third. Focus already prepares the next few shots as you
+move, so on an internal or USB SSD there is no wait to remove. It helps on slow
+cards and spinning disks: start it, do something else, come back to a folder
+with no loading at all. It shows progress, time left and a Stop button in the
+progress panel (bottom left), and stops by itself if you switch folders.
 
-Live Scrub is separate from Prepare. When Live Scrub is off, videos keep static
+Live Scrub is separate from this. When Live Scrub is off, videos keep static
 posters and do not generate hover scrub strips. When it is on, scrub previews are
 generated on demand and cached at preview scale.
 

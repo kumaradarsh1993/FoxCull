@@ -1,7 +1,7 @@
 # Cache & pre-cache policy
 
-**Status:** authoritative · **Last verified against code:** 2026-08-03
-(frame-paced loader fix) · **Owner ask:** keep this in sync with the code, and keep it
+**Status:** authoritative · **Last verified against code:** 2026-10-04
+(Prepare moved to the folder menu) · **Owner ask:** keep this in sync with the code, and keep it
 readable by both a human and a model, so either can audit the two apart.
 
 This is the single record of *what FoxCull caches, where, keyed by what, and
@@ -97,7 +97,7 @@ the "trigger" column as the *complete* list — nothing else builds these.
 | Image thumbnail | folder open → `warm_thumbnails(heavy=false)` | images only, first `WARM_CAP` = 600 |
 | Focus preview | entering Focus on that item | on-demand |
 | Focus preview | Focus prefetch: 3 ahead / 2 behind, biased by travel direction | images + RAW only |
-| Focus preview, RAW thumbnail, video poster | **Prepare** (`heavy=true`) | explicit user-requested bulk pass; no sprites |
+| Focus preview, RAW thumbnail, video poster | **Build previews for this folder** (folder right-click; was the toolbar's Prepare until 2026-10-04) (`heavy=true`) | explicit user-requested bulk pass; no sprites |
 | Video poster (grid) | a video cell becomes visible | on-demand |
 | Video poster (Focus) | opening a video in Focus | on-demand |
 | Scrub sprite | armed grid tile is hovered, live decoder is unavailable, Sprite fallback ON, 140 ms settle | see §4 |
@@ -289,20 +289,28 @@ Only Focus previews are pinned, and only 6 of them.
 
 ---
 
-## 7. Prepare
+## 7. Prepare → "Build previews for this folder"
 
-**Prepare** is the one place FoxCull does bulk work without being asked
+**Retired from the toolbar 2026-10-04** (owner: "do we require it?"). On the
+owner's Mac, Focus prefetch (3 ahead / 2 behind) builds a 12 MP JPEG's 1920 px
+preview in ~150 ms (`THUMB-GEN … decode=88ms resize+enc=55ms`), well inside a
+culling pace; grid thumbnails are viewport-driven; video skimming decodes live.
+On an internal or USB SSD there was nothing left for a pre-pass to save. It
+stays for slow media (an SD card, a spinning disk), where building a folder's
+previews while you do something else still helps, as **folder right-click →
+Build previews for this folder**.
+
+It is still the one place FoxCull does bulk work without being asked
 per-item. It runs `warm_thumbnails(heavy=true)` in chunks of 16 on the same
 bounded pool, so it is safe to keep culling while it runs.
 
-- Photos & RAW first (fast, and the common reason to press it), then videos —
-  kept as separate phases so the ETA is honest instead of blending a
-  0.3 s/photo rate with a 4 s/clip rate into a meaningless average.
+- Photos & RAW first, then video posters.
 - Videos get poster frames only. Live skimming needs no prepared artifact;
   unsupported clips build a fallback sprite only when requested.
-- Scope (the ▾ next to the button): everything in the folder (default),
-  selection only, videos only, photos & RAW only.
-- Abandons itself if the folder changes mid-run.
+- Scope: the folder's current view (filters apply). The selection/videos/photos
+  scopes went with the toolbar split button.
+- A job-centre entry with progress, time left and **Stop**; abandons itself
+  if the folder changes mid-run.
 
 ---
 

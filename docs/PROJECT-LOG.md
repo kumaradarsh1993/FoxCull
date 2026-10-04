@@ -856,3 +856,43 @@ picture spread across six of the joins. What shipped encodes each clip on its
 own and then joins the results with the same lossless join the app already
 trusts, after checking that every part came out of the encoder with identical
 settings.
+
+## 2026-10-04 — a progress panel worth the name, and drags that cross drives
+
+The owner listed a batch of fixes to ship before reworking the Edit module.
+Dragging a selection onto a folder floated the whole selection under the
+pointer; they wanted a small stack with a count, and when the drop meant
+copying to another drive, progress with a time estimate inside FoxCull. That
+led to the bigger ask: the little progress strip at the foot of the sidebar
+should become a real panel for everything FoxCull does in the background,
+several jobs at once, clear about what each is doing and when it will finish,
+and the merge window should be able to get out of the way while it works.
+
+Looking at moves turned up something worse than a missing progress bar. A
+move from the external SSD to the Mac was refused outright, and a move the
+other way "worked" but filed the photos' stars and labels in the Mac's own
+catalog, because on a Mac every external drive's path starts with `/`. Moves
+now pick the destination's catalog by drive, copy with progress, check each
+copy before deleting the original, and carry the marks across. That was
+tested on a real second volume, not just in the browser.
+
+The owner also asked why merges took a minute when LosslessCut "does it in
+five or ten seconds". Measured on their own Osmo clips from the SSD, FoxCull
+was the faster of the two (LosslessCut rewrites the whole file a second time by
+default). Five seconds is what a few gigabytes on the internal disk takes; their
+merges were 15 to 70 GB. The panel now shows the speed, so the slow drive is
+visible instead of the app looking slow.
+
+Smaller asks in the same batch: missing files cleared per folder or per
+selection rather than one right-click at a time, Lightroom's "find one, find
+the rest" when relinking, grouping by day for trips, and a green or red tab on
+picked and rejected tiles. Asked whether Prepare was still needed, the answer
+was mostly no: Focus already readies the next few photos as you move, so the
+button went from the toolbar to the folder menu, where it still helps on slow
+cards.
+
+The same day the owner described the Edit rework: Edit and Merge as their own
+windows beside the library, the library as the only media picker, in/out
+points set there and dragged onto the timeline. That is the next nightly; this
+one ships fixes only.
+

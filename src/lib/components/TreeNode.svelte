@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api } from "$lib/api";
+  import { mediaDrag, wantsCopy } from "$lib/drag.svelte";
   import type { TreeDir } from "$lib/types";
   import Self from "./TreeNode.svelte";
 
@@ -18,7 +19,8 @@
     node: TreeDir;
     currentDir: string | null;
     onselect: (path: string) => void;
-    onmove?: (path: string) => void;
+    /** Files dropped on this folder; `copy` when the copy modifier was held. */
+    onmove?: (path: string, copy: boolean) => void;
     onfoldercontext?: (event: MouseEvent, path: string) => void;
     depth?: number;
     /** Recursive media count for THIS folder (given by the parent), or null. */
@@ -39,6 +41,7 @@
   let kidCounts = $state<Record<string, number>>({});
   let loading = $state(false);
   let dropHot = $state(false);
+  let dropCopy = $state(false);
 
   // Optimistic chevron: every folder claims children (list_tree no longer probes,
   // to stay fast); once an expand turns up no subfolders we hide it.
@@ -149,14 +152,32 @@
     return !!onmove && Array.from(e.dataTransfer?.types ?? []).includes("application/x-foxcull-paths");
   }
 
+  // Spring-loaded folders, as in Finder: hover a closed folder mid-drag and
+  // it opens, so a drop can reach a subfolder without letting go first.
+  let springTimer: ReturnType<typeof setTimeout> | null = null;
+  function clearSpring() {
+    if (springTimer) clearTimeout(springTimer);
+    springTimer = null;
+  }
+
   function onDragOver(e: DragEvent) {
     if (!acceptsMediaDrag(e)) return;
     e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    dropCopy = wantsCopy(e);
+    if (e.dataTransfer) e.dataTransfer.dropEffect = dropCopy ? "copy" : "move";
+    if (!open && showChevron && !springTimer) {
+      springTimer = setTimeout(() => {
+        springTimer = null;
+        // Still hovering (dragover keeps re-setting dropHot) → open it.
+        if (dropHot && !open) void toggle();
+      }, 700);
+    }
     dropHot = true;
   }
 
-  function onDragLeave() {
+  function onDragLeave(e: DragEvent) {
+    // Moving between the row's own children fires leave/enter pairs.
+    if (e.relatedTarget instanceof Node && (e.currentTarget as HTMLElement).contains(e.relatedTarget)) return;
     dropHot = false;
   }
 
@@ -164,7 +185,8 @@
     if (!acceptsMediaDrag(e) || !onmove) return;
     e.preventDefault();
     dropHot = false;
-    onmove(node.path);
+    clearSpring();
+    onmove(node.path, wantsCopy(e));
   }
 </script>
 
@@ -203,7 +225,9 @@
       {/if}
     </svg>
     <span class="label">{node.name}</span>
-    {#if count != null && count > 0}<span class="cnt">{count.toLocaleString()}</span>{/if}
+    {#if dropHot && mediaDrag.count}
+      <span class="dropPill" class:copy={dropCopy}>{dropCopy ? "Copy" : "Move"} {mediaDrag.count.toLocaleString()}</span>
+    {:else if count != null && count > 0}<span class="cnt">{count.toLocaleString()}</span>{/if}
   </button>
 </div>
 
@@ -254,6 +278,19 @@
     outline: 1px solid var(--accent);
     outline-offset: -1px;
   }
+  /* "Move 24" on the folder under the drag: says what the drop will do. */
+  .dropPill {
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 650;
+    color: var(--accent-on);
+    background: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  .dropPill.copy { background: var(--pick); }
   .guide {
     position: absolute;
     top: 0;

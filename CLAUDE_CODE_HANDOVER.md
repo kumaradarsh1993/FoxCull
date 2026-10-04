@@ -1,5 +1,38 @@
 # Agent Handover: FoxCull
 
+## 2026-10-04 — job centre, cross-drive moves, missing items in bulk (nightly.3)
+
+Ledger: `docs/changes/2026-10-04-job-centre-moves-missing-day.md`. A
+fixes-only nightly at the owner's request; the **Edit rework is next**, spec in
+`docs/design/edit-window-rework.md` (Edit and Merge as separate OS windows,
+library-driven timeline, multi-pair in/out, corner-case table). Read that
+before touching EditStudio.
+
+- **The job centre is the one progress surface** (`activity.svelte.ts` +
+  `ActivityBar.svelte`). Backend jobs emit `Activity` (now with `detail`,
+  `unit: "bytes"`, `cancellable`); frontend jobs use `activity.start/update/
+  finish/notify`. Mark housekeeping as quiet (by id prefix in `classify`, or
+  `quiet: true`) or it lands in Recent on every folder open. A Stop button
+  needs either a `cancel` callback or a backend `job_token(id)` +
+  `cancel_job(id)`.
+- **Moves can cross drives now.** `move_media_files` → `TransferPlan`,
+  `transfer_files`, `transfer_catalog`. The destination's catalog is chosen by
+  `drive_root(dest)`, never by `within(dest, root)`: on a Mac `/Volumes/X` IS
+  under `/`, which is how a Mac→SSD move used to leave its marks in the Mac's
+  catalog. The frontend mirrors that rule in `driveRootOf` (`rootForDir` can
+  answer Home). Originals are deleted only after `sync_all` + a size check.
+- **Merges have their own stop flag** (job "merge") and run in the background;
+  only one at a time. Don't route them back through `export_gen`.
+- **Merge speed is the disks.** Measured: FoxCull 6.4 GB in 15 s from the
+  owner's exFAT SSD; LosslessCut's default (`+faststart`) 7.1 GB in 24 s. The
+  log has `MERGE start` / `MERGE ok … secs= MBps=` now.
+- **Prepare is no longer in the toolbar**; `prepareFolder()` sits behind folder
+  right-click → "Build previews for this folder". Precache policy §7 has why.
+- Day grouping uses `wallTime()` (camera file-name clock for videos, else the
+  stored capture time) for sections and capture sort.
+- Not verified: the move through the running app (functions are unit- and
+  volume-tested), Windows, the real WKWebView drag image.
+
 ## 2026-09-30 — merge: honest checks and "Convert to match"
 
 Ledger: `docs/changes/2026-09-30-merge-convert-to-match.md`. Triggered by Meta

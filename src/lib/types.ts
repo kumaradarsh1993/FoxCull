@@ -168,6 +168,12 @@ export interface MoveOutcome {
   files: MoveRecord[];
   failed: string[];
   errors: string[];
+  /** The originals were kept. */
+  copied: boolean;
+  /** Went to another drive (its catalog took the marks). */
+  cross_drive: boolean;
+  /** Stopped from the job centre; `files` lists what got through. */
+  cancelled: boolean;
 }
 
 export interface EditClip {

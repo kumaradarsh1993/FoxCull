@@ -184,8 +184,23 @@ export function installLayoutAudit() {
     await sleep(600);
     await probe("menu:arrange", click("Sort, group"), ".arrangeMenu", click("Sort, group"));
     await probe("menu:filters", click("Filters"), ".filtermenu", click("Filters"));
-    const caret = () => (document.querySelector(".prep")?.nextElementSibling as HTMLElement).click();
-    await probe("menu:prepare", caret, ".prepMenu", caret);
+    // The job centre with long labels: one running copy, one finished merge.
+    const { activity } = await import("$lib/activity.svelte");
+    activity.start("audit-move", {
+      label: "Moving 1,284 items to 2026-09-14 Seattle — Discovery Park sunset walk on Samsung T7 Shield",
+      detail: "312 of 1,284 · DJI_20260914_1005_panorama_stitched_from_twelve_frames_final_v2.JPG",
+      total: 41e9,
+      done: 12e9,
+      unit: "bytes",
+      kind: "move",
+      cancel: () => {},
+    });
+    activity.notify("audit-done", "Merged 37 clips → Merged 21-22 Sep 2026.mp4", { kind: "merge", actions: [{ label: "Show in folder", run: () => {} }] });
+    await sleep(300);
+    const dockBtn = () => (document.querySelector(".dock .head button") as HTMLElement | null)?.click();
+    await probe("panel:jobs", dockBtn, ".jobPanel", dockBtn);
+    activity.finish("audit-move");
+    activity.clearFinished();
     await probe("menu:clear", click("Clear ratings"), ".clearMenu", click("Clear ratings"));
     await probe("menu:cast", () => (document.querySelector(".castBtn") as HTMLElement).click(), ".castMenu", () =>
       (document.querySelector(".castBtn") as HTMLElement).click(),

@@ -21,9 +21,14 @@
   //   * Chronological (oldest first) by default; rows can be dragged to reorder.
   //   * Clicking a row previews it on the right (photo, or video with hover
   //     scrub and Play). Clicking outside never closes the window.
+  //   * Once it's merging, "Run in background" hides the window: the merge
+  //     keeps going in the job centre (bottom-left), with Stop and a Show
+  //     button to bring this window back. It has its own stop flag, so an
+  //     Edit export started meanwhile can't cancel it (2026-10-04).
   import { onDestroy, onMount } from "svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { api } from "$lib/api";
+  import { activity } from "$lib/activity.svelte";
   import type { MediaItem, MergeClip, MergeConvert, TreeDir } from "$lib/types";
   import Thumb from "./Thumb.svelte";
   import ContextMenu, { type MenuEntry } from "./ContextMenu.svelte";
@@ -32,7 +37,9 @@
     items,
     sourceDir,
     drives,
+    hidden = false,
     onclose,
+    onhide,
     ondone,
   }: {
     /** Everything that was selected, photos included. */
@@ -40,7 +47,11 @@
     /** Folder the clips live in: the default place to save. */
     sourceDir: string;
     drives: TreeDir[];
+    /** Running in the background: the window is out of sight but alive. */
+    hidden?: boolean;
     onclose: () => void;
+    /** "Run in background": the page hides this window. */
+    onhide?: () => void;
     ondone: (path: string, dir: string) => void;
   } = $props();
 
@@ -447,7 +458,7 @@
   function onkeydown(e: KeyboardEvent) {
     // This window owns the keyboard while it's open (the page ignores keys
     // then), and it never closes on Escape: only Cancel / ✕ close it.
-    if (menu) return; // the context menu handles its own keys
+    if (hidden || menu) return; // hidden: keys belong to the library again
     const t = e.target as HTMLElement;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
     if (phase !== "ready") return;
@@ -488,8 +499,13 @@
   }
 
   // ── merge ─────────────────────────────────────────────────────────────────
-  let unlisten: (() => void) | null = null;
+  // Progress comes from the job centre's "merge" entry (the backend reports
+  // there), so this window and the bottom-left card always agree.
   let ticker: ReturnType<typeof setInterval> | null = null;
+  let job = $derived(activity.jobs["merge"]);
+  $effect(() => {
+    if (phase === "merging" && job?.state === "running") pct = job.done;
+  });
   async function start() {
     if (blocker) return;
     error = "";
@@ -498,11 +514,14 @@
     pct = 0;
     startedAt = Date.now();
     ticker = setInterval(() => (now = Date.now()), 1000);
-    try {
-      unlisten = await api.onExportProgress((p) => (pct = p));
-    } catch {
-      /* no progress events outside the app */
-    }
+    const n = clean.length;
+    activity.start("merge", {
+      label: `Merging ${n} clips → ${name}.mp4`,
+      kind: "merge",
+      total: 100,
+      unit: "pct",
+      cancel: () => void api.cancelJob("merge"),
+    });
     try {
       result = await api.mergeVideos({ paths: clean.map((c) => c.path), destDir, name, convert: converting ? target : null });
       phase = "done";
@@ -511,20 +530,23 @@
       const msg = String(e);
       phase = "ready";
       if (!msg.includes("cancelled")) error = msg;
+      // A refusal before the backend started (another merge running, no
+      // space) never reached the job centre; don't leave a spinner there.
+      if (activity.jobs["merge"]?.state === "running") activity.finish("merge", { state: "error", label: "Merge failed", detail: msg });
     } finally {
-      unlisten?.();
-      unlisten = null;
       if (ticker) clearInterval(ticker);
     }
   }
 
   onDestroy(() => {
-    unlisten?.();
     if (ticker) clearInterval(ticker);
   });
 
   let eta = $derived.by(() => {
-    if (phase !== "merging" || pct < 2) return "";
+    if (phase !== "merging") return "";
+    const fromJob = activity.eta("merge");
+    if (fromJob) return `${fromJob} left`;
+    if (pct < 2) return "";
     const elapsed = (now - startedAt) / 1000;
     const left = (elapsed * (100 - pct)) / pct;
     return left > 90 ? `about ${Math.round(left / 60)} min left` : `about ${Math.max(1, Math.round(left))} s left`;
@@ -539,8 +561,8 @@
 
 <!-- The backdrop is inert on purpose: a stray click must not throw away a
      half-reviewed list. -->
-<div class="backdrop" role="presentation"></div>
-<div class="panel" role="dialog" aria-label="Merge videos" aria-modal="true">
+<div class="backdrop" class:hidden role="presentation"></div>
+<div class="panel" class:hidden role="dialog" aria-label="Merge videos" aria-modal="true">
   <header>
     <div>
       <h2>Merge videos</h2>
@@ -549,7 +571,13 @@
       </p>
     </div>
     <span class="grow"></span>
-    {#if phase !== "merging"}<button class="x" onclick={onclose} title="Close" aria-label="Close">✕</button>{/if}
+    {#if phase !== "merging"}
+      <button class="x" onclick={onclose} title="Close" aria-label="Close">✕</button>
+    {:else if onhide}
+      <button class="x" onclick={onhide} title="Run in background: keep merging, follow it bottom-left" aria-label="Run in background">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 12h12" /></svg>
+      </button>
+    {/if}
   </header>
 
   {#if phase === "probing"}
@@ -766,13 +794,16 @@
               <div class="progress" role="progressbar" aria-valuenow={pct} aria-valuemin="0" aria-valuemax="100">
                 <div class="bar"><div class="fill" style="width:{pct}%"></div></div>
                 <span>{converting ? "Converting" : "Merging"}… {pct}%{eta ? ` · ${eta}` : ""}</span>
+                {#if job?.state === "running" && job.detail}<span class="pdetail">{job.detail}</span>{/if}
               </div>
             {/if}
 
             <div class="actions">
               {#if phase === "merging"}
+                <span class="meanwhile">You can keep using FoxCull meanwhile.</span>
                 <span class="grow"></span>
-                <button class="btn" onclick={() => api.cancelEditExport()}>Stop</button>
+                <button class="btn" onclick={() => activity.cancel("merge")}>Stop</button>
+                {#if onhide}<button class="btn accent" onclick={onhide} title="The merge keeps going; follow it in the bottom-left corner">Run in background</button>{/if}
               {:else}
                 {#if blocker}<span class="why">{blocker}</span>{/if}
                 <span class="grow"></span>
@@ -787,7 +818,7 @@
   {/if}
 </div>
 
-{#if menu}
+{#if menu && !hidden}
   <ContextMenu x={menu.x} y={menu.y} entries={menu.entries} onclose={() => (menu = null)} />
 {/if}
 
@@ -921,6 +952,11 @@
   .dest.choose { justify-content: center; color: var(--accent); }
   .warn { margin: 0; color: var(--reject); font-size: 12.5px; line-height: 1.5; }
   .progress { display: flex; flex-direction: column; gap: 6px; color: var(--text-dim); font-size: 12.5px; }
+  .pdetail { color: var(--text-faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .meanwhile { color: var(--text-faint); font-size: 12px; }
+  /* Running in the background: alive (the merge's promise lives here) but out
+     of sight; the job centre's Show brings it back. */
+  .backdrop.hidden, .panel.hidden { display: none; }
   .bar { height: 6px; border-radius: 999px; background: var(--bg-hover); overflow: hidden; }
   .fill { height: 100%; background: var(--accent); transition: width 300ms ease; }
   /* Always in view, however short the window: the button is the point. */

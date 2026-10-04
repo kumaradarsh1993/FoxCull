@@ -31,6 +31,25 @@ pub struct VideoSegment {
     pub out_s: f64,
 }
 
+/// One file's catalog record, detached from its rel-path: what travels when a
+/// file is copied, or moved to another drive (whose catalog is a different
+/// SQLite file).
+#[derive(Clone, Default, Debug, PartialEq)]
+pub struct MediaMeta {
+    /// (rating, label, flag)
+    pub decision: Option<(i64, Option<String>, Option<String>)>,
+    pub tags: Vec<String>,
+    pub trim: Option<(f64, f64)>,
+    /// (idx, in_s, out_s)
+    pub segments: Vec<(i64, f64, f64)>,
+    /// (captured, mtime, size): still valid after a copy, which keeps the mtime.
+    pub capture: Option<(i64, i64, i64)>,
+    /// (duration, mtime, size)
+    pub duration: Option<(f64, i64, i64)>,
+    /// Event names (ids differ between catalogs).
+    pub events: Vec<String>,
+}
+
 #[derive(Serialize, Clone)]
 pub struct TrashRow {
     pub stored: String,
@@ -878,6 +897,128 @@ impl Catalog {
         tx.commit()
     }
 
+    /// Everything the catalog knows about each rel, for carrying it to another
+    /// path or another drive's catalog (`import_entries`). Rels with nothing
+    /// recorded come back with an empty `MediaMeta`.
+    pub fn export_entries(&self, rels: &[String]) -> Vec<MediaMeta> {
+        let conn = self.conn.lock();
+        rels.iter()
+            .map(|rel| {
+                let one = |sql: &str| -> Vec<String> {
+                    conn.prepare(sql)
+                        .and_then(|mut st| {
+                            st.query_map(params![rel], |r| r.get::<_, String>(0))
+                                .map(|it| it.filter_map(|x| x.ok()).collect())
+                        })
+                        .unwrap_or_default()
+                };
+                MediaMeta {
+                    decision: conn
+                        .query_row(
+                            "SELECT rating, label, flag FROM decisions WHERE rel = ?1",
+                            params![rel],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                        )
+                        .ok(),
+                    tags: one("SELECT tag FROM tags WHERE rel = ?1"),
+                    trim: conn
+                        .query_row("SELECT in_s, out_s FROM trims WHERE rel = ?1", params![rel], |r| {
+                            Ok((r.get(0)?, r.get(1)?))
+                        })
+                        .ok(),
+                    segments: conn
+                        .prepare("SELECT idx, in_s, out_s FROM video_segments WHERE rel = ?1 ORDER BY idx")
+                        .and_then(|mut st| {
+                            st.query_map(params![rel], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                                .map(|it| it.filter_map(|x| x.ok()).collect())
+                        })
+                        .unwrap_or_default(),
+                    capture: conn
+                        .query_row("SELECT captured, mtime, size FROM captures WHERE rel = ?1", params![rel], |r| {
+                            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                        })
+                        .ok(),
+                    duration: conn
+                        .query_row("SELECT duration, mtime, size FROM durations WHERE rel = ?1", params![rel], |r| {
+                            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                        })
+                        .ok(),
+                    events: one(
+                        "SELECT e.name FROM event_members m JOIN events e ON e.id = m.event_id
+                          WHERE m.rel = ?1 ORDER BY e.id",
+                    ),
+                }
+            })
+            .collect()
+    }
+
+    /// Write `MediaMeta` under new rels, replacing whatever those rels had. Events
+    /// are matched by name (created here if this catalog has no such event), so
+    /// a trip's photos moved to another drive stay in their trip.
+    pub fn import_entries(&self, rows: &[(String, MediaMeta)]) -> rusqlite::Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            let t = now();
+            for (rel, m) in rows {
+                for table in ["decisions", "tags", "trims", "video_segments", "captures", "durations", "event_members", "missing"] {
+                    tx.execute(&format!("DELETE FROM {table} WHERE rel = ?1"), params![rel])?;
+                }
+                if let Some((rating, label, flag)) = &m.decision {
+                    tx.execute(
+                        "INSERT INTO decisions(rel, rating, label, flag, updated_at) VALUES(?1, ?2, ?3, ?4, ?5)",
+                        params![rel, rating, label, flag, t],
+                    )?;
+                }
+                for tag in &m.tags {
+                    tx.execute("INSERT OR IGNORE INTO tags(rel, tag) VALUES(?1, ?2)", params![rel, tag])?;
+                }
+                if let Some((a, b)) = m.trim {
+                    tx.execute("INSERT INTO trims(rel, in_s, out_s) VALUES(?1, ?2, ?3)", params![rel, a, b])?;
+                }
+                for (idx, a, b) in &m.segments {
+                    tx.execute(
+                        "INSERT INTO video_segments(rel, idx, in_s, out_s) VALUES(?1, ?2, ?3, ?4)",
+                        params![rel, idx, a, b],
+                    )?;
+                }
+                if let Some((c, mt, sz)) = m.capture {
+                    tx.execute(
+                        "INSERT INTO captures(rel, captured, mtime, size) VALUES(?1, ?2, ?3, ?4)",
+                        params![rel, c, mt, sz],
+                    )?;
+                }
+                if let Some((d, mt, sz)) = m.duration {
+                    tx.execute(
+                        "INSERT INTO durations(rel, duration, mtime, size) VALUES(?1, ?2, ?3, ?4)",
+                        params![rel, d, mt, sz],
+                    )?;
+                }
+                for name in &m.events {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO events(name, created_at) VALUES(?1, ?2)",
+                        params![name, t],
+                    )?;
+                    tx.execute(
+                        "INSERT OR IGNORE INTO event_members(event_id, rel)
+                         SELECT id, ?2 FROM events WHERE name = ?1",
+                        params![name, rel],
+                    )?;
+                }
+            }
+            tx.execute("DELETE FROM dir_counts", [])?;
+        }
+        tx.commit()
+    }
+
+    /// A copied file inherits its original's marks, tags, trims and events.
+    pub fn copy_media_entries(&self, pairs: &[(String, String)]) -> rusqlite::Result<()> {
+        let froms: Vec<String> = pairs.iter().map(|(f, _)| f.clone()).collect();
+        let metas = self.export_entries(&froms);
+        let rows: Vec<(String, MediaMeta)> = pairs.iter().map(|(_, to)| to.clone()).zip(metas).collect();
+        self.import_entries(&rows)
+    }
+
     // ── tags ────────────────────────────────────────────────────────────────
 
     /// Every tag at or under a rel-prefix, grouped by rel-path, in one query.
@@ -1003,5 +1144,63 @@ impl Catalog {
         for s in stored {
             let _ = conn.execute("DELETE FROM trash WHERE stored = ?1", params![s]);
         }
+    }
+}
+
+#[cfg(test)]
+mod transfer_tests {
+    use super::{Catalog, MediaMeta};
+
+    fn temp_catalog(tag: &str) -> (Catalog, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("foxcull-cat-{tag}-{}-{}", std::process::id(), super::now()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("catalog.sqlite");
+        (Catalog::open(&path).unwrap(), dir)
+    }
+
+    /// A file moved to another drive keeps everything: its marks, tags, trims,
+    /// segments, cached dates and lengths, and its events (matched by name,
+    /// created in the destination catalog when it has no such event).
+    #[test]
+    fn records_travel_between_catalogs() {
+        let (a, da) = temp_catalog("a");
+        let (b, db) = temp_catalog("b");
+        let rel = "Trip/DJI_0001.MP4".to_string();
+        a.set_rating(&rel, 4).unwrap();
+        a.set_label(&rel, Some("green".into())).unwrap();
+        a.set_flag(&rel, Some("pick".into())).unwrap();
+        a.add_tag_many(std::slice::from_ref(&rel), "seattle").unwrap();
+        a.set_trim(&rel, 1.5, 9.0).unwrap();
+        a.set_video_segments(&rel, &[super::VideoSegment { in_s: 2.0, out_s: 3.0 }]).unwrap();
+        a.set_capture_many(&[(rel.clone(), 1_790_000_000, 111, 222)]).unwrap();
+        a.set_duration_many(&[(rel.clone(), 334.5, 111, 222)]).unwrap();
+        let ev = a.create_event("USA trip").unwrap();
+        a.add_to_event(ev, std::slice::from_ref(&rel)).unwrap();
+
+        let metas = a.export_entries(std::slice::from_ref(&rel));
+        assert_eq!(metas.len(), 1);
+        let m = &metas[0];
+        assert_eq!(m.decision, Some((4, Some("green".into()), Some("pick".into()))));
+        assert_eq!(m.tags, vec!["seattle".to_string()]);
+        assert_eq!(m.trim, Some((1.5, 9.0)));
+        assert_eq!(m.segments, vec![(0, 2.0, 3.0)]);
+        assert_eq!(m.capture, Some((1_790_000_000, 111, 222)));
+        assert_eq!(m.duration, Some((334.5, 111, 222)));
+        assert_eq!(m.events, vec!["USA trip".to_string()]);
+
+        let to = "Merged/DJI_0001.MP4".to_string();
+        b.import_entries(&[(to.clone(), m.clone())]).unwrap();
+        assert_eq!(b.export_entries(std::slice::from_ref(&to)), metas);
+        assert_eq!(b.list_events().iter().map(|e| e.name.clone()).collect::<Vec<_>>(), vec!["USA trip".to_string()]);
+
+        // Copy within one catalog: both rels carry the record.
+        a.copy_media_entries(&[(rel.clone(), "Copy/DJI_0001.MP4".into())]).unwrap();
+        assert_eq!(a.export_entries(&["Copy/DJI_0001.MP4".into()]), metas);
+
+        // Nothing recorded → an empty record, which imports as nothing.
+        assert_eq!(a.export_entries(&["nope.jpg".into()]), vec![MediaMeta::default()]);
+        drop((a, b));
+        let _ = std::fs::remove_dir_all(da);
+        let _ = std::fs::remove_dir_all(db);
     }
 }

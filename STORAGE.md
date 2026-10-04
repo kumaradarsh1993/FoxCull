@@ -59,14 +59,15 @@ when a folder named `foxcull-data` sits next to `foxcull.exe`.
 
 Older portable data folder names are not adopted by current builds.
 
-## Prepare And Cache Behavior
+## Pre-building And Cache Behavior
 
 FoxCull uses cache in a few layers:
 
 - Folder open automatically warms grid thumbnails (images only).
 - Focus view prefetch keeps nearby full previews warm around the active item.
-- The Prepare button explicitly builds full-size Focus previews, RAW previews,
-  video posters AND hover scrub strips for the current folder/filter set.
+- Folder right-click → Build previews for this folder (the old Prepare
+  button) explicitly builds full-size Focus previews, RAW previews and video
+  posters for that folder.
 - Live Scrub builds a small hover strip on demand the first time you linger on
   a video tile; the Focus view builds a denser filmstrip for its seek bar.
   Both are extracted by keyframe seeks (a few seconds per clip, cancellable),

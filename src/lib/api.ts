@@ -137,8 +137,12 @@ export const api = {
       "raw-export-progress",
       (e) => cb(e.payload),
     ),
-  moveMediaFiles: (paths: string[], dest: string) =>
-    invoke<MoveOutcome>("move_media_files", { paths, dest }),
+  /** Move (or with `copy`, copy) files into `dest`, on this drive or another.
+   *  Progress arrives as `activity` events under `job`; stop with `cancelJob`. */
+  moveMediaFiles: (paths: string[], dest: string, opts: { copy?: boolean; job?: string } = {}) =>
+    invoke<MoveOutcome>("move_media_files", { paths, dest, copy: opts.copy ?? false, job: opts.job ?? null }),
+  /** Stop a running job (a move, a merge). False when it already finished. */
+  cancelJob: (id: string) => invoke<boolean>("cancel_job", { id }).catch(() => false),
   /** Create a subfolder inside `parent` and return its absolute path. */
   createFolder: (parent: string, name: string) =>
     invoke<string>("create_folder", { parent, name }),

@@ -25,6 +25,7 @@
   import DetailsView from "$lib/components/DetailsView.svelte";
   import ContextMenu, { type MenuEntry } from "$lib/components/ContextMenu.svelte";
   import ActivityBar from "$lib/components/ActivityBar.svelte";
+  import { mediaDrag } from "$lib/drag.svelte";
   import EditStudio from "$lib/components/EditStudio.svelte";
   import ControllerPanel from "$lib/components/ControllerPanel.svelte";
   import ExcludePanel from "$lib/components/ExcludePanel.svelte";
@@ -447,6 +448,9 @@
   /** Open "Merge videos" window: everything selected (photos too; the window
    *  flags what can't be merged rather than FoxCull dropping it silently). */
   let mergeReq = $state<{ items: MediaItem[]; sourceDir: string } | null>(null);
+  /** The merge window is running in the background (job centre has it). */
+  let mergeHidden = $state(false);
+  const showMergeAction = { label: "Show merge window", run: () => (mergeHidden = false) };
   /** Video lengths (seconds) by path: the tile badge and the selection summary.
    *  Filled per folder from the per-drive cache (MP4/MOV headers, so cheap). */
   let durations = $state<Record<string, number>>({});
@@ -457,7 +461,7 @@
 
   /** True while any toolbar popover/menu is open (they share light-dismiss). */
   function anyPopoverOpen(): boolean {
-    return settingsOpen || filtersOpen || arrangeOpen || clearOpen || castOpen || prepMenuOpen;
+    return settingsOpen || filtersOpen || arrangeOpen || clearOpen || castOpen;
   }
   function closeAllPopovers() {
     settingsOpen = false;
@@ -465,7 +469,6 @@
     arrangeOpen = false;
     clearOpen = false;
     castOpen = false;
-    prepMenuOpen = false;
   }
   // Light dismiss, the way every native menu works: pressing anywhere outside
   // an open popover (or its toggle) closes it. Toggles keep working because
@@ -473,7 +476,7 @@
   function onGlobalPointerDown(e: PointerEvent) {
     if (!anyPopoverOpen()) return;
     const t = e.target as HTMLElement | null;
-    if (t?.closest(".pop, .filtermenu, .arrangeMenu, .clearMenu, .castMenu, .arrange, .filterwrap, .clearWrap, .castWrap, .prepWrap, .gear")) return;
+    if (t?.closest(".pop, .filtermenu, .arrangeMenu, .clearMenu, .castMenu, .arrange, .filterwrap, .clearWrap, .castWrap, .gear")) return;
     closeAllPopovers();
   }
   let editOpen = $state(false);
@@ -513,7 +516,7 @@
 
   // Grouping that needs real capture dates (the date-based sections); folder/type
   // group on the path/kind we already have, so they cost nothing extra.
-  const DATE_GROUPS = new Set(["year", "month", "week"]);
+  const DATE_GROUPS = new Set(["year", "month", "week", "day"]);
   const TYPE_ORDER: Record<string, number> = { image: 0, raw: 1, video: 2, other: 3 };
   const TYPE_LABEL: Record<string, string> = {
     image: "Photos",
@@ -892,25 +895,56 @@
     return false;
   }
 
-  // Section helpers for the grouped grid (folder · type · year · month · week).
-  // Dates are UTC to match how capture timestamps are stored. Week = calendar
-  // week-of-month (days 1–7 = Week 1, 8–14 = Week 2, …).
+  // Section helpers for the grouped grid (folder · type · year · month · week
+  // · day). Dates are read as UTC because that is how capture times are
+  // stored: a photo's EXIF time is the camera's wall clock, saved as if it
+  // were UTC. Week = calendar week-of-month (days 1–7 = Week 1, …).
+  //
+  // Videos are the exception. Their container time is REAL UTC, so a clip
+  // shot at 8 pm in Seattle reads as 3 am the next day, and Day grouping put
+  // a trip's evening videos under the wrong date. Phones and cameras write the
+  // local wall clock into the file name (DJI_20260926201500, PXL_20260926_…,
+  // VID_…, 20260926_201500), so for sectioning a video uses that when present.
+  const NAME_TIME = /(?:^|[^0-9])((?:19|20)\d{2})(\d{2})(\d{2})[_-]?(\d{2})(\d{2})(\d{2})/;
+  const wallCache = new Map<string, number>();
+  function wallTime(it: MediaItem): number {
+    if (it.kind !== "video") return captureOf(it);
+    let t = wallCache.get(it.name);
+    if (t === undefined) {
+      const m = it.name.match(NAME_TIME);
+      t = NaN;
+      if (m) {
+        const [y, mo, d, h, mi, se] = m.slice(1).map(Number);
+        if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31 && h < 24 && mi < 60 && se < 61) t = Date.UTC(y, mo - 1, d, h, mi, se) / 1000;
+      }
+      wallCache.set(it.name, t);
+    }
+    return Number.isNaN(t) ? captureOf(it) : t;
+  }
   function sectionPartKey(it: MediaItem, g: typeof settings.s.groupBy): string {
     if (g === "folder") return parentOf(it.path);
     if (g === "type") return it.kind;
     if (g === "none") return "";
-    const d = new Date(captureOf(it) * 1000);
+    const d = new Date(wallTime(it) * 1000);
     if (g === "year") return `${d.getUTCFullYear()}`;
-    const base = `${d.getUTCFullYear()}-${d.getUTCMonth()}`;
+    const base = `${d.getUTCFullYear()}-${String(d.getUTCMonth()).padStart(2, "0")}`;
     if (g === "week") return `${base}-${Math.floor((d.getUTCDate() - 1) / 7)}`;
+    if (g === "day") return `${base}-${String(d.getUTCDate()).padStart(2, "0")}`;
     return base; // month
   }
   function sectionPartLabel(it: MediaItem, g: typeof settings.s.groupBy): string {
     if (g === "folder") return parentName(it.path);
     if (g === "type") return TYPE_LABEL[it.kind] ?? it.kind;
     if (g === "none") return "";
-    const d = new Date(captureOf(it) * 1000);
+    const d = new Date(wallTime(it) * 1000);
     if (g === "year") return `${d.getUTCFullYear()}`;
+    if (g === "day") {
+      // Under a month/week parent the month is already said: "Fri 26".
+      const parentHasMonth = settings.s.groupBy === "month" || settings.s.groupBy === "week";
+      return parentHasMonth && settings.s.subgroupBy === "day"
+        ? d.toLocaleString(undefined, { weekday: "short", day: "numeric", timeZone: "UTC" })
+        : d.toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+    }
     const mon = d.toLocaleString(undefined, { month: "long", year: "numeric", timeZone: "UTC" });
     if (g === "week") return `${mon} · Week ${Math.floor((d.getUTCDate() - 1) / 7) + 1}`;
     return mon;
@@ -968,7 +1002,9 @@
         if (p !== 0) return p;
       }
       let c = 0;
-      if (by === "capture") c = captureOf(a) - captureOf(b);
+      // Wall-clock time, so a DJI video and the DJI photo shot a minute
+      // later sort in shooting order (see wallTime).
+      if (by === "capture") c = wallTime(a) - wallTime(b);
       else if (by === "date") c = a.mtime - b.mtime;
       else if (by === "size") c = a.size - b.size;
       else if (by === "type") c = collator.compare(a.kind, b.kind);
@@ -1152,6 +1188,16 @@
     handle = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(handle);
   });
+
+  /** The volume a path is on, by the backend's rule (`drive_root`): what
+   *  decides which catalog a file belongs to. Not `rootForDir`, which can
+   *  answer the Home folder; Home is on the boot volume's catalog. */
+  function driveRootOf(path: string): string {
+    const win = path.match(/^[A-Za-z]:[\\/]/);
+    if (win) return win[0];
+    const vol = path.match(/^\/Volumes\/[^/]+/);
+    return vol ? vol[0] : "/";
+  }
 
   function rootForDir(dir: string): string {
     // The MOST specific drive that contains `dir`. On macOS the list holds `/`
@@ -1371,6 +1417,13 @@
     if (vids.length < 2 || !currentDir) return;
     const first = vids[0].path;
     const sourceDir = first.slice(0, Math.max(first.lastIndexOf("/"), first.lastIndexOf("\\"))) || currentDir;
+    // One merge at a time: while one runs in the background, asking for
+    // another brings that one back instead of throwing it away.
+    if (mergeReq && activity.jobs["merge"]?.state === "running") {
+      mergeHidden = false;
+      return;
+    }
+    mergeHidden = false;
     mergeReq = { items: ts, sourceDir };
   }
 
@@ -1451,32 +1504,140 @@
     if (!(selected.size > 1 && selected.has(item.path))) setActiveTo(i);
     const paths = pathsForDrag(item);
     draggingPaths = paths;
+    mediaDrag.count = paths.length;
     if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.effectAllowed = "copyMove";
       e.dataTransfer.setData("application/x-foxcull-paths", JSON.stringify(paths));
       e.dataTransfer.setData("text/plain", paths.join("\n"));
+      if (paths.length) setDragGhost(e, item, paths.length);
     }
+  }
+
+  /** The drag image: a small stack of up to three thumbnails with a count,
+   *  the way Finder and Photos show a multi-item drag. Without it the browser
+   *  snapshots the tile (or, in WebKit, the whole selection) at full size. */
+  function setDragGhost(e: DragEvent, item: MediaItem, count: number) {
+    const from = e.currentTarget as HTMLElement | null;
+    const srcs: string[] = [];
+    const firstImg = from?.querySelector<HTMLImageElement>("img.media");
+    if (firstImg?.currentSrc) srcs.push(firstImg.currentSrc);
+    if (count > 1) {
+      for (const img of document.querySelectorAll<HTMLImageElement>(".cell.selected img.media, .row.selected img.media")) {
+        if (srcs.length >= 3) break;
+        if (img.currentSrc && !srcs.includes(img.currentSrc)) srcs.push(img.currentSrc);
+      }
+    }
+    const cards = Math.min(3, Math.max(1, count));
+    const ghost = document.createElement("div");
+    ghost.className = "dragGhost";
+    ghost.style.left = `${e.clientX - 4}px`;
+    ghost.style.top = `${e.clientY - 4}px`;
+    for (let c = cards - 1; c >= 0; c--) {
+      const card = document.createElement("div");
+      card.className = `dgCard dg${c}`;
+      const src = srcs[c] ?? srcs[0];
+      if (src) {
+        const img = document.createElement("img");
+        img.src = src;
+        img.alt = "";
+        card.appendChild(img);
+      } else {
+        card.textContent = item.kind === "video" ? "▶" : "";
+      }
+      ghost.appendChild(card);
+    }
+    if (count > 1) {
+      const badge = document.createElement("span");
+      badge.className = "dgBadge";
+      badge.textContent = count > 999 ? "999+" : String(count);
+      ghost.appendChild(badge);
+    }
+    document.body.appendChild(ghost);
+    // The cursor sits just above-left of the stack, so the folder row under
+    // it stays readable. The node only has to exist while the browser takes
+    // its snapshot, which happens as dragstart returns.
+    e.dataTransfer?.setDragImage(ghost, 4, 4);
+    setTimeout(() => ghost.remove(), 0);
   }
 
   function endMediaDrag() {
     draggingPaths = [];
+    mediaDrag.count = 0;
   }
 
-  async function movePathsTo(paths: string[], dest: string) {
-    if (!paths.length || movingFiles) return;
+  // Moves run one after another (two copies to one disk would each go at half
+  // speed), each as its own entry in the job centre with bytes, speed, time
+  // left and a Stop button. A drop while one runs is queued, not ignored.
+  let moveQueue: Promise<void> = Promise.resolve();
+  let moveSeq = 0;
+  function movePathsTo(paths: string[], dest: string, copy = false) {
+    if (!paths.length) return;
+    const list = [...paths];
+    const job = `${copy ? "copy" : "move"}-${++moveSeq}`;
+    const n = list.length;
+    const what = `${n.toLocaleString()} item${n === 1 ? "" : "s"}`;
+    const destRoot = driveRootOf(dest);
+    const otherDrive = !samePath(destRoot, driveRootOf(list[0]));
+    // "Seattle on MAHINDRA" across drives; just "MAHINDRA" for a drive's top.
+    const onRoot = samePath(dest, destRoot);
+    const where = onRoot
+      ? driveLabelOf(destRoot)
+      : `${basename(dest) || dest}${otherDrive ? ` on ${driveLabelOf(destRoot)}` : ""}`;
+    activity.start(job, {
+      label: `${copy ? "Copying" : "Moving"} ${what} to ${where}`,
+      detail: movingFiles ? "Waiting for the previous move…" : undefined,
+      queued: movingFiles,
+      kind: copy ? "copy" : "move",
+      // A queued move isn't known to the backend yet: remember to skip it.
+      cancel: () => {
+        skipMoves.add(job);
+        if (activity.jobs[job]?.queued) activity.finish(job, { state: "cancelled", detail: "Nothing was changed" });
+        else void api.cancelJob(job);
+      },
+    });
+    draggingPaths = [];
+    mediaDrag.count = 0;
+    moveQueue = moveQueue.then(() => runMove(job, list, dest, copy, what, where));
+  }
+
+  const skipMoves = new Set<string>();
+  async function runMove(job: string, paths: string[], dest: string, copy: boolean, what: string, where: string) {
+    if (skipMoves.delete(job)) return; // stopped while it waited its turn
     movingFiles = true;
+    activity.update(job, { detail: undefined, queued: false });
     try {
-      const r = await api.moveMediaFiles(paths, dest);
-      if (r.moved) {
-        activity.local("move-files", `Moved ${r.moved} file${r.moved === 1 ? "" : "s"}`, 1, 1);
+      const r = await api.moveMediaFiles(paths, dest, { copy, job });
+      const verb = copy ? "Copied" : "Moved";
+      const open = { label: "Open folder", run: () => void openFolder(dest) };
+      if (r.cancelled) {
+        activity.finish(job, {
+          state: "cancelled",
+          label: `${copy ? "Copying" : "Moving"} ${what} to ${where}`,
+          detail: r.moved ? `${r.moved} of ${paths.length} ${copy ? "copied" : "moved"} before stopping` : "Nothing was changed",
+          actions: r.moved ? [open] : [],
+        });
+      } else if (r.moved && !r.failed.length) {
+        activity.finish(job, {
+          label: `${verb} ${what} to ${where}`,
+          actions: [open],
+        });
+      } else if (r.moved) {
+        activity.finish(job, {
+          state: "error",
+          label: `${verb} ${r.moved} of ${paths.length} to ${where}`,
+          detail: `${r.failed.length} couldn't be ${copy ? "copied" : "moved"}${r.errors[0] ? `: ${r.errors[0]}` : ""}`,
+          actions: [open],
+        });
+      } else {
+        activity.finish(job, {
+          state: "error",
+          label: `Couldn't ${copy ? "copy" : "move"} ${what} to ${where}`,
+          detail: r.errors[0] ?? "Nothing was changed",
+        });
       }
-      if (r.failed.length) {
-        activity.error("move-files-error", `Move failed for ${r.failed.length} file${r.failed.length === 1 ? "" : "s"}${r.errors[0] ? `: ${r.errors[0]}` : ""}`);
-      }
-      cutPaths = [];
-      draggingPaths = [];
+      if (r.moved && !copy) cutPaths = cutPaths.filter((p) => !r.files.some((f) => samePath(f.from, p)));
       countsGen++;
-      if (currentDir) {
+      if (currentDir && r.moved) {
         const firstMoved = r.files[0]?.to ?? null;
         const canSeeMoved =
           !!firstMoved && (samePath(dest, currentDir) || (settings.s.includeSub && isUnder(dest, currentDir)));
@@ -1486,7 +1647,7 @@
         });
       }
     } catch (e) {
-      activity.error("move-files-error", `Move failed (${e})`);
+      activity.finish(job, { state: "error", label: `Couldn't ${copy ? "copy" : "move"} ${what}`, detail: String(e) });
     } finally {
       movingFiles = false;
     }
@@ -1720,99 +1881,55 @@
     prevViewMode = vm;
   });
 
-  // ── Prepare folder: pre-cache full previews for the whole folder up front ──
-  // The grid warmer only makes small thumbnails; this generates every shot's big
-  // Focus preview (and video posters) so a culling pass through the folder has
-  // zero blur. Runs on the backend's bounded pool; safe to keep working meanwhile.
+  // ── Build previews: pre-cache a folder's Focus previews up front ──────────
+  // Was the toolbar's "Prepare" button. Retired from the toolbar 2026-10-04:
+  // Focus already builds the next 3 and previous 2 previews as you step
+  // (~150 ms each for a 12 MP JPEG on the owner's Mac), grid thumbnails are
+  // built for what's on screen, and video skimming decodes live, so on an
+  // internal or USB SSD there's nothing left to wait for. What remains is the
+  // slow-card case (an SD card, a spinning disk): building every preview of
+  // a folder while you do something else. That lives in the folder's
+  // right-click menu now, and runs as a job-centre entry with a Stop button.
   let preparing = $state(false);
-  let prepared = $state(false);
-  let prepDone = $state(0);
-  let prepTotal = $state(0);
-  let prepEta = $state("");
-  let prepPct = $derived(prepTotal ? Math.round((prepDone / prepTotal) * 100) : 0);
-  /** What Prepare covers. Default stays the whole folder — the scopes exist so
-   *  a 20-clip 4K folder can be narrowed to "just what I selected" instead of
-   *  committing to the full pass. */
-  type PrepScope = "all" | "selection" | "videos" | "photos";
-  let prepMenuOpen = $state(false);
-  const PREP_SCOPES: { key: PrepScope; label: string }[] = [
-    { key: "all", label: "Everything in this folder" },
-    { key: "selection", label: "Selection only" },
-    { key: "videos", label: "Videos in this folder" },
-    { key: "photos", label: "Photos & RAW in this folder" },
-  ];
-  function prepScopeItems(scope: PrepScope): MediaItem[] {
-    // "?" entries have no file to pre-cache; they'd only add guaranteed misses.
-    const pool = baseView.filter((i) => !i.missing);
-    if (scope === "selection") return actionTargets.filter((i) => !i.missing);
-    if (scope === "videos") return pool.filter((i) => i.kind === "video");
-    if (scope === "photos") return pool.filter((i) => i.kind === "image" || i.kind === "raw");
-    return pool;
-  }
-  async function prepareFolder(scope: PrepScope = "all") {
+  let prepStop = false;
+  async function prepareFolder() {
     if (!currentDir || preparing) return;
-    const src = prepScopeItems(scope);
+    // "?" entries have no file to pre-cache; they'd only add guaranteed misses.
+    const src = baseView.filter((i) => !i.missing);
     if (!src.length) return;
     preparing = true;
-    prepared = false;
+    prepStop = false;
     const dir = currentDir;
-    // Focus previews are the big (1920px) renders; the small grid thumbs are
-    // already warmed on folder-open. Photos/RAW run FIRST (fast, and the most
-    // common reason to Prepare), then videos (posters + hover scrub strips —
-    // seconds each, not milliseconds). Keeping the phases separate is what
-    // makes the ETA honest: one blended per-item rate over a folder that's
-    // 90% photos and 10% long videos claims "5 minutes" for a 20-minute job.
-    const photoPaths = src.filter((i) => i.kind === "image" || i.kind === "raw").map((i) => i.path);
-    const videoPaths = src.filter((i) => i.kind === "video").map((i) => i.path);
-    prepTotal = photoPaths.length + videoPaths.length;
-    prepDone = 0;
-    prepEta = "";
-    // Per-kind ms/item: measured once that phase has data; until then a prior
-    // from the target machines (photo previews ~0.3s; video poster + scrub
-    // strip ~4s with keyframe-seek extraction).
-    const PHOTO_PRIOR_MS = 300;
-    const VIDEO_PRIOR_MS = 4000;
-    let photoMs: number | null = null;
-    let videoMs: number | null = null;
-    const updateEta = () => {
-      const photosLeft = Math.max(0, photoPaths.length - Math.min(prepDone, photoPaths.length));
-      const videosLeft = Math.max(0, prepTotal - Math.max(prepDone, photoPaths.length));
-      const remainMs =
-        photosLeft * (photoMs ?? PHOTO_PRIOR_MS) + videosLeft * (videoMs ?? VIDEO_PRIOR_MS);
-      prepEta = remainMs > 1500 ? fmtEta(remainMs / 1000) : "almost done";
-    };
+    // Photos/RAW first (fast, and the usual reason), then video posters.
+    const order = [
+      ...src.filter((i) => i.kind === "image" || i.kind === "raw"),
+      ...src.filter((i) => i.kind === "video"),
+    ].map((i) => i.path);
+    activity.start("prepare", {
+      label: `Building previews for ${basename(dir) || dir}`,
+      total: order.length,
+      kind: "prepare",
+      cancel: () => (prepStop = true),
+    });
     const CHUNK = 16;
-    const runPhase = async (phase: string[], setRate: (msPerItem: number) => void) => {
-      let phaseDone = 0;
-      const t0 = performance.now();
-      for (let i = 0; i < phase.length; i += CHUNK) {
-        if (currentDir !== dir) return false; // folder switched — abandon
-        // heavy=true: Prepare explicitly includes RAW previews and video
-        // posters/scrub strips (the automatic folder-open warmer skips them
-        // by design).
-        await api.warmThumbnails(phase.slice(i, i + CHUNK), LOUPE_MAX, true);
-        phaseDone = Math.min(phase.length, i + CHUNK);
-        prepDone += Math.min(CHUNK, phase.length - i);
-        setRate((performance.now() - t0) / phaseDone);
-        updateEta();
-        // Mirror into the global activity chip (visible from any view).
-        activity.local("prepare", "Preparing previews & scrub strips", prepDone, prepTotal);
-      }
-      return true;
-    };
-    updateEta();
+    let done = 0;
     try {
-      if (await runPhase(photoPaths, (ms) => (photoMs = ms))) {
-        await runPhase(videoPaths, (ms) => (videoMs = ms));
+      for (let i = 0; i < order.length; i += CHUNK) {
+        if (prepStop || currentDir !== dir) break; // stopped, or folder switched
+        // heavy=true: RAW previews and video posters too (the automatic
+        // folder-open warmer skips them by design).
+        await api.warmThumbnails(order.slice(i, i + CHUNK), LOUPE_MAX, true);
+        done = Math.min(order.length, i + CHUNK);
+        activity.update("prepare", { done });
       }
     } finally {
       preparing = false;
-      activity.end("prepare");
-      // Only flash "ready" if we're still on the same folder we prepared.
-      if (currentDir === dir) {
-        prepared = true;
-        setTimeout(() => (prepared = false), 2500);
-      }
+      const all = done >= order.length;
+      activity.finish("prepare", {
+        state: all ? "done" : "cancelled",
+        label: all ? `Previews ready for ${basename(dir) || dir}` : `Building previews for ${basename(dir) || dir}`,
+        detail: all ? `${order.length.toLocaleString()} items` : `${done.toLocaleString()} of ${order.length.toLocaleString()} built`,
+      });
     }
   }
 
@@ -2355,7 +2472,8 @@
             body:
               `${r.relinked} moved file${r.relinked === 1 ? " was" : "s were"} reconnected automatically. ` +
               `The rest keep every rating, label and event and show as “?” in the grid — right-click one and choose ` +
-              `“Locate…” to point FoxCull at the file, or “Forget” once you're sure it's gone.`,
+              `“Locate…” to point FoxCull at the file, or remove it from the catalog once you're sure it's gone. ` +
+              `To clear a whole folder's missing items at once, right-click the folder.`,
           });
         } else if (opts.announce) {
           openAsk({
@@ -2395,13 +2513,20 @@
     await openFolder(abs || root);
   }
 
-  /** Point one "?" entry at the real file. */
+  /** Point one "?" entry at the real file — and, like Lightroom's "find nearby
+   *  missing photos", reconnect the rest of its old folder from the folder the
+   *  file was found in: when one file of a folder moved, the folder moved. */
   async function locateMissingFile(item: MediaItem) {
     const picked = await api.pickMediaFile();
     if (!picked) return;
     try {
       await api.relinkMissing(item.rel, picked);
-      activity.local("relink", `Reconnected ${item.name}`, 1, 1);
+      const oldDir = item.rel.includes("/") ? item.rel.slice(0, item.rel.lastIndexOf("/")) : "";
+      let more = 0;
+      // Not from the drive root: there "the same folder" is the whole drive,
+      // and a filename match could pick up an unrelated IMG_0001.
+      if (oldDir) more = (await api.relinkFolder(oldDir, parentOf(picked)).catch(() => null))?.relinked ?? 0;
+      activity.notify("relink", more ? `Reconnected ${item.name} and ${more} more from its folder` : `Reconnected ${item.name}`, { kind: "relink" });
       missingRels = await api.listMissing().catch(() => []);
       if (currentDir) await openFolder(currentDir, { selectPath: picked });
     } catch (e) {
@@ -2434,16 +2559,52 @@
   function forgetMissingTargets(ts: MediaItem[]) {
     const gone = ts.filter((i) => i.missing);
     if (!gone.length) return;
+    confirmRemoveMissing(gone.map((i) => i.rel), gone.length === 1 ? `“${gone[0].name}”` : `${gone.length} missing items`);
+  }
+
+  function confirmRemoveMissing(rels: string[], what: string) {
+    if (!rels.length) return;
     openAsk({
-      title: `Forget ${gone.length} missing file${gone.length === 1 ? "" : "s"}?`,
-      body: "Their ratings, labels, tags and event membership are deleted from the catalog. Nothing on disk changes — this only applies to entries whose file is already gone.",
-      confirmLabel: "Forget",
+      title: `Remove ${what} from the catalog?`,
+      body: "Their ratings, labels, tags and events are deleted from the catalog. Nothing on disk changes: this only applies to entries whose file is already gone.\n\nIf a drive is unplugged, its files look missing too. Plug it in first.",
+      confirmLabel: rels.length === 1 ? "Remove" : `Remove ${rels.length}`,
       onconfirm: async () => {
-        await api.forgetMissing(gone.map((i) => i.rel)).catch(() => {});
+        await api.forgetMissing(rels).catch(() => {});
         missingRels = await api.listMissing().catch(() => []);
+        activity.notify("relink", `Removed ${rels.length} missing item${rels.length === 1 ? "" : "s"} from the catalog`, { kind: "relink" });
         if (currentDir) await openFolder(currentDir, { selectIndex: activeIndex });
       },
     });
+  }
+
+  /** A folder's catalog-relative path on the active drive, or null when the
+   *  folder is on another drive (whose catalog isn't the one open). */
+  function relOfDir(path: string): string | null {
+    const root = libInfo?.root;
+    if (!root || !samePath(driveRootOf(path), root)) return null;
+    const r = root.replace(/[\\/]+$/, "");
+    const p = path.replace(/[\\/]+$/, "");
+    if (samePath(p, r)) return "";
+    return p.slice(r.length).replace(/^[\\/]+/, "").replace(/\\/g, "/");
+  }
+  /** Missing entries at or below a folder, from the last catalog check. */
+  function missingUnder(path: string, list = missingRels): string[] | null {
+    const rel = relOfDir(path);
+    if (rel === null) return null;
+    const pre = rel.toLowerCase() + "/";
+    return list.filter((m) => rel === "" || m.toLowerCase() === rel.toLowerCase() || m.toLowerCase().startsWith(pre));
+  }
+  /** Folder menu → "Remove missing items": everything missing under it, at
+   *  any depth, in one go (it used to take a right-click per tile). */
+  async function removeMissingUnder(path: string) {
+    const fresh = await api.listMissing().catch(() => missingRels);
+    missingRels = fresh;
+    const rels = missingUnder(path, fresh) ?? [];
+    if (!rels.length) {
+      openAsk({ title: "Nothing missing here", body: `Every catalog entry under ${basename(path) || path} still has its file.` });
+      return;
+    }
+    confirmRemoveMissing(rels, `${rels.length} missing item${rels.length === 1 ? "" : "s"} under “${basename(path) || path}”`);
   }
 
   function selectAllFiltered() {
@@ -2547,8 +2708,35 @@
         },
         { label: "Check the whole catalog again", icon: "↻", action: () => runCatalogScan({ announce: true }) },
         { separator: true },
+        ...(missingInView > gone.length
+          ? [{
+              label: `Select all ${missingInView} missing items here`,
+              icon: "▦",
+              action: () => {
+                const ms = view.filter((i) => i.missing);
+                selected = new Set(ms.map((i) => i.path));
+                selectionAnchor = ms[0]?.path ?? null;
+              },
+            }]
+          : []),
+        ...(gone.length < ts.length
+          ? [{
+              label: `Select only the ${ts.length - gone.length} that exist`,
+              icon: "▣",
+              action: () => {
+                selected = new Set(ts.filter((i) => !i.missing).map((i) => i.path));
+              },
+            }]
+          : []),
         {
-          label: `Forget${gone.length > 1 ? ` ${gone.length} entries` : " this entry"} (deletes its marks)`,
+          // Always says how many, and in a mixed selection that only the
+          // missing ones go: the linked files in it are left alone.
+          label:
+            gone.length < ts.length
+              ? `Remove the ${gone.length} missing of these ${ts.length} from the catalog…`
+              : gone.length > 1
+                ? `Remove ${gone.length} missing items from the catalog…`
+                : "Remove this missing item from the catalog…",
           icon: "⌫",
           danger: true,
           action: () => forgetMissingTargets(gone),
@@ -2727,11 +2915,22 @@
   function openFolderContextMenu(e: MouseEvent, path: string) {
     e.preventDefault();
     e.stopPropagation();
+    const opened = { x: e.clientX, y: e.clientY, entries: folderMenuEntries(path, missingUnder(path)) };
+    menu = opened;
+    // The cached missing list is only as fresh as the last catalog check;
+    // refresh it so the menu can say how many, then relabel if still open.
+    if (relOfDir(path) !== null) {
+      void api.listMissing().then((fresh) => {
+        missingRels = fresh;
+        // ($state proxies the object, so identity can't tell; the spot can.)
+        if (menu && menu.x === opened.x && menu.y === opened.y) menu = { ...opened, entries: folderMenuEntries(path, missingUnder(path, fresh)) };
+      }, () => {});
+    }
+  }
+
+  function folderMenuEntries(path: string, missingHere: string[] | null): MenuEntry[] {
     const isOpen = currentDir ? samePath(path, currentDir) : false;
-    menu = {
-      x: e.clientX,
-      y: e.clientY,
-      entries: [
+    return [
         { label: "Open folder", icon: "▣", on: isOpen, action: () => openFolder(path) },
         { label: "Refresh folder", icon: "↻", action: () => refreshFolderPath(path) },
         { separator: true },
@@ -2752,6 +2951,24 @@
           disabled: scanning,
           action: () => runCatalogScan({ announce: true }),
         },
+        ...(missingHere === null
+          ? []
+          : [{
+              label: missingHere.length ? `Remove ${missingHere.length} missing item${missingHere.length === 1 ? "" : "s"}…` : "Remove missing items…",
+              icon: "⌫",
+              danger: missingHere.length > 0,
+              action: () => removeMissingUnder(path),
+            }]),
+        {
+          // The old toolbar "Prepare": worth it on slow cards and disks only.
+          label: preparing ? "Building previews…" : "Build previews for this folder",
+          icon: "⚡",
+          disabled: preparing,
+          action: async () => {
+            if (!isOpen) await openFolder(path);
+            void prepareFolder();
+          },
+        },
         { separator: true },
         { label: revealLabel, icon: "↗", action: () => api.reveal(path) },
         { label: "Copy folder path", icon: "⧉", action: () => copyPath(path) },
@@ -2768,8 +2985,7 @@
           icon: "⊞",
           action: () => toggleSub(),
         },
-      ],
-    };
+      ];
   }
 
   /** Suppress the webview's native menu everywhere except real text inputs. */
@@ -3151,7 +3367,7 @@
   async function onkeydown(e: KeyboardEvent) {
     // The merge window owns the keyboard while it's open: its Delete removes
     // rows from the merge list and must never reach the grid behind it.
-    if (mergeReq) return;
+    if (mergeReq && !mergeHidden) return;
     const t = e.target as HTMLElement;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
     const k = e.key.toLowerCase();
@@ -3519,6 +3735,7 @@
     class="cell"
     class:active={i === activeIndex}
     class:selected={selected.has(item.path)}
+    class:pick={item.flag === "pick"}
     class:reject={item.flag === "reject"}
     class:gone={item.missing}
     class:related={!!rel}
@@ -3606,6 +3823,7 @@
     class="scell"
     class:active={i === activeIndex}
     class:selected={selected.has(item.path)}
+    class:pick={item.flag === "pick"}
     class:reject={item.flag === "reject"}
     class:gone={item.missing}
     class:related={!!rel}
@@ -3695,7 +3913,7 @@
       <div class="tree-body">
         {#if drives.length}
           {#each drives as d (d.path)}
-            <TreeNode node={d} {currentDir} onselect={openFolder} onmove={(dest) => movePathsTo(draggingPaths, dest)} onfoldercontext={openFolderContextMenu} {countsGen} {treeGen} {revealPath} />
+            <TreeNode node={d} {currentDir} onselect={openFolder} onmove={(dest, copy) => movePathsTo(draggingPaths, dest, copy)} onfoldercontext={openFolderContextMenu} {countsGen} {treeGen} {revealPath} />
           {/each}
         {:else}
           <p class="hint">No drives detected.</p>
@@ -3809,6 +4027,7 @@
                 <option value="year">Year</option>
                 <option value="month">Month</option>
                 <option value="week">Week</option>
+                <option value="day">Day</option>
               </select>
             </div>
             <div class="fm-row">
@@ -3820,6 +4039,7 @@
                 <option value="year">Year</option>
                 <option value="month">Month</option>
                 <option value="week">Week</option>
+                <option value="day">Day</option>
               </select>
             </div>
             <!-- The event rail: events as a banner INSIDE the timeline, not as
@@ -3998,41 +4218,6 @@
       <div class="rightTools">
         {#if !editOpen}
         <!-- actions (top-right) -->
-        <div class="grp prepWrap">
-          <button
-            class="btn sm prep"
-            class:on={preparing || prepared}
-            onclick={() => prepareFolder("all")}
-            disabled={!baseView.length || preparing}
-            title={"Prepare · make this whole folder instant.\n\nPhotos & RAW: caches every shot's full-size Focus preview (no loading blur).\nVideos: caches the poster frame AND the hover scrub strip, so skimming works immediately.\n\nPhotos run first, then videos; progress and a time estimate show here and in the activity chip. Use the ▾ to prepare only the selection, only videos, or only photos. Safe to keep working meanwhile."}
-          >
-            {#if preparing}<span class="prep-fill" style="width:{prepPct}%"></span>{/if}
-            <span class="prep-lbl">
-              <span class="prep-ico" aria-hidden="true">
-                {#if preparing}◌{:else if prepared}✓{:else}<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M13 2 4.5 13.2c-.4.5 0 1.3.7 1.3H11l-1.4 8.2c-.1.7.8 1.1 1.2.5L19.5 12c.4-.5 0-1.3-.7-1.3H12.9L14.2 2.6c.1-.7-.8-1.1-1.2-.6Z"/></svg>{/if}
-              </span>
-              <span class="actionText">{#if preparing}{prepPct}%{prepEta ? ` ${prepEta}` : ""}{:else if prepared}Ready{:else}Prepare{/if}</span>
-            </span>
-          </button>
-          <button
-            class="btn sm prepCaret"
-            class:on={prepMenuOpen}
-            onclick={() => (prepMenuOpen = !prepMenuOpen)}
-            disabled={!baseView.length || preparing}
-            aria-label="Choose what to prepare"
-            title="Choose what to prepare"
-          >▾</button>
-          {#if prepMenuOpen}
-            <div class="clearMenu prepMenu" use:keepInView>
-              {#each PREP_SCOPES as s}
-                {@const n = prepScopeItems(s.key).length}
-                <button disabled={n === 0} onclick={() => { prepMenuOpen = false; void prepareFolder(s.key); }}>
-                  {s.label}<span class="prepCount">{n}</span>
-                </button>
-              {/each}
-            </div>
-          {/if}
-        </div>
         <button class="btn sm danger" onclick={rejectSelected} disabled={actionTargets.length === 0} title="Toggle rejected on the active item or selection (X)">
           <svg class="btn-ico" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
           <span class="actionText">{allTargetsRejected ? "Unreject" : "Reject"}{selected.size > 1 ? ` ${selected.size}` : ""}</span>
@@ -4285,8 +4470,20 @@
         items={mergeReq.items}
         sourceDir={mergeReq.sourceDir}
         {drives}
-        onclose={() => (mergeReq = null)}
+        hidden={mergeHidden}
+        onclose={() => {
+          mergeReq = null;
+          mergeHidden = false;
+        }}
+        onhide={() => {
+          mergeHidden = true;
+          activity.setActions("merge", [showMergeAction]);
+        }}
         ondone={(path, dir) => {
+          activity.setActions("merge", [
+            { label: "Show in folder", run: () => void api.reveal(path) },
+            ...(mergeHidden ? [{ label: "Details", run: () => (mergeHidden = false) }] : []),
+          ]);
           if (currentDir && (samePath(dir, currentDir) || (settings.s.includeSub && isUnder(dir, currentDir)))) void refreshAfterMediaOutput(path);
         }}
       />
@@ -4757,18 +4954,21 @@
   /* Floating stand-in for the sidebar's activity chip while the sidebar is
      collapsed. Self-hides when idle (the component renders nothing), so it only
      ever overlaps the filmstrip corner while there is something to report. */
+  /* Sidebar hidden: the job centre floats bottom-left, above the status bar
+     (it used to sit on top of the selection summary and the stars). Empty
+     when idle, so it costs nothing then. */
   .actFloat {
     position: absolute;
     z-index: 80;
     left: 8px;
-    bottom: 8px;
-    width: 260px;
+    bottom: 72px;
+    width: 280px;
     max-width: 40vw;
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 10px;
     overflow: hidden;
     box-shadow: var(--shadow);
   }
+  .actFloat:has(:global(.dock)) { border: 1px solid var(--border); }
   .app.fs .actFloat { display: none; }
   .tree-actions { display: flex; align-items: center; gap: 6px; }
   .ico.sm { width: 26px; height: 26px; font-size: 13px; }
@@ -4856,17 +5056,6 @@
   .editModeTitle span:last-child { color: var(--text-faint); font-size: 12px; white-space: nowrap; }
   .btn.sm { padding: 5px 9px; border-radius: 7px; font-size: 12.5px; }
   .btn.sm.on { border-color: var(--accent); color: var(--accent); }
-  /* Sized to its own content. The old 96px floor existed to stop the button
-     resizing as the label cycles Prepare → 42% 1m → Ready, but it left the
-     idle state — the one you look at all day — visibly padded out. Now the
-     floor just fits "Prepare"; the progress label is allowed to grow it. */
-  .prep { position: relative; overflow: hidden; min-width: 84px; text-align: center; }
-  .prep-fill { position: absolute; left: 0; top: 0; bottom: 0; background: color-mix(in srgb, var(--accent) 30%, transparent); transition: width 0.2s ease; }
-  .prep-lbl { position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px; white-space: nowrap; }
-  /* The bolt is the button's identity in a crowded toolbar — gold (the same
-     token the rating stars use) and large enough to register at a glance. */
-  .prep-ico { font-size: 14px; line-height: 1; color: var(--star); display: inline-flex; align-items: center; }
-  .prep-ico svg { display: block; }
 
   .div { flex: 0 0 auto; align-self: stretch; width: 1px; margin: 2px 4px; background: var(--border); }
   .arrange,
@@ -4984,20 +5173,6 @@
   /* Clear-metadata dialog checklist. */
   .clearList { display: flex; flex-direction: column; gap: 9px; margin-top: 13px; }
   .clearList .chk { font-size: 13px; color: var(--text); }
-  /* Prepare split button: primary action + a caret for the scope menu. */
-  .prepWrap { position: relative; display: flex; }
-  .prepWrap .prep { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-  .prepCaret {
-    margin-left: -1px;
-    padding-left: 6px;
-    padding-right: 6px;
-    border-top-left-radius: 0;
-    border-bottom-left-radius: 0;
-  }
-  .prepMenu { width: 232px; }
-  .prepMenu button { display: flex; justify-content: space-between; gap: 10px; }
-  .prepMenu button:disabled { opacity: 0.45; }
-  .prepCount { color: var(--text-faint); font-variant-numeric: tabular-nums; }
   /* Inline icon inside a toolbar text button — optically aligned with the label. */
   .btn-ico { vertical-align: -1px; margin-right: 4px; }
   .hold-lbl .btn-ico { margin-right: 3px; }
@@ -5338,6 +5513,39 @@
   .cell.selected { border-color: var(--select); }
   .cell.active { border-color: var(--accent); }
   .cell.reject :global(.media) { opacity: 0.35; }
+  /* Pick and reject, readable across a whole grid at a glance: a short green
+     tab standing on the top edge of a picked tile, a red one hanging from the
+     bottom edge of a rejected one (owner's ask, 2026-10-04). Unmarked tiles
+     have neither, so the three states separate without reading any glyph. */
+  .cell.pick::before,
+  .cell.reject::after,
+  .scell.pick::before,
+  .scell.reject::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    width: 42%;
+    height: 4px;
+    transform: translateX(-50%);
+    z-index: 6;
+    pointer-events: none;
+  }
+  .cell.pick::before,
+  .scell.pick::before {
+    top: 5px;
+    border-radius: 4px 4px 0 0;
+    background: var(--pick);
+    box-shadow: 0 -1px 7px color-mix(in srgb, var(--pick) 45%, transparent);
+  }
+  .cell.reject::after,
+  .scell.reject::after {
+    bottom: -5px;
+    border-radius: 0 0 4px 4px;
+    background: var(--reject);
+    box-shadow: 0 1px 7px color-mix(in srgb, var(--reject) 40%, transparent);
+  }
+  .scell.pick::before { top: -2px; height: 3px; width: 38%; }
+  .scell.reject::after { bottom: -2px; height: 3px; width: 38%; }
   /* Missing-file tile: a dashed frame says "this slot is a catalog entry, not a
      photo" at a glance, without stealing the selection colours. */
   .cell.gone,
@@ -5644,7 +5852,6 @@
   .modeToggle button { min-width: 68px; padding: 6px 10px; border-radius: 7px; font-size: 12.5px; }
   .modeToggle button.on { box-shadow: inset 0 1px color-mix(in srgb, white 16%, transparent), 0 2px 8px color-mix(in srgb, var(--accent) 20%, transparent); }
   .zoom input { width: 78px; }
-  .prep { min-width: 78px; }
   .castBadge { height: 27px; padding-inline: 9px; border-color: color-mix(in srgb, var(--accent) 48%, var(--border)); background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev)); }
 
   .arrangeMenu,
@@ -5781,7 +5988,6 @@
     .tree { max-width: 190px; }
     .openFolder { width: 29px; padding-inline: 0; font-size: 0; }
     .actionText { display: none; }
-    .prep { min-width: 35px; }
     .viewChip span { display: none; }
     .viewChip { width: 31px; padding-inline: 0; }
     .zoom { display: none; }

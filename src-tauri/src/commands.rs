@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, UNIX_EPOCH};
 
@@ -280,34 +280,89 @@ fn migrate_recycle(old: &Path, new: &Path, catalog: &Catalog) {
     let _ = std::fs::remove_dir_all(old);
 }
 
-// ── background-activity reporting (the Lightroom-style top-left indicator) ───
+// ── background-activity reporting (the job centre, bottom of the sidebar) ────
 //
 // Every long-running backend job emits `activity` events the frontend folds
-// into one progress chip + expandable list, so "why is the disk busy / what is
-// still loading" is always answerable at a glance. `total == 0` means
-// indeterminate (a spinner, no percentage).
+// into one progress card + expandable list, so "why is the disk busy / what is
+// still loading / when will it finish" is always answerable at a glance.
+// `total == 0` means indeterminate (a spinner, no percentage).
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Default)]
 pub struct Activity {
     pub id: String,
     pub label: String,
     pub done: u64,
     pub total: u64,
-    /// "running" | "done" | "error"
+    /// "running" | "done" | "error" | "cancelled"
     pub state: String,
+    /// Second line under the label ("file 3 of 24 · IMG_2041.CR2").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// What `done`/`total` count: "bytes" makes the job centre show sizes and
+    /// a transfer speed. Absent = items (or a percentage when total is 100).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<&'static str>,
+    /// The job can be stopped with `cancel_job(id)`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cancellable: bool,
 }
 
 fn emit_activity(app: &AppHandle, id: &str, label: &str, done: u64, total: u64, state: &str) {
-    let _ = app.emit(
-        "activity",
+    emit_job(
+        app,
         Activity {
             id: id.to_string(),
             label: label.to_string(),
             done,
             total,
             state: state.to_string(),
+            ..Default::default()
         },
     );
+}
+
+fn emit_job(app: &AppHandle, a: Activity) {
+    let _ = app.emit("activity", a);
+}
+
+// Stop buttons. A job that can be stopped registers a flag under its activity
+// id; `cancel_job` sets it and the job's loop notices at its next chunk. Kept
+// apart from `export_gen` on purpose: a merge running in the background must
+// not be killed because an Edit export started (they used to share it).
+static JOB_CANCELS: std::sync::LazyLock<Mutex<HashMap<String, Arc<AtomicBool>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Register a cancellable job and return its flag. Re-registering an id that
+/// is still running hands back a fresh flag (the old run is finished by then).
+fn job_token(id: &str) -> Arc<AtomicBool> {
+    let flag = Arc::new(AtomicBool::new(false));
+    JOB_CANCELS.lock().insert(id.to_string(), flag.clone());
+    flag
+}
+
+fn job_finished(id: &str, flag: &Arc<AtomicBool>) {
+    let mut map = JOB_CANCELS.lock();
+    if map.get(id).is_some_and(|f| Arc::ptr_eq(f, flag)) {
+        map.remove(id);
+    }
+}
+
+/// Stop a running job (a move, a merge). Returns false when nothing by that id
+/// is running any more.
+#[tauri::command]
+pub fn cancel_job(state: State<'_, AppState>, id: String) -> bool {
+    // Edit exports predate the registry and stop through their generation.
+    if id == "edit-export" {
+        state.export_gen.fetch_add(1, Ordering::SeqCst);
+        return true;
+    }
+    match JOB_CANCELS.lock().get(&id) {
+        Some(flag) => {
+            flag.store(true, Ordering::SeqCst);
+            true
+        }
+        None => false,
+    }
 }
 
 /// Seconds since the Unix epoch.
@@ -3052,40 +3107,100 @@ pub async fn merge_videos(
         }
     }
 
-    let my_gen = state.export_gen.fetch_add(1, Ordering::SeqCst) + 1;
-    let gen = state.export_gen.clone();
+    // One merge at a time: it has its own job-centre entry and Stop button, and
+    // the window can be hidden while it runs, so a second one would be easy to
+    // start by accident and would halve both on the same disks.
+    if JOB_CANCELS.lock().contains_key("merge") {
+        return Err("A merge is already running. Wait for it to finish, or stop it from the progress panel.".into());
+    }
+    let flag = job_token("merge");
+    let in_bytes: u64 = files.iter().map(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0)).sum();
     tauri::async_runtime::spawn_blocking(move || {
+        let out_name = dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let watch = ExportWatch {
             app: app.clone(),
-            gen,
-            my_gen,
-            label: format!("Merging {} videos", files.len()),
+            job: "merge",
+            gen: None,
+            flag: Some(flag.clone()),
+            label: format!("Merging {} clips → {out_name}", files.len()),
+            detail: None,
             total_s,
             base_pct: 0.0,
             span_pct: 100.0,
+            // A stream copy writes about what it reads (minus DJI's debug
+            // track), so the clips' size is the honest "of" for the bytes line.
+            expect_bytes: if req.convert.is_some() { 0 } else { in_bytes },
+            started: Instant::now(),
         };
         watch.emit(0, "running");
+        let how = if req.convert.is_some() { "converted" } else { "copy" };
+        crate::log::line(&format!(
+            "MERGE start ({how}) clips={} in_bytes={in_bytes} secs={total_s:.0} src={:?} dest={dest:?}",
+            files.len(),
+            files[0].parent()
+        ));
 
         let res = match &req.convert {
             Some(conv) => merge_convert(&ffmpeg, &files, conv, &dest, Some(&watch)),
             None => merge_copy(&ffmpeg, &files, &dest, Some(&watch)),
         };
+        job_finished("merge", &flag);
         match res {
             Ok(()) => {
-                watch.emit(100, "done");
                 let bytes = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-                let how = if req.convert.is_some() { "converted" } else { "copy" };
-                crate::log::line(&format!("MERGE ok ({how}) clips={} bytes={bytes} dest={dest:?}", files.len()));
+                let secs = watch.started.elapsed().as_secs_f64();
+                emit_job(
+                    &app,
+                    Activity {
+                        id: "merge".into(),
+                        label: format!("Merged {} clips → {out_name}", files.len()),
+                        done: 100,
+                        total: 100,
+                        state: "done".into(),
+                        detail: Some(format!("{} in {}", fmt_bytes(bytes), fmt_secs(secs))),
+                        ..Default::default()
+                    },
+                );
+                // Throughput in the log: merges are bound by the slower of the
+                // two disks, and this is how to tell which one it was.
+                crate::log::line(&format!(
+                    "MERGE ok ({how}) clips={} bytes={bytes} secs={secs:.1} MBps={:.0} dest={dest:?}",
+                    files.len(),
+                    (in_bytes as f64 / 1e6) / secs.max(0.001)
+                ));
                 Ok(MergeOutcome { path: dest.to_string_lossy().to_string(), bytes })
             }
             Err(e) if e == EXPORT_CANCELLED => {
-                emit_activity(&app, "edit-export", "Merge cancelled", 100, 100, "done");
+                emit_job(
+                    &app,
+                    Activity {
+                        id: "merge".into(),
+                        label: "Merge stopped".into(),
+                        done: 0,
+                        total: 100,
+                        state: "cancelled".into(),
+                        detail: Some("Nothing was saved".into()),
+                        ..Default::default()
+                    },
+                );
+                crate::log::line("MERGE cancelled");
                 Err(e)
             }
             Err(e) => {
                 // Never leave a half-written file behind to be uploaded by mistake.
                 let _ = std::fs::remove_file(&dest);
-                emit_activity(&app, "edit-export", &e, 0, 100, "error");
+                emit_job(
+                    &app,
+                    Activity {
+                        id: "merge".into(),
+                        label: "Merge failed".into(),
+                        done: 0,
+                        total: 100,
+                        state: "error".into(),
+                        detail: Some(e.clone()),
+                        ..Default::default()
+                    },
+                );
                 crate::log::line(&format!("MERGE failed: {e}"));
                 Err(e)
             }
@@ -3093,6 +3208,18 @@ pub async fn merge_videos(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// "45 s", "3 min 20 s", "1 h 12 min".
+fn fmt_secs(s: f64) -> String {
+    let s = s.round().max(1.0) as u64;
+    if s < 60 {
+        format!("{s} s")
+    } else if s < 3600 {
+        format!("{} min {} s", s / 60, s % 60)
+    } else {
+        format!("{} h {} min", s / 3600, (s % 3600) / 60)
+    }
 }
 
 /// The lossless join: ffmpeg's concat demuxer with a stream copy. Each file is
@@ -3223,15 +3350,19 @@ fn merge_convert(ffmpeg: &Path, files: &[PathBuf], conv: &MergeConvert, dest: &P
         .ok_or("no destination folder")?
         .join(format!(".foxcull-merge-{}-{}-{}", std::process::id(), now(), CONVERT_SEQ.fetch_add(1, Ordering::Relaxed)));
     std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
-    let sub_watch = |label: String, secs: f64, base: f64, span: f64| {
+    let sub_watch = |detail: String, secs: f64, base: f64, span: f64| {
         watch.map(|w| ExportWatch {
             app: w.app.clone(),
+            job: w.job,
             gen: w.gen.clone(),
-            my_gen: w.my_gen,
-            label,
+            flag: w.flag.clone(),
+            label: w.label.clone(),
+            detail: Some(detail),
             total_s: secs,
             base_pct: base,
             span_pct: span,
+            expect_bytes: 0,
+            started: w.started,
         })
     };
     const CONVERT_SHARE: f64 = 95.0;
@@ -3320,6 +3451,166 @@ fn iso_utc(ts: i64) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", secs / 3600, (secs % 3600) / 60, secs % 60)
+}
+
+#[cfg(test)]
+mod transfer_tests {
+    use super::{copy_file_progress, TRANSFER_CANCELLED};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+
+    /// One test drive: a root folder with media files and its own catalog.
+    fn drive(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("foxcull-xfer-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("Trip")).unwrap();
+        d
+    }
+
+    fn files(root: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+        (0..3)
+            .map(|i| {
+                let name = format!("DSC_{i:04}.JPG");
+                let data: Vec<u8> = (0..(3u32 << 20) + i * 7919).map(|b| ((b + i) * 131 % 251) as u8).collect();
+                let p = root.join("Trip").join(&name);
+                std::fs::write(&p, &data).unwrap();
+                let t = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_790_000_000 + i as u64);
+                std::fs::File::options().write(true).open(&p).unwrap().set_modified(t).unwrap();
+                (name, data)
+            })
+            .collect()
+    }
+
+    /// Moves files from `src_root` to `dest_root/Picks` and checks every
+    /// promise a move makes: bytes, times, originals gone, marks carried.
+    fn run_move(src_root: &std::path::Path, dest_root: &std::path::Path, copy: bool) {
+        use super::{transfer_catalog, transfer_files, TransferPlan};
+        use crate::catalog::Catalog;
+        let src_cat = Catalog::open(&src_root.join("catalog.sqlite")).unwrap();
+        let originals = files(src_root);
+        for (name, _) in &originals {
+            src_cat.set_rating(&format!("Trip/{name}"), 4).unwrap();
+        }
+        let dest_dir = dest_root.join("Picks");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+        let root = std::fs::canonicalize(src_root).unwrap();
+        let droot = std::fs::canonicalize(dest_root).unwrap();
+        let plan = TransferPlan {
+            root: root.clone(),
+            lib: None,
+            cache_dir: root.join("no-cache"),
+            dest_dir: std::fs::canonicalize(&dest_dir).unwrap(),
+            dest_root: droot.clone(),
+            copy_mode: copy,
+            cross_drive: root != droot,
+        };
+        let paths: Vec<String> = originals.iter().map(|(n, _)| root.join("Trip").join(n).to_string_lossy().to_string()).collect();
+        let never = AtomicBool::new(false);
+        let seen = std::cell::Cell::new(0u64);
+        let (out, pairs) = transfer_files(&plan, paths, &never, &|a| seen.set(seen.get().max(a.done)));
+        assert_eq!(out.moved, 3, "{:?}", out.errors);
+        assert!(out.failed.is_empty());
+        let data_root = std::env::temp_dir().join(format!("foxcull-xfer-data-{}", std::process::id()));
+        transfer_catalog(&src_cat, &data_root, &plan, &pairs).unwrap();
+        for (i, (name, data)) in originals.iter().enumerate() {
+            let at = plan.dest_dir.join(name);
+            assert_eq!(&std::fs::read(&at).unwrap(), data, "bytes of {name}");
+            let t = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_790_000_000 + i as u64);
+            assert_eq!(std::fs::metadata(&at).unwrap().modified().unwrap(), t, "mtime of {name}");
+            assert_eq!(root.join("Trip").join(name).exists(), copy, "original of {name}");
+        }
+        // The marks are where the files are now.
+        let dest_cat = if plan.cross_drive { Catalog::open(&super::resolve_library(&data_root, &droot).catalog).unwrap() } else { Catalog::open(&src_root.join("catalog.sqlite")).unwrap() };
+        for (name, _) in &originals {
+            let got = dest_cat.export_entries(&[format!("Picks/{name}")]);
+            assert_eq!(got[0].decision.as_ref().map(|d| d.0), Some(4), "mark on moved {name}");
+            let left = src_cat.export_entries(&[format!("Trip/{name}")]);
+            assert_eq!(left[0].decision.is_some(), copy, "mark left on the original {name}");
+        }
+        if plan.cross_drive || copy {
+            assert!(seen.get() > 0, "a copy reports its bytes");
+        }
+        let _ = std::fs::remove_dir_all(&data_root);
+    }
+
+    #[test]
+    fn a_move_on_one_drive_renames_and_rekeys_the_marks() {
+        let d = drive("same");
+        run_move(&d, &d, false);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_copy_on_one_drive_keeps_the_original_and_its_marks() {
+        let d = drive("copy");
+        run_move(&d, &d, true);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Another drive, for real: set FOXCULL_XFER_DEST to a folder on a
+    /// different volume (an exFAT disk image works) and run with --ignored.
+    /// The move then copies across devices, flushes, verifies, deletes, and
+    /// the marks go into that drive's own `_FoxCull/catalog.sqlite`.
+    #[test]
+    #[ignore]
+    fn real_cross_drive_move() {
+        let dest = std::path::PathBuf::from(std::env::var("FOXCULL_XFER_DEST").expect("FOXCULL_XFER_DEST"));
+        let d = drive("x");
+        run_move(&d, &dest, false);
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(dest.join("Picks"));
+        let _ = std::fs::remove_dir_all(dest.join("_FoxCull"));
+    }
+
+    /// Drops land only where the tree can show a folder: never in a library,
+    /// a Trash, ~/Library or the OS, and `/Volumes` under `/` isn't a reason
+    /// to refuse an external drive.
+    #[cfg(unix)]
+    #[test]
+    fn move_destinations_follow_the_trees_rules() {
+        use super::hidden_dest_component as h;
+        use std::path::Path;
+        assert_eq!(h(Path::new("/Users/me/Movies")), None);
+        assert_eq!(h(Path::new("/Volumes/MAHINDRA/USA Trip 2026 Sep/Meta AI")), None);
+        assert_eq!(h(Path::new("/Volumes/MAHINDRA")), None);
+        assert_eq!(h(Path::new("/Volumes/MAHINDRA/_FoxCull/thumbs")).as_deref(), Some("_FoxCull"));
+        assert_eq!(h(Path::new("/Volumes/MAHINDRA/FoxCull Trash")).as_deref(), Some("FoxCull Trash"));
+        assert_eq!(h(Path::new("/Users/me/Library/Caches")).as_deref(), Some("Library"));
+        assert_eq!(h(Path::new("/Volumes/SSD/Library")), None, "a drive's own Library folder is someone's photos");
+        assert_eq!(h(Path::new("/Users/me/.hidden")).as_deref(), Some(".hidden"));
+    }
+
+    #[test]
+    fn a_copy_keeps_bytes_and_times_and_a_cancel_leaves_nothing() {
+        let dir = std::env::temp_dir().join(format!("foxcull-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("a.mp4");
+        let data: Vec<u8> = (0..(9u32 << 20)).map(|i| (i * 31 % 251) as u8).collect();
+        std::fs::write(&src, &data).unwrap();
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        std::fs::File::options().write(true).open(&src).unwrap().set_modified(old).unwrap();
+
+        let dst = dir.join("b.mp4");
+        let never = AtomicBool::new(false);
+        let mut seen = 0u64;
+        copy_file_progress(&src, &dst, true, &never, &mut |b| seen += b).unwrap();
+        assert_eq!(seen, data.len() as u64);
+        assert_eq!(std::fs::read(&dst).unwrap(), data);
+        assert_eq!(std::fs::metadata(&dst).unwrap().modified().unwrap(), old);
+
+        // Refuses to overwrite.
+        assert!(copy_file_progress(&src, &dst, false, &never, &mut |_| {}).is_err());
+        assert_eq!(std::fs::read(&dst).unwrap(), data);
+
+        // Stopped after the first chunk: no partial file is left behind.
+        let stop = AtomicBool::new(false);
+        let dst2 = dir.join("c.mp4");
+        let r = copy_file_progress(&src, &dst2, false, &stop, &mut |_| stop.store(true, Ordering::Relaxed));
+        assert_eq!(r.unwrap_err(), TRANSFER_CANCELLED);
+        assert!(!dst2.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]
@@ -4052,24 +4343,78 @@ pub const EXPORT_CANCELLED: &str = "export cancelled";
 /// Progress + cancellation context for a watched export run.
 struct ExportWatch {
     app: AppHandle,
-    gen: Arc<AtomicU64>,
-    my_gen: u64,
+    /// Activity id the run reports under: "edit-export" or "merge".
+    job: &'static str,
+    /// Edit exports: cancelled when `export_gen` moves past the run's own value.
+    gen: Option<(Arc<AtomicU64>, u64)>,
+    /// Merges: their own stop flag (`cancel_job("merge")`), so starting an Edit
+    /// export can't kill a merge that's running in the background.
+    flag: Option<Arc<AtomicBool>>,
     label: String,
+    /// Second line in the job centre ("Converting clip 3 of 12").
+    detail: Option<String>,
     /// Total output seconds (sum of clip durations) — drives the percentage.
     total_s: f64,
     /// The slice of the whole job's 0-100 this run covers: a convert-merge
     /// runs one ffmpeg per clip and each reports only its own share.
     base_pct: f64,
     span_pct: f64,
+    /// Size the finished file should come to (a lossless merge: the clips'
+    /// sizes), so the job centre can say "12.4 of 44.1 GB · 410 MB/s".
+    /// 0 = don't show sizes.
+    expect_bytes: u64,
+    started: Instant,
 }
 
 impl ExportWatch {
     fn cancelled(&self) -> bool {
-        self.gen.load(Ordering::SeqCst) != self.my_gen
+        self.gen.as_ref().is_some_and(|(g, mine)| g.load(Ordering::SeqCst) != *mine)
+            || self.flag.as_ref().is_some_and(|f| f.load(Ordering::SeqCst))
     }
     fn emit(&self, pct: u64, state: &str) {
-        emit_activity(&self.app, "edit-export", &self.label, pct, 100, state);
-        let _ = self.app.emit("export-progress", pct);
+        self.emit_with(pct, state, 0);
+    }
+    /// `written`: bytes ffmpeg has written so far (its `total_size`), 0 if unknown.
+    fn emit_with(&self, pct: u64, state: &str, written: u64) {
+        let detail = if self.expect_bytes > 0 && written > 0 && state == "running" {
+            let secs = self.started.elapsed().as_secs_f64().max(0.001);
+            Some(format!(
+                "{} of {} · {}/s",
+                fmt_bytes(written),
+                fmt_bytes(self.expect_bytes),
+                fmt_bytes((written as f64 / secs) as u64)
+            ))
+        } else {
+            self.detail.clone()
+        };
+        emit_job(
+            &self.app,
+            Activity {
+                id: self.job.to_string(),
+                label: self.label.clone(),
+                done: pct,
+                total: 100,
+                state: state.to_string(),
+                detail,
+                unit: None,
+                cancellable: state == "running",
+            },
+        );
+        if self.job == "edit-export" {
+            let _ = self.app.emit("export-progress", pct);
+        }
+    }
+}
+
+/// "830 MB", "12.4 GB" — decimal units, as Finder and Explorer's drive sizes.
+fn fmt_bytes(b: u64) -> String {
+    let b = b as f64;
+    if b >= 1e9 {
+        format!("{:.1} GB", b / 1e9)
+    } else if b >= 1e6 {
+        format!("{:.0} MB", b / 1e6)
+    } else {
+        format!("{:.0} KB", (b / 1e3).max(1.0))
     }
 }
 
@@ -4103,11 +4448,16 @@ fn run_ffmpeg_watched(mut cmd: Command, watch: Option<&ExportWatch>, dest: &Path
     if let Some(stdout) = child.stdout.take() {
         use std::io::BufRead;
         let mut last = u64::MAX;
+        let mut written = 0u64;
         for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
             if w.cancelled() {
                 cancelled = true;
                 let _ = child.kill();
                 break;
+            }
+            // Each progress block lists total_size= before out_time_us=.
+            if let Some(v) = line.strip_prefix("total_size=") {
+                written = v.trim().parse().unwrap_or(written);
             }
             if w.total_s > 0.0 {
                 if let Some(v) = line.strip_prefix("out_time_us=") {
@@ -4115,7 +4465,7 @@ fn run_ffmpeg_watched(mut cmd: Command, watch: Option<&ExportWatch>, dest: &Path
                         let pct = (w.base_pct + (us / 1_000_000.0 / w.total_s).clamp(0.0, 1.0) * w.span_pct) as u64;
                         if pct != last {
                             last = pct;
-                            w.emit(pct, "running");
+                            w.emit_with(pct, "running", written);
                         }
                     }
                 }
@@ -4657,12 +5007,16 @@ pub async fn edit_export(
             .unwrap_or_else(|| "clip".into());
         let watch = ExportWatch {
             app,
-            gen,
-            my_gen,
+            job: "edit-export",
+            gen: Some((gen, my_gen)),
+            flag: None,
             label: format!("Exporting {first_name}"),
+            detail: None,
             total_s,
             base_pct: 0.0,
             span_pct: 100.0,
+            expect_bytes: 0,
+            started: Instant::now(),
         };
         watch.emit(0, "running");
         // Decide re-encode BEFORE picking the output path — it selects the
@@ -4855,123 +5209,407 @@ pub struct MoveOutcome {
     pub files: Vec<MoveRecord>,
     pub failed: Vec<String>,
     pub errors: Vec<String>,
+    /// The originals were kept (a copy, not a move).
+    pub copied: bool,
+    /// The destination is on another drive (so another catalog took the marks).
+    pub cross_drive: bool,
+    /// Stopped from the job centre; `files` lists what got through first.
+    pub cancelled: bool,
 }
 
-/// `async` + a blocking worker: dragging a thousand photos onto a folder is N
-/// filesystem moves, and a synchronous Tauri command would run every one of them
-/// on the main thread and hang the window (see `list_folder_media`).
-#[tauri::command]
-pub async fn move_media_files(
-    state: State<'_, AppState>,
-    catalog: State<'_, Catalog>,
+const TRANSFER_CANCELLED: &str = "transfer cancelled";
+
+/// Copy one file in 8 MB chunks, reporting bytes as they land, keeping its
+/// modified/created times (capture-date fallbacks and the catalog's
+/// (mtime, size) caches depend on them), and checking the size at the end.
+/// `durable` flushes it to the device first: a move deletes the original right
+/// after, so "copied" must mean on the disk, not in a write cache. Any failure
+/// or a cancel removes the partial copy.
+fn copy_file_progress(
+    src: &Path,
+    dst: &Path,
+    durable: bool,
+    cancel: &AtomicBool,
+    on_bytes: &mut dyn FnMut(u64),
+) -> Result<(), String> {
+    use std::io::Read;
+    let mut input = std::fs::File::open(src).map_err(|e| e.to_string())?;
+    let meta = input.metadata().map_err(|e| e.to_string())?;
+    // create_new: never write over a file that's already there, and only a
+    // file this call created is ever cleaned up below.
+    let mut out = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dst)
+        .map_err(|e| e.to_string())?;
+    let res = (|| -> Result<(), String> {
+        let mut buf = vec![0u8; 8 << 20];
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(TRANSFER_CANCELLED.into());
+            }
+            let n = match input.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e.to_string()),
+            };
+            out.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+            on_bytes(n as u64);
+        }
+        if durable {
+            out.sync_all().map_err(|e| e.to_string())?;
+        }
+        let mut times = std::fs::FileTimes::new();
+        if let Ok(m) = meta.modified() {
+            times = times.set_modified(m);
+        }
+        if let Ok(a) = meta.accessed() {
+            times = times.set_accessed(a);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::macos::fs::FileTimesExt;
+            if let Ok(c) = meta.created() {
+                times = times.set_created(c);
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::FileTimesExt;
+            if let Ok(c) = meta.created() {
+                times = times.set_created(c);
+            }
+        }
+        let _ = out.set_times(times);
+        let len = out.metadata().map(|m| m.len()).map_err(|e| e.to_string())?;
+        if len != meta.len() {
+            return Err(format!("the copy came out at {len} bytes instead of {}", meta.len()));
+        }
+        Ok(())
+    })();
+    // Closed before any cleanup: Windows can't delete a file that's still open.
+    drop(out);
+    if res.is_err() {
+        let _ = std::fs::remove_file(dst);
+    }
+    res
+}
+
+/// Same volume = a move is a rename (instant) and a copy can be a clone.
+fn same_volume(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::metadata(a), std::fs::metadata(b)) {
+            (Ok(x), Ok(y)) => x.dev() == y.dev(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let first = |p: &Path| p.components().next().map(|c| c.as_os_str().to_string_lossy().to_lowercase());
+        first(a).is_some() && first(a) == first(b)
+    }
+}
+
+/// Never move files into FoxCull's own data or a place the folder tree hides
+/// (another drive's `_FoxCull`, a Trash folder, `~/Library`, the OS folders):
+/// the tree can't show those, so a drop there could only be a bug.
+fn transfer_dest_allowed(state: &AppState, dest: &Path) -> Result<(), String> {
+    if within(dest, &state.data_root) {
+        return Err("that folder belongs to FoxCull".into());
+    }
+    match hidden_dest_component(dest) {
+        Some(name) => Err(format!("FoxCull doesn't move files into “{name}”")),
+        None => Ok(()),
+    }
+}
+
+/// The first folder on the way to `dest` that the tree hides, if any. Checked
+/// from the drive root down: `/Volumes` itself is hidden under `/` (it holds
+/// the other drives), so the walk must start at the destination's own drive.
+fn hidden_dest_component(dest: &Path) -> Option<String> {
+    let droot = drive_root(&dest.to_string_lossy());
+    let rest = dest.strip_prefix(&droot).unwrap_or(dest);
+    let mut parent = droot.clone();
+    for comp in rest.components() {
+        if let Component::Normal(name) = comp {
+            let name = name.to_string_lossy();
+            if skip_dir(&parent, &name) || is_trash_dirname(&name) {
+                return Some(name.to_string());
+            }
+            parent.push(name.as_ref());
+        }
+    }
+    None
+}
+
+/// Where a move/copy goes and how. Built by `move_media_files`; kept apart
+/// from Tauri so the transfer itself can be tested against real volumes.
+struct TransferPlan {
+    /// The active drive (where the sources are, and whose catalog has them).
+    root: PathBuf,
+    lib: Option<PathBuf>,
+    cache_dir: PathBuf,
+    dest_dir: PathBuf,
+    /// The destination's drive: its catalog takes the records.
+    dest_root: PathBuf,
+    copy_mode: bool,
+    cross_drive: bool,
+}
+
+/// Move or copy the files of a plan, reporting progress through `emit` (the
+/// caller fills in the job id). Returns the outcome and the
+/// (from rel, to rel) pairs for the catalog.
+fn transfer_files(
+    plan: &TransferPlan,
     paths: Vec<String>,
-    dest: String,
-) -> Result<MoveOutcome, String> {
-    let root_state = state.root.lock().clone();
-    let root = match canonical_active_root(&root_state) {
-        Ok(r) => r,
-        Err(e) => {
-            return Ok(MoveOutcome {
-                moved: 0,
-                dest,
-                files: Vec::new(),
-                failed: paths,
-                errors: vec![e],
-            })
-        }
+    cancel: &AtomicBool,
+    emit: &dyn Fn(Activity),
+) -> (MoveOutcome, Vec<(String, String)>) {
+    let mut out = MoveOutcome {
+        moved: 0,
+        dest: plan.dest_dir.to_string_lossy().to_string(),
+        files: Vec::new(),
+        failed: Vec::new(),
+        errors: Vec::new(),
+        copied: plan.copy_mode,
+        cross_drive: plan.cross_drive,
+        cancelled: false,
     };
-    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
-    let dest_dir = match validate_active_dir(&root, lib.as_ref(), &dest) {
-        Ok(d) => d,
-        Err(e) => {
-            return Ok(MoveOutcome {
-                moved: 0,
-                dest,
-                files: Vec::new(),
-                failed: paths,
-                errors: vec![e],
-            })
+    // (from rel under the active root, to rel under the dest's root)
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut seen = HashSet::new();
+    let mut srcs: Vec<PathBuf> = Vec::new();
+    for p in paths {
+        if !seen.insert(p.clone()) {
+            continue;
         }
+        match validate_active_media_file(&plan.root, plan.lib.as_ref(), &p) {
+            Ok(src) if src.parent() == Some(plan.dest_dir.as_path()) && !plan.copy_mode => {
+                out.failed.push(src.to_string_lossy().to_string());
+                out.errors.push("already in that folder".into());
+            }
+            Ok(src) => srcs.push(src),
+            Err(e) => {
+                out.failed.push(p);
+                out.errors.push(e);
+            }
+        }
+    }
+    // A move within one volume is a rename; everything else copies bytes.
+    let renames = !plan.copy_mode && srcs.first().is_some_and(|s| same_volume(s, &plan.dest_dir));
+    let mut total: u64 = if renames {
+        0
+    } else {
+        srcs.iter().map(|s| std::fs::metadata(s).map(|m| m.len()).unwrap_or(0)).sum()
     };
-    let cache_dir = state.cache_dir.lock().clone();
-
-    // Everything below touches the disk once per file; it runs on a blocking
-    // worker so a big selection can't wedge the window.
-    let (out, catalog_moves) = tauri::async_runtime::spawn_blocking(move || {
-        let mut out = MoveOutcome {
-            moved: 0,
-            dest: dest_dir.to_string_lossy().to_string(),
-            files: Vec::new(),
-            failed: Vec::new(),
-            errors: Vec::new(),
+    let n = srcs.len();
+    let mut done: u64 = 0;
+    let mut last_emit = Instant::now() - std::time::Duration::from_secs(1);
+    let report = |done: u64, total: u64, i: usize, name: &str, force: bool, last: &mut Instant| {
+        if !force && last.elapsed().as_millis() < 150 {
+            return;
+        }
+        *last = Instant::now();
+        emit(Activity {
+            id: String::new(),
+            label: String::new(), // the frontend owns the title
+            done,
+            total,
+            state: "running".into(),
+            detail: Some(format!("{} of {n} · {name}", i + 1)),
+            unit: (total > 0).then_some("bytes"),
+            cancellable: true,
+        });
+    };
+    for (i, src) in srcs.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            out.cancelled = true;
+            break;
+        }
+        let Some(name) = src.file_name() else {
+            out.failed.push(src.to_string_lossy().to_string());
+            out.errors.push("file has no filename".into());
+            continue;
         };
-        let mut catalog_moves: Vec<(String, String)> = Vec::new();
-        let mut seen = HashSet::new();
-
-        for p in paths {
-            if !seen.insert(p.clone()) {
-                continue;
+        let shown = name.to_string_lossy().to_string();
+        report(done, total, i, &shown, true, &mut last_emit);
+        let target = uniquify(plan.dest_dir.join(name));
+        let caches = if plan.copy_mode { Vec::new() } else { cache_files_for(&plan.cache_dir, &src.to_string_lossy()) };
+        let mut result: Result<(), String> = Err(String::new());
+        if renames {
+            result = std::fs::rename(src, &target).map_err(|e| e.to_string());
+            if result.is_err() {
+                // Not the volume we thought (a mount point inside a folder):
+                // count its bytes and fall through to a copy.
+                total += std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
             }
-            let src = match validate_active_media_file(&root, lib.as_ref(), &p) {
-                Ok(src) => src,
-                Err(e) => {
-                    out.failed.push(p);
-                    out.errors.push(e);
-                    continue;
-                }
+        }
+        if result.is_err() {
+            let mut on_bytes = |b: u64| {
+                done += b;
+                report(done, total, i, &shown, false, &mut last_emit);
             };
-            if src.parent() == Some(dest_dir.as_path()) {
-                out.failed.push(src.to_string_lossy().to_string());
-                out.errors.push("file is already in that folder".into());
-                continue;
-            }
-            let Some(name) = src.file_name() else {
-                out.failed.push(src.to_string_lossy().to_string());
-                out.errors.push("file has no filename".into());
-                continue;
-            };
-            let target = uniquify(dest_dir.join(name));
-            let caches = cache_files_for(&cache_dir, &src.to_string_lossy());
-            let moved = std::fs::rename(&src, &target).is_ok() || {
-                // Cross-volume fallback: copy, then remove the source. If the
-                // source removal fails the "move" must not leave a stray
-                // duplicate at the destination — delete the copy before
-                // reporting failure.
-                let copied = std::fs::copy(&src, &target).is_ok();
-                let removed = copied && std::fs::remove_file(&src).is_ok();
-                if copied && !removed {
+            result = copy_file_progress(src, &target, !plan.copy_mode, cancel, &mut on_bytes);
+            if result.is_ok() && !plan.copy_mode {
+                // Copied and on the disk: now the original can go. If it
+                // won't, the "move" must not leave a duplicate behind.
+                if let Err(e) = std::fs::remove_file(src) {
                     let _ = std::fs::remove_file(&target);
+                    result = Err(format!("couldn't remove the original: {e}"));
                 }
-                removed
-            };
-            if moved {
+            }
+        }
+        match result {
+            Ok(()) => {
                 for c in caches {
                     let _ = std::fs::remove_file(c);
                 }
-                let from_rel = rel_under(&root, &src);
-                let to_rel = rel_under(&root, &target);
-                catalog_moves.push((from_rel, to_rel));
+                pairs.push((rel_under(&plan.root, src), rel_under(&plan.dest_root, &target)));
                 out.moved += 1;
                 out.files.push(MoveRecord {
                     from: src.to_string_lossy().to_string(),
                     to: target.to_string_lossy().to_string(),
                 });
-            } else {
+            }
+            Err(e) if e == TRANSFER_CANCELLED => {
+                out.cancelled = true;
+                break;
+            }
+            Err(e) => {
                 out.failed.push(src.to_string_lossy().to_string());
-                out.errors.push("move failed".into());
+                out.errors.push(e);
             }
         }
-        (out, catalog_moves)
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+    }
+    (out, pairs)
+}
 
-    let mut out = out;
-    if !catalog_moves.is_empty() {
-        if let Err(e) = catalog.move_media_entries(&catalog_moves) {
-            out.errors.push(format!("catalog update failed: {e}"));
+/// Carry the catalog records of transferred files: within one catalog a
+/// re-key of the rows (or a copy of them); across drives an export here, an
+/// import into the destination drive's own catalog, then (for a move) a
+/// forget here. The import comes first, so a failure leaves the records where
+/// they were rather than nowhere.
+fn transfer_catalog(catalog: &Catalog, data_root: &Path, plan: &TransferPlan, pairs: &[(String, String)]) -> Result<(), String> {
+    if pairs.is_empty() {
+        return Ok(());
+    }
+    if !plan.cross_drive {
+        let res = if plan.copy_mode { catalog.copy_media_entries(pairs) } else { catalog.move_media_entries(pairs) };
+        return res.map_err(|e| e.to_string());
+    }
+    let froms: Vec<String> = pairs.iter().map(|(f, _)| f.clone()).collect();
+    let metas = catalog.export_entries(&froms);
+    let dest_lib = resolve_library(data_root, &plan.dest_root);
+    let _ = std::fs::create_dir_all(&dest_lib.dir);
+    let rows: Vec<(String, crate::catalog::MediaMeta)> = pairs.iter().map(|(_, to)| to.clone()).zip(metas).collect();
+    Catalog::open(&dest_lib.catalog)
+        .and_then(|c| c.import_entries(&rows))
+        .map_err(|e| e.to_string())?;
+    if !plan.copy_mode {
+        catalog.forget(&froms);
+        catalog.clear_counts();
+    }
+    Ok(())
+}
+
+/// Move (or, with `copy`, copy) media into `dest`, like dragging in Finder or
+/// Explorer, with the catalog following each file.
+///
+/// - Same drive: a rename, instant whatever the size. Marks move with it.
+/// - Another drive (or `copy`): the bytes are copied in chunks with progress
+///   in the job centre (`job` is its activity id), each copy is flushed and
+///   size-checked, and only then is the original removed. The marks, tags,
+///   trims and events go into the destination drive's own catalog.
+/// - The job centre's Stop ends it between chunks: the file in flight is
+///   removed from the destination and everything before it stays done.
+///
+/// `async` + a blocking worker, so a thousand files never wedge the window.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn move_media_files(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    catalog: State<'_, Catalog>,
+    paths: Vec<String>,
+    dest: String,
+    copy: Option<bool>,
+    job: Option<String>,
+) -> Result<MoveOutcome, String> {
+    let copy_mode = copy.unwrap_or(false);
+    let job = job.unwrap_or_else(|| "move".into());
+    let fail_all = |paths: Vec<String>, dest: String, e: String| MoveOutcome {
+        moved: 0,
+        dest,
+        files: Vec::new(),
+        failed: paths,
+        errors: vec![e],
+        copied: copy_mode,
+        cross_drive: false,
+        cancelled: false,
+    };
+    let root_state = state.root.lock().clone();
+    let root = match canonical_active_root(&root_state) {
+        Ok(r) => r,
+        Err(e) => return Ok(fail_all(paths, dest, e)),
+    };
+    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
+    let dest_dir = match canonical_dir(Path::new(&dest)) {
+        Ok(d) => d,
+        Err(e) => return Ok(fail_all(paths, dest, e)),
+    };
+    if let Some(l) = &lib {
+        if within(&dest_dir, l) {
+            return Ok(fail_all(paths, dest, "refusing to use the app library folder as a destination".into()));
         }
     }
+    if let Err(e) = transfer_dest_allowed(&state, &dest_dir) {
+        return Ok(fail_all(paths, dest, e));
+    }
+    // Which catalog the destination belongs to. On a Mac the boot volume's
+    // catalog covers everything under `/` except `/Volumes/*`, so this — not
+    // `within(dest, root)` — is the test: `/Volumes/SSD` IS under `/`.
+    let dest_root = canonical_dir(&drive_root(&dest_dir.to_string_lossy())).unwrap_or_else(|_| root.clone());
+    let cross_drive = dest_root != root;
+    let cache_dir = state.cache_dir.lock().clone();
+    let cancel = job_token(&job);
+
+    let plan = TransferPlan {
+        root: root.clone(),
+        lib,
+        cache_dir,
+        dest_dir,
+        dest_root,
+        copy_mode,
+        cross_drive,
+    };
+    let (plan, (mut out, pairs)) = {
+        let app = app.clone();
+        let job = job.clone();
+        let cancel = cancel.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let emit = |a: Activity| emit_job(&app, Activity { id: job.clone(), ..a });
+            let res = transfer_files(&plan, paths, &cancel, &emit);
+            (plan, res)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    };
+    job_finished(&job, &cancel);
+
+    if let Err(e) = transfer_catalog(&catalog, &state.data_root, &plan, &pairs) {
+        out.errors.push(format!("catalog update failed: {e}"));
+    }
+    crate::log::line(&format!(
+        "MOVE {} n={} failed={} cross_drive={cross_drive} cancelled={} dest={:?}",
+        if copy_mode { "copy" } else { "move" },
+        out.moved,
+        out.failed.len(),
+        out.cancelled,
+        out.dest
+    ));
     Ok(out)
 }
 

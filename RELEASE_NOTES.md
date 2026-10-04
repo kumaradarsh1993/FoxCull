@@ -1,6 +1,69 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
+## A progress panel that shows everything going on
+
+The strip at the bottom of the folder list grew into a proper progress panel.
+
+- **What's running, how far, and how long is left**, for every task at once:
+  moves, copies, merges, exports, preview building. Copies show the size done,
+  the speed and the time left.
+- **Several at once:** "3 tasks running" with one combined bar. Click it to see
+  each task on its own, with a **Stop** button.
+- **Finished work shows the result** for a few seconds ("Moved 24 items to
+  Seattle", with Open folder or Show in folder), then waits under
+  "Recent tasks" until you clear it. A failure stays until you dismiss it.
+- Routine background work (loading thumbnails, reading dates) shows smaller and
+  greyer, and disappears when done.
+
+## Moving files by dragging
+
+- **Dragging shows a small stack with a count** instead of the whole
+  selection. The folder under the pointer says "Move 24" (hold **Option**,
+  or **Ctrl** on Windows, for "Copy 24"). Hover a closed folder for a moment
+  and it opens, so you can drop into a subfolder.
+- **Moves to another drive now work**, with size, speed, time left and Stop
+  in the progress panel. Each file is copied, checked and only then removed
+  from where it was, and its stars, labels, tags and events go with it.
+  Before, a move from an external drive to the Mac was refused, and a move
+  the other way left the marks behind.
+- Drop several batches in a row and they queue up instead of being ignored.
+
+## Merge in the background
+
+While a merge runs, click **Run in background** (or the – at the top). The
+merge keeps going, and the progress panel shows it with Stop and **Show merge
+window**. When it's done you get **Show in folder** there too. Starting an
+Edit export no longer cancels a merge.
+
+**Why merging takes a minute or two:** it's the drives, not the app. Measured
+on Osmo clips from an external SSD: FoxCull joined 6.4 GB in 15 seconds;
+LosslessCut took 24 seconds for 7.1 GB, because by default it rewrites the
+whole file a second time. A 40 GB day of footage takes about a minute and a
+half from a fast SSD, and longer from an SD card. The progress panel now shows
+the speed, so you can see which drive is the slow one.
+
+## Missing files, cleared in bulk
+
+- **Right-click a folder → Remove N missing items** clears every missing ("?")
+  entry in that folder and the folders inside it, in one go.
+- In the grid, **select any mix** (Shift or ⌘/Ctrl-click) and right-click: it
+  offers to remove just the missing ones, to select every missing item in the
+  folder, or to select only the files that exist.
+- **Find one, find them all:** pointing FoxCull at one missing file also
+  reconnects the other missing files from its old folder, if they're in the
+  same new place (like Lightroom).
+
+## Smaller things
+
+- **Group by Day** (Arrange → Group or Subgroup), for trips. Videos use the
+  time in the camera's file name, so evening clips stay on the right day.
+- **Picked and rejected at a glance:** a short green tab on top of picked
+  tiles, a red one under rejected tiles.
+- **Prepare left the toolbar.** Photos get their full-size preview ready as you
+  step through them, so it rarely saved anything. For a slow SD card or disk:
+  right-click a folder → **Build previews for this folder**.
+
 ## Merge clips that aren't all the same size
 
 Some cameras don't record every clip at the same size. Meta's glasses crop each

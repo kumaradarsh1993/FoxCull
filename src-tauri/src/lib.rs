@@ -207,6 +207,7 @@ pub fn run() {
             commands::export_video_segments,
             commands::edit_export,
             commands::cancel_edit_export,
+            commands::cancel_job,
             commands::path_exists,
             commands::edit_snapshot,
             commands::list_rejected,

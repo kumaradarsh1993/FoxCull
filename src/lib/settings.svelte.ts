@@ -16,7 +16,7 @@ export type SortDir = "asc" | "desc";
  *  banner drawn inside the timeline, not a competing axis — keeping both modes
  *  meant a stored `groupBy: "event"` silently pinned the owner to the old
  *  album view while the new banner sat suppressed. See `migrate` below. */
-export type GroupBy = "none" | "folder" | "type" | "year" | "month" | "week";
+export type GroupBy = "none" | "folder" | "type" | "year" | "month" | "week" | "day";
 export type TypeFilter = "all" | "image" | "video" | "raw";
 export type DeleteMode = "recycle" | "folder";
 export type RelatedMode = "expanded" | "collapsed";
@@ -33,7 +33,7 @@ export interface AppSettings {
   gridSize: number;
   sortBy: SortBy;
   sortDir: SortDir;
-  /** Section the grid by real capture date — off, by month, or by week. */
+  /** Section the grid by real capture date (year, month, week or day), folder or type. */
   groupBy: GroupBy;
   subgroupBy: GroupBy;
   /** Paint events as a continuous banner down the left of the rows they occupy,
