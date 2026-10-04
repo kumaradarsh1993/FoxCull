@@ -968,3 +968,11 @@ it used to open on top of itself (excluded folders, the controller, updates)
 as pages inside it. Prepare sits in "Speed & storage" with its progress and
 the size of the drive's preview cache beside it, so the question "is it worth
 it here?" has its answer next to the button.
+
+## 2026-10-04 (late) — the filmstrip on a Mac
+
+The owner found the filmstrip's scrolling odd on the Mac. It had been tuned
+for a Windows mouse with a thumb wheel, whose sideways direction comes in
+reversed, and it smoothed every wheel event into a glide. On a trackpad that
+reversed a sideways swipe and made the strip trail the fingers. On a Mac the
+strip now leaves sideways swipes to the system and maps up/down swipes 1:1.

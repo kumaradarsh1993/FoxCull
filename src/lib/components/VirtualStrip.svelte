@@ -21,6 +21,8 @@
     cell: Snippet<[T, number]>;
   } = $props();
 
+  const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+
   let viewport = $state<HTMLDivElement | null>(null);
   let scrollPos = $state(0);
   let vpMain = $state(0); // viewport length along the scroll axis
@@ -96,6 +98,21 @@
     if (orientation === "h") {
       onWheel = (e: WheelEvent) => {
         const horizontal = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+        // macOS: a trackpad or Magic Mouse already sends smooth pixel deltas,
+        // in the system's scrolling direction and with its own momentum. A
+        // sideways swipe is left to the browser's native scrolling (so it
+        // also bounces at the ends), and a vertical one moves the strip by
+        // the same amount, immediately. The Windows path below inverted
+        // deltaX (WebView2's thumb wheel) and animated every event, which on
+        // a Mac sent a sideways swipe the wrong way and made the strip trail
+        // behind the fingers (owner, 2026-10-04).
+        if (IS_MAC) {
+          if (horizontal || e.deltaY === 0) return;
+          const unit = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : e.deltaMode === WheelEvent.DOM_DELTA_PAGE ? el.clientWidth : 1;
+          el.scrollLeft += e.deltaY * unit;
+          e.preventDefault();
+          return;
+        }
         const raw = horizontal ? -e.deltaX : e.deltaY;
         if (raw === 0) return;
         const unit = e.deltaMode === WheelEvent.DOM_DELTA_LINE

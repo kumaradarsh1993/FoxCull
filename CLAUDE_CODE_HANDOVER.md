@@ -1,5 +1,13 @@
 # Agent Handover: FoxCull
 
+## 2026-10-04 (late) — Mac filmstrip scrolling (nightly.8)
+
+Ledger: `docs/changes/2026-10-04-mac-strip-scroll.md`. `VirtualStrip`'s wheel
+handler now has a macOS branch (native sideways scrolling, vertical deltas
+applied 1:1); the Windows branch (inverted `deltaX`, smoothed target) is
+untouched. Don't merge the two: they exist because WebView2 and WebKit report
+wheels differently.
+
 ## 2026-10-04 (night) — Settings sheet (nightly.7)
 
 Ledger: `docs/changes/2026-10-04-settings-sheet.md`.
