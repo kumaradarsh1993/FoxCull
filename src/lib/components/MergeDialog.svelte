@@ -618,7 +618,7 @@
 <!-- The backdrop is inert on purpose: a stray click must not throw away a
      half-reviewed list. -->
 <div class="panel" role="main" aria-label="Merge videos">
-  <header>
+  <header data-tauri-drag-region>
     <div>
       <h2>Merge videos</h2>
       <p class="sub">
@@ -865,10 +865,10 @@
     background: var(--bg-panel);
   }
   header { display: flex; align-items: center; gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--border-soft); flex-shrink: 0; }
-  h2 { margin: 0; font-family: var(--font-display); font-size: 17px; letter-spacing: -0.015em; }
-  .sub { margin: 2px 0 0; color: var(--text-dim); font-size: 12.5px; }
+  h2 { margin: 0; font-family: var(--font-display); font-size: var(--fs-xl); letter-spacing: -0.015em; }
+  .sub { margin: 2px 0 0; color: var(--text-dim); font-size: var(--fs-md); }
   .grow { flex: 1; }
-  .x { width: 30px; height: 30px; border-radius: 7px; color: var(--text-dim); font-size: 13px; }
+  .x { width: 30px; height: 30px; border-radius: var(--radius-sm); color: var(--text-dim); font-size: var(--fs-md); }
   .x:hover { background: var(--bg-hover); color: var(--text); }
   .center { padding: 60px 18px; text-align: center; color: var(--text-dim); }
   .center.err { color: var(--reject); }
@@ -883,16 +883,16 @@
   .right { overflow-y: auto; }
 
   .basis { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
-  .basisLabel { margin-right: 2px; color: var(--text-faint); font-size: 11px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; }
-  .fmt { padding: 2px 8px; border: 1px solid var(--border-soft); border-radius: 999px; background: color-mix(in srgb, var(--bg-elev) 70%, transparent); color: var(--text); font-size: 12px; font-weight: 560; }
-  .basisNote { margin-left: 4px; color: var(--text-faint); font-size: 11.5px; }
+  .basisLabel { margin-right: 2px; color: var(--text-faint); font-size: var(--fs-xs); font-weight: var(--fw-semibold); letter-spacing: 0.06em; text-transform: uppercase; }
+  .fmt { padding: 2px 8px; border: 1px solid var(--border-soft); border-radius: 999px; background: color-mix(in srgb, var(--bg-elev) 70%, transparent); color: var(--text); font-size: var(--fs-sm); font-weight: var(--fw-medium); }
+  .basisNote { margin-left: 4px; color: var(--text-faint); font-size: var(--fs-sm); }
   .toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-  .count { color: var(--text-dim); font-size: 12.5px; font-variant-numeric: tabular-nums; }
-  .flagChip, .okChip { padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
+  .count { color: var(--text-dim); font-size: var(--fs-md); font-variant-numeric: tabular-nums; }
+  .flagChip, .okChip { padding: 2px 8px; border-radius: 999px; font-size: var(--fs-sm); font-weight: var(--fw-semibold); }
   .flagChip { background: color-mix(in srgb, var(--star) 15%, transparent); color: var(--star); }
   .okChip { background: color-mix(in srgb, var(--pick) 15%, transparent); color: var(--pick); }
-  .convChip { padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-size: 11.5px; font-weight: 600; }
-  .warnText { color: var(--star); font-weight: 600; }
+  .convChip { padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-size: var(--fs-sm); font-weight: var(--fw-semibold); }
+  .warnText { color: var(--star); font-weight: var(--fw-semibold); }
 
   /* The sequence table. Plain rows (not <table>) so rows can be dragged. */
   .table { flex: 1 1 auto !important; min-height: 120px; overflow: auto; border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: color-mix(in srgb, var(--bg-elev) 40%, transparent); }
@@ -903,9 +903,9 @@
     align-items: center; column-gap: 8px;
     min-height: 30px; padding: 0 6px 0 8px;
     border-bottom: 1px solid var(--border-soft);
-    font-size: 12.5px; color: var(--text); cursor: default; user-select: none;
+    font-size: var(--fs-md); color: var(--text); cursor: default; user-select: none;
   }
-  .row.head { position: sticky; top: 0; z-index: 1; min-height: 28px; background: var(--bg-panel); color: var(--text-faint); font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+  .row.head { position: sticky; top: 0; z-index: 1; min-height: 28px; background: var(--bg-panel); color: var(--text-faint); font-size: var(--fs-xs); font-weight: var(--fw-semibold); letter-spacing: 0.06em; text-transform: uppercase; }
   .row:not(.head):hover { background: color-mix(in srgb, var(--bg-hover) 70%, transparent); }
   .row.flag { background: color-mix(in srgb, var(--star) 3%, transparent); }
   .row.sel, .row.sel:hover { background: color-mix(in srgb, var(--select) 16%, transparent); }
@@ -926,7 +926,7 @@
   .nmA { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .nmB { flex: none; white-space: nowrap; }
   .c-when, .c-len, .c-size { color: var(--text-dim); }
-  .c-span { grid-column: 4 / span 5; display: flex; align-items: center; gap: 6px; color: color-mix(in srgb, var(--reject) 80%, var(--text-dim)); font-size: 12px; }
+  .c-span { grid-column: 4 / span 5; display: flex; align-items: center; gap: 6px; color: color-mix(in srgb, var(--reject) 80%, var(--text-dim)); font-size: var(--fs-sm); }
   /* The Segments column, only when some clip has segments. */
   .table.segcol .row { grid-template-columns: 44px minmax(150px, 1fr) 84px 50px 92px 86px 54px 88px 70px 62px 30px; }
   .table.segcol .c-span { grid-column: 4 / span 6; }
@@ -935,17 +935,17 @@
   .c-segs input { flex: none; width: 14px; height: 14px; margin: 0; accent-color: var(--accent); cursor: pointer; }
   .c-segs span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .c-segs .dimSeg { color: var(--text-faint); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--text-faint) 60%, transparent); }
-  .c-segs.none { color: var(--text-faint); font-size: 11.5px; }
-  .c-len.cut { color: var(--accent); font-weight: 600; }
+  .c-segs.none { color: var(--text-faint); font-size: var(--fs-sm); }
+  .c-len.cut { color: var(--accent); font-weight: var(--fw-semibold); }
   .c-span svg { flex: none; opacity: 0.85; }
-  .conv { justify-self: start; max-width: 100%; padding: 1px 5px; border-radius: 5px; background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); font-weight: 600; cursor: help; }
-  .bad { justify-self: start; max-width: 100%; padding: 1px 5px; border-radius: 5px; background: color-mix(in srgb, var(--star) 17%, transparent); color: var(--star); font-weight: 620; cursor: help; }
+  .conv { justify-self: start; max-width: 100%; padding: 1px 5px; border-radius: var(--radius-xs); background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); font-weight: var(--fw-semibold); cursor: help; }
+  .bad { justify-self: start; max-width: 100%; padding: 1px 5px; border-radius: var(--radius-xs); background: color-mix(in srgb, var(--star) 17%, transparent); color: var(--star); font-weight: var(--fw-semibold); cursor: help; }
   .c-rm { display: flex; justify-content: flex-end; }
-  .rm { display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid transparent; border-radius: 6px; color: var(--text-faint); opacity: 0.55; transition: opacity 100ms ease, background 100ms ease, color 100ms ease; }
+  .rm { display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid transparent; border-radius: var(--radius-xs); color: var(--text-faint); opacity: 0.55; transition: opacity 100ms ease, background 100ms ease, color 100ms ease; }
   .row:hover .rm, .row.sel .rm, .row.flag .rm { opacity: 1; }
   .rm:hover:not(:disabled) { border-color: color-mix(in srgb, var(--reject) 40%, transparent); background: color-mix(in srgb, var(--reject) 12%, transparent); color: var(--reject); }
-  .empty { padding: 24px; text-align: center; color: var(--text-faint); font-size: 12.5px; }
-  .keys { margin: 0; color: var(--text-faint); font-size: 11px; }
+  .empty { padding: 24px; text-align: center; color: var(--text-faint); font-size: var(--fs-md); }
+  .keys { margin: 0; color: var(--text-faint); font-size: var(--fs-xs); }
 
   /* Narrow list: drop the columns you can live without (the row's hover
      titles and the preview caption still carry them), so the name keeps room. */
@@ -976,36 +976,36 @@
   .preview { position: relative; height: 250px; margin: 12px 14px 0; border-radius: var(--radius-md); overflow: hidden; background: #050607; display: flex; align-items: center; justify-content: center; }
   .preview img { width: 100%; height: 100%; object-fit: contain; background: #050607; }
   .stage { width: 100%; height: 100%; }
-  .noPreview { color: var(--text-faint); font-size: 12.5px; }
+  .noPreview { color: var(--text-faint); font-size: var(--fs-md); }
   .pcap { display: flex; flex-direction: column; gap: 2px; margin: 8px 14px 0; }
-  .pname { overflow: hidden; color: var(--text); font-size: 12.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-  .pmeta { color: var(--text-dim); font-size: 11.5px; }
+  .pname { overflow: hidden; color: var(--text); font-size: var(--fs-md); font-weight: var(--fw-semibold); text-overflow: ellipsis; white-space: nowrap; }
+  .pmeta { color: var(--text-dim); font-size: var(--fs-sm); }
 
   .settings { display: flex; flex-direction: column; gap: 7px; padding: 12px 14px 14px; margin-top: 10px; border-top: 1px solid var(--border-soft); }
   .settings > * { flex-shrink: 0; }
   .summary { padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: color-mix(in srgb, var(--accent) 7%, var(--bg-elev)); }
-  .big { color: var(--text); font-size: 14.5px; font-weight: 650; font-variant-numeric: tabular-nums; }
-  .small { margin-top: 2px; font-size: 12px; }
+  .big { color: var(--text); font-size: var(--fs-lg); font-weight: var(--fw-semibold); font-variant-numeric: tabular-nums; }
+  .small { margin-top: 2px; font-size: var(--fs-sm); }
   .small.dim { color: var(--text-dim); line-height: 1.45; }
-  .pieces { color: var(--text-dim); font-weight: 560; }
-  .segNote { margin: 0; color: var(--text-dim); font-size: 11.5px; line-height: 1.45; }
+  .pieces { color: var(--text-dim); font-weight: var(--fw-medium); }
+  .segNote { margin: 0; color: var(--text-dim); font-size: var(--fs-sm); line-height: 1.45; }
   .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-  .mode { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 9px; background: color-mix(in srgb, var(--bg-elev) 45%, transparent); text-align: left; }
+  .mode { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--bg-elev) 45%, transparent); text-align: left; }
   .mode:hover:not(:disabled) { border-color: var(--border); }
   .mode.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev)); }
-  .mt { color: var(--text); font-size: 12.5px; font-weight: 650; }
-  .md { color: var(--text-dim); font-size: 11.5px; line-height: 1.35; }
-  .fl { margin-top: 4px; color: var(--text-faint); font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
-  .settings input[type="text"] { min-height: var(--control-h); padding: 5px 10px; font-size: 13px; user-select: text; }
+  .mt { color: var(--text); font-size: var(--fs-md); font-weight: var(--fw-semibold); }
+  .md { color: var(--text-dim); font-size: var(--fs-sm); line-height: 1.35; }
+  .fl { margin-top: 4px; color: var(--text-faint); font-size: var(--fs-xs); font-weight: var(--fw-semibold); letter-spacing: 0.06em; text-transform: uppercase; }
+  .settings input[type="text"] { min-height: var(--control-h); padding: 5px 10px; font-size: var(--fs-md); user-select: text; }
   .dests { display: flex; flex-direction: column; gap: 4px; }
-  .dest { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid var(--border-soft); border-radius: 8px; background: color-mix(in srgb, var(--bg-elev) 45%, transparent); color: var(--text); font-size: 12.5px; text-align: left; }
+  .dest { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--bg-elev) 45%, transparent); color: var(--text); font-size: var(--fs-md); text-align: left; }
   .dest:hover:not(:disabled) { border-color: var(--border); }
   .dest.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev)); }
   .dl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .df { flex: none; color: var(--text-faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .df { flex: none; color: var(--text-faint); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
   .dest.tight .df { color: var(--reject); }
   .dest.choose { justify-content: center; color: var(--accent); }
-  .warn { margin: 0; color: var(--reject); font-size: 12.5px; line-height: 1.5; }
+  .warn { margin: 0; color: var(--reject); font-size: var(--fs-md); line-height: 1.5; }
   /* Always in view, however short the window: the button is the point. */
   .actions {
     position: sticky; bottom: 0; z-index: 1;
@@ -1016,7 +1016,7 @@
     box-shadow: 0 -8px 16px color-mix(in srgb, var(--bg-panel) 85%, transparent);
   }
   /* What's still in the way, on its own line above the buttons. */
-  .actions .why { flex: 1 0 100%; color: var(--star); font-size: 12px; line-height: 1.4; }
+  .actions .why { flex: 1 0 100%; color: var(--star); font-size: var(--fs-sm); line-height: 1.4; }
 
 
   /* Short windows (TV size on a laptop): the list and the settings need the

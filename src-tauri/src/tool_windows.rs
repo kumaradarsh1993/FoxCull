@@ -47,6 +47,15 @@ pub fn open_tool_window(app: AppHandle, kind: String, payload: Option<String>) -
             .title(title)
             .inner_size(w, h)
             .min_inner_size(min_w, min_h);
+        // macOS: the title bar folds into each window's own top bar (traffic
+        // lights inset at the same spot as the library's), as Mac apps do now.
+        #[cfg(target_os = "macos")]
+        {
+            b = b
+                .title_bar_style(tauri::TitleBarStyle::Overlay)
+                .hidden_title(true)
+                .traffic_light_position(tauri::LogicalPosition::new(18.0, 21.0));
+        }
         // Edit and Merge take clips dragged in from the library (HTML5 drag
         // and drop), which the native file-drop handler would eat. The Reel
         // window wants the opposite: a song dropped from Finder/Explorer,

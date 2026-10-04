@@ -155,7 +155,7 @@
   }
 
   .mark {
-    border-radius: 13px;
+    border-radius: var(--radius-md);
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
   }
   h1 {
@@ -163,24 +163,24 @@
     color: var(--text);
     font-family: var(--font-display);
     font-size: 24px;
-    font-weight: 640;
+    font-weight: var(--fw-semibold);
     letter-spacing: -0.02em;
   }
   .lede {
     display: flex;
     flex-direction: column;
     margin: 8px 0 0;
-    font-size: 13.5px;
+    font-size: var(--fs-md);
     line-height: 1.55;
   }
 
   .actions { display: flex; gap: 8px; margin-top: 24px; }
-  .open { min-height: 34px; padding: 6px 18px; border-radius: 9px; font-weight: 620; }
+  .open { min-height: 34px; padding: 6px 18px; border-radius: var(--radius-sm); font-weight: var(--fw-semibold); }
   .ghost { background: transparent; border-color: transparent; box-shadow: none; color: var(--text-dim); }
 
   .resume {
     margin: 18px 0 0;
-    font-size: 12px;
+    font-size: var(--fs-sm);
     line-height: 1.55;
     color: var(--text-faint);
   }
@@ -194,8 +194,8 @@
     display: block;
     margin: 0 0 6px 10px;
     color: var(--text-faint);
-    font-size: 11px;
-    font-weight: 600;
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
   }
   ul {
     list-style: none;
@@ -211,9 +211,9 @@
     align-items: center;
     gap: 10px;
     padding: 8px 10px;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     color: var(--text);
-    font-size: 13px;
+    font-size: var(--fs-md);
     text-align: left;
     transition: background 100ms ease;
   }
@@ -229,7 +229,7 @@
     white-space: nowrap;
     text-align: right;
     color: var(--text-faint);
-    font-size: 11.5px;
+    font-size: var(--fs-sm);
   }
 
   footer {
@@ -240,7 +240,7 @@
     gap: 4px 8px;
     padding: 16px 24px 20px;
     color: var(--text-faint);
-    font-size: 11.5px;
+    font-size: var(--fs-sm);
   }
   .dot { opacity: 0.6; }
   kbd {
@@ -248,9 +248,9 @@
     min-width: 18px;
     padding: 0 5px;
     border: 1px solid var(--border);
-    border-radius: 5px;
+    border-radius: var(--radius-xs);
     font-family: inherit;
-    font-size: 10.5px;
+    font-size: var(--fs-xs);
     line-height: 1.5;
     text-align: center;
   }

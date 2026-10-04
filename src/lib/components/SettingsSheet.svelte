@@ -26,7 +26,7 @@
   import { api } from "$lib/api";
   import { activity, fmtBytes } from "$lib/activity.svelte";
   import { pad } from "$lib/gamepad.svelte";
-  import { settings, GLIMPSE_MIN, GLIMPSE_MAX, type FilmstripPos, type Theme, type UiScale } from "$lib/settings.svelte";
+  import { settings, GLIMPSE_MIN, GLIMPSE_MAX, type Accent, type FilmstripPos, type Surround, type Theme, type UiScale } from "$lib/settings.svelte";
   import { updates } from "$lib/updates.svelte";
   import type { LibraryInfo } from "$lib/types";
   import ControllerPanel from "./ControllerPanel.svelte";
@@ -89,7 +89,9 @@
    *  are extra words search should match (what people call the thing). */
   type Row = { id: string; section: Section; card: string; label: string; desc: string; keys?: string; wide?: boolean; link?: boolean };
   const ROWS: Row[] = [
-    { id: "theme", section: "appearance", card: "Look", label: "Theme", desc: "Studio is neutral grey for judging colour. Amber cuts blue light late at night.", keys: "dark light colour color mode midnight daylight studio amber", wide: true },
+    { id: "theme", section: "appearance", card: "Look", label: "Theme", desc: "Graphite and Studio Grey are neutral, so they never tint your photos. Amber cuts blue light late at night. Match system follows your Mac or PC's light/dark switch.", keys: "dark light colour color mode midnight daylight studio amber graphite paper system auto", wide: true },
+    { id: "accent", section: "appearance", card: "Look", label: "Accent colour", desc: "Selection, the main buttons and switches. Green and red stay reserved for picks and rejects.", keys: "accent highlight colour color blue indigo teal orange rose" },
+    { id: "surround", section: "appearance", card: "Look", label: "Behind the pictures", desc: "The colour around tiles and around the picture in Focus. 18% grey is the photographer's neutral for judging exposure.", keys: "surround background grey gray black viewport exposure" },
     { id: "uiScale", section: "appearance", card: "Look", label: "Interface size", desc: "Compact fits more on a laptop screen. TV is for a screen across the room.", keys: "zoom scale large small text font" },
     { id: "filmstrip", section: "appearance", card: "Layout", label: "Filmstrip", desc: "Where the strip of thumbnails docks. Each view remembers whether it's shown.", keys: "strip dock bottom left right hide" },
     { id: "tileLength", section: "appearance", card: "Layout", label: "Video length on tiles", desc: "A small badge with each video's length.", keys: "duration badge tile" },
@@ -135,12 +137,25 @@
 
   // Colours copied from app.css so each tile previews its theme even while
   // another one is active.
-  const THEMES: { id: Theme; name: string; bg: string; panel: string; elev: string; accent: string; line: string }[] = [
-    { id: "neutral", name: "Studio", bg: "#17191d", panel: "#202329", elev: "#343a43", accent: "#78b9ef", line: "#3a4049" },
-    { id: "dark", name: "Midnight", bg: "#0d1015", panel: "#141920", elev: "#27313c", accent: "#63b7f2", line: "#2d3742" },
-    { id: "warm", name: "Amber", bg: "#1b1917", panel: "#24211e", elev: "#3b3630", accent: "#d8ad68", line: "#443e37" },
-    { id: "light", name: "Daylight", bg: "#d9e0e7", panel: "#f7f9fb", elev: "#ffffff", accent: "#2d7fc2", line: "#cbd4dd" },
+  const THEMES: { id: Exclude<Theme, "system">; name: string; bg: string; panel: string; elev: string; accent: string; line: string }[] = [
+    { id: "graphite", name: "Graphite", bg: "#0c0d0e", panel: "#17181b", elev: "#28292e", accent: "#82abff", line: "#2c2e33" },
+    { id: "studio", name: "Studio Grey", bg: "#28292b", panel: "#333438", elev: "#47484e", accent: "#9dbdff", line: "#4b4d53" },
+    { id: "midnight", name: "Midnight", bg: "#030406", panel: "#0d0f14", elev: "#1d2230", accent: "#5aaeff", line: "#222736" },
+    { id: "amber", name: "Amber Night", bg: "#0e0b08", panel: "#1e1914", elev: "#322a21", accent: "#e2ab5c", line: "#3b3127" },
+    { id: "daylight", name: "Daylight", bg: "#dde1e6", panel: "#f6f7f9", elev: "#ffffff", accent: "#1b63c0", line: "#d3d8df" },
+    { id: "paper", name: "Paper", bg: "#e4ded3", panel: "#f7f4ee", elev: "#fffdf9", accent: "#a84a22", line: "#dcd4c7" },
   ];
+  const ACCENTS: { id: Accent; name: string; dark: string; light: string }[] = [
+    { id: "theme", name: "The theme's own", dark: "", light: "" },
+    { id: "blue", name: "Blue", dark: "#82abff", light: "#1b63c0" },
+    { id: "indigo", name: "Indigo", dark: "#a397ff", light: "#5446d0" },
+    { id: "teal", name: "Teal", dark: "#4fd1c5", light: "#0b7069" },
+    { id: "fox", name: "Fox orange", dark: "#ff9a5c", light: "#a84a22" },
+    { id: "rose", name: "Rose", dark: "#ff86b3", light: "#b02a5e" },
+    { id: "mono", name: "Graphite", dark: "#d9dadf", light: "#2a2d33" },
+  ];
+  const SURROUNDS: [Surround, string][] = [["dark", "Theme"], ["black", "Black"], ["grey", "18% grey"], ["light", "Light"]];
+  let lightTone = $derived(settings.s.theme === "daylight" || settings.s.theme === "paper");
   const SCALES: [UiScale, string][] = [["compact", "Compact"], ["comfortable", "Standard"], ["distance", "TV"]];
   const DOCKS: [FilmstripPos, string][] = [["bottom", "Bottom"], ["left", "Left"], ["right", "Right"], ["hidden", "Off"]];
 
@@ -342,6 +357,37 @@
           <span class="themeName">{t.name}</span>
         </button>
       {/each}
+      <button class="themeTile" class:on={settings.s.theme === "system"} role="radio" aria-checked={settings.s.theme === "system"} onclick={() => settings.set({ theme: "system" })}>
+        <span class="mini split" style="--b:#0c0d0e;--p:#17181b;--e:#28292e;--a:#82abff;--l:#2c2e33">
+          <span class="miniSide"><i></i><i class="hl"></i><i></i></span>
+          <span class="miniGrid"><i></i><i class="sel"></i><i></i><i></i><i></i><i></i></span>
+        </span>
+        <span class="themeName">Match system</span>
+      </button>
+    </div>
+  {:else if id === "accent"}
+    <div class="accents" role="radiogroup" aria-label="Accent colour">
+      {#each ACCENTS as a (a.id)}
+        <button
+          class="acc"
+          class:on={(settings.s.accent ?? "theme") === a.id}
+          class:auto={a.id === "theme"}
+          role="radio"
+          aria-checked={(settings.s.accent ?? "theme") === a.id}
+          aria-label={a.name}
+          title={a.name}
+          style={a.id === "theme" ? "" : `background:${lightTone ? a.light : a.dark}`}
+          onclick={() => settings.set({ accent: a.id })}
+        ></button>
+      {/each}
+    </div>
+  {:else if id === "surround"}
+    <div class="seg" role="radiogroup" aria-label="Behind the pictures">
+      {#each SURROUNDS as [v, l] (v)}
+        <button class:on={(settings.s.surround ?? "dark") === v} role="radio" aria-checked={(settings.s.surround ?? "dark") === v} onclick={() => settings.set({ surround: v })}>
+          <i class="sur" style="background:{v === 'black' ? '#000' : v === 'grey' ? '#767676' : v === 'light' ? '#e4e5e8' : 'var(--viewport-bg)'}"></i>{l}
+        </button>
+      {/each}
     </div>
   {:else if id === "uiScale"}
     <div class="seg" role="radiogroup" aria-label="Interface size">
@@ -503,7 +549,7 @@
     border-right: 1px solid var(--border-soft);
   }
   .sideHead { padding: 2px 8px 10px; }
-  .sideTitle { font-family: var(--font-display); font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+  .sideTitle { font-family: var(--font-display); font-size: var(--fs-lg); font-weight: var(--fw-semibold); letter-spacing: -0.01em; }
   .search {
     display: flex;
     align-items: center;
@@ -525,7 +571,7 @@
     padding: 0;
     border: 0;
     background: transparent;
-    font-size: 12.5px;
+    font-size: var(--fs-md);
     outline: none;
   }
   .search input::-webkit-search-cancel-button { filter: grayscale(1); opacity: 0.6; }
@@ -538,8 +584,8 @@
     padding: 0 8px;
     border-radius: var(--radius-sm);
     color: var(--text-dim);
-    font-size: 13px;
-    font-weight: 520;
+    font-size: var(--fs-md);
+    font-weight: var(--fw-medium);
     text-align: left;
   }
   .navItem:hover { background: color-mix(in srgb, var(--bg-hover) 70%, transparent); color: var(--text); }
@@ -550,7 +596,7 @@
     width: 22px;
     height: 22px;
     flex: none;
-    border-radius: 6px;
+    border-radius: var(--radius-xs);
     color: #fff;
   }
   .navIco[data-s="appearance"] { background: linear-gradient(160deg, #8b7cf6, #6151d8); }
@@ -572,7 +618,7 @@
     animation: spin 0.9s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .sideFoot { margin-top: auto; padding: 10px 8px 2px; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  .sideFoot { margin-top: auto; padding: 10px 8px 2px; font-size: var(--fs-xs); color: var(--text-faint); font-variant-numeric: tabular-nums; }
 
   /* ── content ── */
   .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -583,18 +629,18 @@
     padding: 18px 22px 14px 26px;
   }
   .titles { flex: 1; min-width: 0; }
-  h2 { margin: 0; font-family: var(--font-display); font-size: 19px; font-weight: 650; letter-spacing: -0.02em; }
-  .titles p { margin: 3px 0 0; color: var(--text-dim); font-size: 12.5px; }
+  h2 { margin: 0; font-family: var(--font-display); font-size: var(--fs-xl); font-weight: var(--fw-semibold); letter-spacing: -0.02em; }
+  .titles p { margin: 3px 0 0; color: var(--text-dim); font-size: var(--fs-md); }
   .crumb {
     display: inline-flex;
     align-items: center;
     gap: 2px;
     margin: -2px 0 4px -5px;
     padding: 2px 6px 2px 2px;
-    border-radius: 6px;
+    border-radius: var(--radius-xs);
     color: var(--accent);
-    font-size: 12px;
-    font-weight: 560;
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-medium);
   }
   .crumb:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
   .crumb svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
@@ -614,8 +660,8 @@
 
   .cardHead, .resultHead {
     margin: 16px 0 7px 2px;
-    font-size: 11.5px;
-    font-weight: 650;
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-semibold);
     color: var(--text-faint);
   }
   .cardHead:first-child, .resultHead:first-child { margin-top: 2px; }
@@ -639,16 +685,16 @@
   .srow.wide { flex-direction: column; align-items: stretch; gap: 10px; }
   .srow.link:hover { background: color-mix(in srgb, var(--bg-hover) 55%, transparent); }
   .text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-  .label { font-size: 13px; font-weight: 560; color: var(--text); }
-  .desc { font-size: 11.75px; line-height: 1.45; color: var(--text-faint); max-width: 62ch; }
+  .label { font-size: var(--fs-md); font-weight: var(--fw-medium); color: var(--text); }
+  .desc { font-size: var(--fs-sm); line-height: 1.45; color: var(--text-faint); max-width: 62ch; }
   .ctl { flex: none; display: flex; align-items: center; gap: 8px; }
   .wide .ctl { display: block; }
   .updatesRow { display: block; padding: 0; }
-  .val, .linkVal { font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .val, .linkVal { font-size: var(--fs-sm); color: var(--text-dim); font-variant-numeric: tabular-nums; }
   .linkVal .ok { color: var(--pick); }
   .chev { width: 16px; height: 16px; fill: none; stroke: var(--text-faint); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .pair { display: flex; align-items: center; gap: 10px; }
-  .empty { color: var(--text-faint); font-size: 12.5px; margin: 6px 2px; }
+  .empty { color: var(--text-faint); font-size: var(--fs-md); margin: 6px 2px; }
 
   /* switch */
   .switch {
@@ -679,7 +725,7 @@
     display: inline-flex;
     padding: 2px;
     gap: 2px;
-    border-radius: 9px;
+    border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--bg) 75%, transparent);
     border: 1px solid var(--border-soft);
   }
@@ -689,9 +735,9 @@
     gap: 6px;
     height: 26px;
     padding: 0 11px;
-    border-radius: 7px;
-    font-size: 12px;
-    font-weight: 540;
+    border-radius: var(--radius-sm);
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-medium);
     color: var(--text-dim);
     white-space: nowrap;
   }
@@ -706,7 +752,19 @@
   .seg button.on .dock .f { fill: var(--accent); }
 
   /* theme tiles */
-  .themes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  .themes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px 12px; }
+  .mini.split { background: linear-gradient(135deg, #0c0d0e 50%, #dde1e6 50%); }
+  .accents { display: flex; gap: 8px; }
+  .acc {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
+    transition: box-shadow var(--dur-fast) ease;
+  }
+  .acc.auto { background: conic-gradient(#82abff, #a397ff, #ff86b3, #ff9a5c, #4fd1c5, #82abff); }
+  .acc.on { box-shadow: 0 0 0 2px var(--bg-panel), 0 0 0 4px var(--text); }
+  .sur { width: 10px; height: 10px; border-radius: var(--radius-xs); box-shadow: inset 0 0 0 1px rgba(127, 127, 127, 0.45); }
   .themeTile { display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 0; }
   .mini {
     display: flex;
@@ -714,26 +772,26 @@
     width: 100%;
     aspect-ratio: 16 / 10;
     padding: 6px;
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     background: var(--b);
     box-shadow: 0 0 0 1px var(--l), 0 2px 8px rgba(0, 0, 0, 0.18);
     transition: box-shadow 120ms ease;
   }
   .themeTile:hover .mini { box-shadow: 0 0 0 1px var(--l), 0 0 0 4px color-mix(in srgb, var(--text-faint) 22%, transparent); }
   .themeTile.on .mini { box-shadow: 0 0 0 2px var(--accent), 0 0 0 5px color-mix(in srgb, var(--accent) 22%, transparent); }
-  .miniSide { display: flex; flex-direction: column; gap: 3px; width: 26%; padding: 4px 3px; border-radius: 5px; background: var(--p); }
+  .miniSide { display: flex; flex-direction: column; gap: 3px; width: 26%; padding: 4px 3px; border-radius: var(--radius-xs); background: var(--p); }
   .miniSide i { height: 4px; border-radius: 2px; background: var(--e); }
   .miniSide i.hl { background: var(--a); opacity: 0.75; }
   .miniGrid { flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
-  .miniGrid i { border-radius: 3px; background: var(--e); }
+  .miniGrid i { border-radius: var(--radius-xs); background: var(--e); }
   .miniGrid i.sel { box-shadow: inset 0 0 0 1.5px var(--a); }
-  .themeName { font-size: 12px; font-weight: 540; color: var(--text-dim); }
+  .themeName { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-dim); }
   .themeTile.on .themeName { color: var(--text); }
 
   /* slider */
   .slider { display: flex; align-items: center; gap: 10px; }
   .slider input { width: 150px; }
-  .sliderVal { min-width: 30px; text-align: right; font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .sliderVal { min-width: 30px; text-align: right; font-size: var(--fs-sm); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 
   /* Build previews */
   .prep {
@@ -746,9 +804,9 @@
     border: 1px solid var(--border-soft);
   }
   .prepTop { display: flex; align-items: center; gap: 12px; }
-  .prepWhat { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .prepWhat b { color: var(--text); font-weight: 600; }
-  .prepNote { font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  .prepWhat { flex: 1; min-width: 0; font-size: var(--fs-md); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prepWhat b { color: var(--text); font-weight: var(--fw-semibold); }
+  .prepNote { font-size: var(--fs-sm); color: var(--text-faint); font-variant-numeric: tabular-nums; }
   .bar { height: 5px; border-radius: 999px; background: color-mix(in srgb, var(--text-faint) 22%, transparent); overflow: hidden; }
   .bar i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 200ms ease; }
 
@@ -762,12 +820,12 @@
     background: color-mix(in srgb, var(--bg) 55%, transparent);
     border: 1px solid var(--border-soft);
   }
-  .libPath { flex: 1; min-width: 0; font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .libTag { flex: none; font-size: 11px; padding: 2px 8px; border-radius: 999px; color: var(--pick); background: color-mix(in srgb, var(--pick) 13%, transparent); }
+  .libPath { flex: 1; min-width: 0; font-size: var(--fs-sm); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .libTag { flex: none; font-size: var(--fs-xs); padding: 2px 8px; border-radius: 999px; color: var(--pick); background: color-mix(in srgb, var(--pick) 13%, transparent); }
   .libTag.warn { color: var(--star); background: color-mix(in srgb, var(--star) 13%, transparent); }
 
-  .select { height: 28px; padding: 0 8px; font-size: 12.5px; min-width: 190px; }
-  kbd { margin-left: 4px; padding: 0 5px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-panel); font-size: 10.5px; }
+  .select { height: 28px; padding: 0 8px; font-size: var(--fs-md); min-width: 190px; }
+  kbd { margin-left: 4px; padding: 0 5px; border-radius: var(--radius-xs); border: 1px solid var(--border); background: var(--bg-panel); font-size: var(--fs-xs); }
 
   /* Narrow windows: the sidebar becomes a row of tabs above the content. */
   @media (max-width: 760px) {

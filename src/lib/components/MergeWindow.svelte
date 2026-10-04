@@ -139,7 +139,7 @@
   {/key}
 {:else if view === "progress" && st && st.state !== "idle"}
   <main class="prog" aria-live="polite">
-    <header>
+    <header data-tauri-drag-region>
       <h2>Merge videos</h2>
       <span class="grow"></span>
       <button class="x" onclick={() => void closeThisWindow()} title={running ? "Close the window; the merge keeps going" : "Close"} aria-label="Close">✕</button>
@@ -209,7 +209,7 @@
   </main>
 {:else if view === "empty"}
   <main class="prog">
-    <header><h2>Merge videos</h2><span class="grow"></span><button class="x" onclick={() => void closeThisWindow()} aria-label="Close">✕</button></header>
+    <header data-tauri-drag-region><h2>Merge videos</h2><span class="grow"></span><button class="x" onclick={() => void closeThisWindow()} aria-label="Close">✕</button></header>
     <section class="card">
       <h3>Nothing to merge yet</h3>
       <p class="hint">Select the clips in the library, right-click and choose <b>Merge N videos into one…</b></p>
@@ -236,9 +236,9 @@
     padding: 12px 18px;
     border-bottom: 1px solid var(--border-soft);
   }
-  h2 { margin: 0; font-size: 17px; letter-spacing: -0.015em; }
+  h2 { margin: 0; font-size: var(--fs-xl); letter-spacing: -0.015em; }
   .grow { flex: 1; }
-  .x { width: 30px; height: 30px; border-radius: 7px; color: var(--text-dim); font-size: 13px; }
+  .x { width: 30px; height: 30px; border-radius: var(--radius-sm); color: var(--text-dim); font-size: var(--fs-md); }
   .x:hover { background: var(--bg-hover); color: var(--text); }
   .loading { margin: auto; color: var(--text-faint); }
   .card {
@@ -246,7 +246,7 @@
     margin: auto;
     padding: 28px 30px 24px;
     border: 1px solid var(--border-soft);
-    border-radius: 16px;
+    border-radius: var(--radius-xl);
     background: color-mix(in srgb, var(--bg-elev) 55%, transparent);
     box-shadow: var(--shadow-soft);
     text-align: center;
@@ -257,8 +257,8 @@
     width: 48px;
     height: 48px;
     border-radius: 50%;
-    font-size: 22px;
-    font-weight: 700;
+    font-size: var(--fs-xl);
+    font-weight: var(--fw-semibold);
     color: var(--accent);
     background: color-mix(in srgb, var(--accent) 14%, transparent);
   }
@@ -266,9 +266,9 @@
   .card.ok .icon { color: var(--pick); background: color-mix(in srgb, var(--pick) 16%, transparent); }
   .card.bad .icon { color: var(--reject); background: color-mix(in srgb, var(--reject) 14%, transparent); }
   .card.paused .icon { color: var(--star); background: color-mix(in srgb, var(--star) 14%, transparent); }
-  h3 { margin: 12px 0 4px; font-size: 17px; }
-  .file { margin: 0; font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .where { margin: 4px 0 18px; color: var(--text-dim); font-size: 12.5px; }
+  h3 { margin: 12px 0 4px; font-size: var(--fs-xl); }
+  .file { margin: 0; font-size: var(--fs-md); font-weight: var(--fw-semibold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .where { margin: 4px 0 18px; color: var(--text-dim); font-size: var(--fs-md); }
   .link { color: var(--accent); padding: 0; font-size: inherit; }
   .link:hover { text-decoration: underline; }
   .bar { height: 8px; border-radius: 999px; background: color-mix(in srgb, var(--text-faint) 20%, transparent); overflow: hidden; }
@@ -281,16 +281,16 @@
     gap: 6px 12px;
     margin: 10px 0 18px;
     color: var(--text-dim);
-    font-size: 12.5px;
+    font-size: var(--fs-md);
     font-variant-numeric: tabular-nums;
     text-align: left;
   }
   .stats.done { justify-content: center; margin: 0 0 10px; }
-  .stats .pct { font-weight: 700; color: var(--text); }
-  .stats b { font-weight: 600; color: var(--text); }
+  .stats .pct { font-weight: var(--fw-semibold); color: var(--text); }
+  .stats b { font-weight: var(--fw-semibold); color: var(--text); }
   .dim { color: var(--text-faint); }
   .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; }
-  .hint { margin: 14px 0 0; color: var(--text-faint); font-size: 12px; line-height: 1.55; }
-  .err { margin: 6px 0 0; color: var(--reject); font-size: 13px; line-height: 1.55; }
-  .notice { margin: 14px 0 0; padding: 8px 10px; border-radius: 8px; color: var(--text); background: color-mix(in srgb, var(--star) 14%, transparent); font-size: 12.5px; }
+  .hint { margin: 14px 0 0; color: var(--text-faint); font-size: var(--fs-sm); line-height: 1.55; }
+  .err { margin: 6px 0 0; color: var(--reject); font-size: var(--fs-md); line-height: 1.55; }
+  .notice { margin: 14px 0 0; padding: 8px 10px; border-radius: var(--radius-sm); color: var(--text); background: color-mix(in srgb, var(--star) 14%, transparent); font-size: var(--fs-md); }
 </style>

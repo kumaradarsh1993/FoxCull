@@ -1,5 +1,26 @@
 # Agent Handover: FoxCull
 
+## 2026-10-04 (late night) — redesign part 1: foundations (nightly.10)
+
+Ledger: `docs/changes/2026-10-04-design-foundations.md`. Audit and plan:
+`docs/UX-AUDIT-2026-10.md` (artifact with live theme previews linked there).
+Parts 2 (library, nightly.11) and 3 (Focus/Details/Merge/Reel, nightly.12)
+follow; the owner reviews after all three.
+
+- **Use the tokens:** `--fs-xs/sm/md/lg/xl` (11/12/13/15/20),
+  `--fw-regular/medium/semibold`, `--radius-xs/sm/md/xl` (6/8/12/16),
+  `--control-h*`, `--dur-*`. Don't write literal px font sizes or radii again.
+- Themes live in `app.css` as `[data-theme]` blocks; accents as
+  `[data-tone][data-accent]`; `+layout.svelte` stamps them (and resolves
+  "system"). Adding a theme = a block there + a tile in `SettingsSheet`.
+- Menu icons: `src/lib/icons.ts` maps the glyph names call sites already use
+  to SVG. Add a glyph there when a menu needs a new icon.
+- Mac windows use the Overlay title bar; keep the top bars' left padding
+  (`:root[data-platform="mac"]` rules at the end of `app.css`) clear of the
+  traffic lights, and mark new top bars `data-tauri-drag-region`.
+- `UpdatePanel.svelte` is shared byte-for-byte with three other apps: no
+  token sweep there.
+
 ## 2026-10-04 (end of day) — state of play, for whoever picks this up next
 
 **Start here, then read the dated sections below it.** This one is written so a

@@ -1,25 +1,24 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
-## The Edit window, redesigned
+## Redesign, part 1 of 3: themes, type and the Mac window
 
-Same editing, a cleaner and more modern window.
+The first of three redesign builds. Each one can be rolled back on its own.
 
-- **Top bar:** the output shape is one row of buttons, each with a little
-  picture of the shape (Original, 16:9, 1:1, 9:16, Mobile). Icons show or
-  hide the timeline and the Look panel. **Export** is the one bright button.
-- **Under the picture:** the time to a hundredth of a second, buttons for
-  start, one frame back, play, one frame forward and end, and a bar showing
-  where your clips are that you can drag to scrub. **←** and **→** step one
-  frame; **Home** and **End** jump to the ends.
-- **Timeline:** clips show their own frames, so you can see what's where.
-  Track names stay at the left as you scroll, the time ruler spaces itself
-  sensibly at any zoom, and the view follows the playhead as it plays. The
-  toolbar has **Split**, **Snap**, **Music** (add a song), zoom with **Fit**,
-  and **Clear**.
-- **Look panel:** presets are now pictures of *your* clip with each look
-  applied, with buttons along the top to show one group at a time.
-- **New Clip tab:** the selected clip's in and out times (type them or set
-  them at the playhead), its framing sliders for cropped shapes, and its
-  details. These were hidden before.
-- Works in every theme, including Daylight.
+- **Six new themes:** Graphite (the new default: true neutral, so nothing tints your
+  photos), Studio Grey (Lightroom-style mid grey for judging exposure), Midnight, Amber
+  Night, Daylight and Paper.
+  - **Match system** follows your Mac's or PC's light/dark switch.
+  - Every theme is readable: even the faintest text now meets the contrast standard.
+  - Your current theme carries over: Studio becomes Graphite.
+- **Accent colour:** pick one in Settings → Appearance (blue, indigo, teal, fox orange,
+  rose or graphite). Green and red stay reserved for picks and rejects.
+- **Behind the pictures:** the grey around tiles and around the picture in Focus can be
+  black, the theme's dark, 18% grey (for judging exposure) or light.
+- **One type scale and one set of shapes:** text is never smaller than 11 px, there are
+  three weights, and corners come in four sizes, so every screen feels like one app.
+- **Icons in menus** are now clean line icons instead of emoji and symbols, and look the
+  same on Mac and Windows.
+- **On the Mac, the title bar is gone:** the window buttons sit inside the top bar, as in
+  current Mac apps, and the bar drags the window.
+- **The keyboard guide shows Mac keys** (⌘ ⇧ ⌃) on a Mac.

@@ -85,6 +85,7 @@ codesign --verify --deep --strict --verbose=2 /Applications/FoxCull.app
 |---|---|
 | `docs/PROJECT-LOG.md` | **Start here if you are new.** Append-only, plain-language story of how the app evolved: what the owner asked for, what broke, what was decided and why. Not a diff — that's `docs/changes/`. |
 | `CLAUDE_CODE_HANDOVER.md` | **Authoritative current state of the world.** Newest dated section first. Its "end of day" sections also carry the owner's working preferences and the releases table, so a new machine has continuity without local Claude memory. |
+| `docs/UX-AUDIT-2026-10.md` | The October 2026 UI/UX audit: measured problems, the six themes, the design-system numbers (type, radii, sizes, motion) and every finding with the nightly that addressed it. Read before changing how anything looks. |
 | `docs/TEST-PLAN-2026-10-04.md` | The owner's checklist for the nightlies of 2026-10-04 (.3–.9), the decisions waiting on them, and what has never been verified. Act on the owner's results first. |
 | `BACKLOG.md` | Prioritized P0–P3 worklist (from the 2026-07 audit). Do P0s next. |
 | `docs/AUDIT-2026-07.md` | Full independent audit writeup (perf/memory/security/Mac). |

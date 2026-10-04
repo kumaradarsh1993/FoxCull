@@ -166,10 +166,19 @@ export function installLayoutAudit() {
       await sleep(250);
     };
     const click = (t: string) => () => btn(t)!.click();
-    const viaSettings = (t: string) => async () => {
-      btn("Settings")!.click();
+    // Settings is one sheet (2026-10-04): open it on a section, or on a page
+    // reached from a row (Excluded folders, Game controller).
+    const navTo = (section: string, row?: string) => async () => {
+      if (!document.querySelector(".sheet")) (document.querySelector(".gear") as HTMLElement).click();
       await sleep(250);
-      btn(t)!.click();
+      ([...document.querySelectorAll(".sheet .navItem")].find((b) => b.textContent?.includes(section)) as HTMLElement).click();
+      await sleep(150);
+      if (row) ([...document.querySelectorAll(".sheet .srow.link")].find((b) => b.textContent?.includes(row)) as HTMLElement).click();
+    };
+    const closeSheet = async () => {
+      key("Escape");
+      await sleep(80);
+      if (document.querySelector(".sheet")) key("Escape");
     };
     btn("Grid")?.click();
     await sleep(600);
@@ -205,7 +214,6 @@ export function installLayoutAudit() {
     await probe("menu:cast", () => (document.querySelector(".castBtn") as HTMLElement).click(), ".castMenu", () =>
       (document.querySelector(".castBtn") as HTMLElement).click(),
     );
-    await probe("menu:settings", click("Settings"), ".pop", click("Settings"));
     const cell = document.querySelector(".cell");
     await probe(
       "menu:item-context",
@@ -221,9 +229,11 @@ export function installLayoutAudit() {
       () => key("Escape"),
     );
     await probe("dialog:shortcuts", () => key("?"), ".kbGuide", () => key("Escape"));
-    await probe("dialog:about", viaSettings("What you're running"), ".aboutBox", () => key("Escape"));
-    await probe("dialog:controller", viaSettings("Pair a PS5"), ".panel", () => key("Escape"));
-    await probe("dialog:excludes", viaSettings("Folders FoxCull never scans"), ".panel", () => key("Escape"));
+    for (const sec of ["Appearance", "Playback", "Speed", "Files", "Controls", "About"]) {
+      await probe(`settings:${sec.toLowerCase()}`, navTo(sec), ".sheet", closeSheet);
+    }
+    await probe("settings:excludes", navTo("Files", "Excluded folders"), ".sheet", closeSheet);
+    await probe("settings:controller", navTo("Controls", "PS5"), ".sheet", closeSheet);
     btn("Edit")?.click();
     await sleep(1500);
     res.edit = audit();

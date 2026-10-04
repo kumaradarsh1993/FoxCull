@@ -4,7 +4,15 @@
 import { Store } from "@tauri-apps/plugin-store";
 import type { ScanExcludes } from "$lib/types";
 
-export type Theme = "light" | "dark" | "neutral" | "warm";
+/** Six themes (2026-10-04) plus "system", which follows the OS: Graphite at
+ *  night, Daylight by day. The old ids migrate in `init` (neutral → graphite,
+ *  dark → midnight, warm → amber, light → daylight). */
+export type Theme = "graphite" | "studio" | "midnight" | "amber" | "daylight" | "paper" | "system";
+/** "theme" = each theme's own accent. Green and red are reserved for pick and
+ *  reject, so they're never accents. */
+export type Accent = "theme" | "blue" | "indigo" | "teal" | "fox" | "rose" | "mono";
+/** What sits behind the pictures: the theme's own dark, black, 18% grey, light. */
+export type Surround = "dark" | "black" | "grey" | "light";
 export type UiScale = "compact" | "comfortable" | "distance";
 export type ViewMode = "grid" | "details" | "loupe";
 /** Where the filmstrip docks. "left" sits between the folder tree and the
@@ -23,6 +31,8 @@ export type RelatedMode = "expanded" | "collapsed";
 
 export interface AppSettings {
   theme: Theme;
+  accent: Accent;
+  surround: Surround;
   /** Whole-interface scale. Distance is intentionally large enough for an HDMI
    *  TV workflow; compact recovers canvas space on the XPS 13. */
   uiScale: UiScale;
@@ -105,7 +115,9 @@ export function defaultScanExcludes(): ScanExcludes {
 }
 
 const DEFAULTS: AppSettings = {
-  theme: "neutral",
+  theme: "graphite",
+  accent: "theme",
+  surround: "dark",
   uiScale: "comfortable",
   viewMode: "grid",
   filmstripPos: "bottom",
@@ -164,9 +176,12 @@ class Settings {
       this.store = await Store.load(FILE);
       let loaded = await this.store.get<AppSettings & { groupByMonth?: boolean }>(KEY);
       if (loaded) {
+        const OLD_THEMES: Record<string, Theme> = { neutral: "graphite", dark: "midnight", warm: "amber", light: "daylight" };
+        const THEMES: Theme[] = ["graphite", "studio", "midnight", "amber", "daylight", "paper", "system"];
+        const rawTheme = (loaded.theme as string | undefined) ?? DEFAULTS.theme;
         const migrated: Partial<AppSettings> = {
           ...loaded,
-          theme: loaded.theme ?? DEFAULTS.theme,
+          theme: OLD_THEMES[rawTheme] ?? (THEMES.includes(rawTheme as Theme) ? (rawTheme as Theme) : DEFAULTS.theme),
           uiScale: loaded.uiScale ?? DEFAULTS.uiScale,
         };
         // Migrate the old boolean month toggle to the new granularity field.
@@ -206,6 +221,18 @@ class Settings {
       // first run / store unavailable — defaults stand
     }
     this.ready = true;
+    // Appearance follows across windows: a theme picked in the library's
+    // Settings repaints Edit, Merge and Reel at once.
+    try {
+      await this.store?.onKeyChange<AppSettings>(KEY, (v) => {
+        if (!v) return;
+        for (const k of ["theme", "accent", "surround", "uiScale"] as const) {
+          if (v[k] !== undefined && v[k] !== this.s[k]) (this.s as unknown as Record<string, unknown>)[k] = v[k];
+        }
+      });
+    } catch {
+      /* the store can't notify here (browser harness): each window keeps its own */
+    }
   }
 
   async set(patch: Partial<AppSettings>) {

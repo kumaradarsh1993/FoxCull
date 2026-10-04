@@ -261,7 +261,7 @@
     width: 100%;
     height: 24px;
     padding-left: calc(2px + var(--depth) * var(--indent));
-    border-radius: 6px;
+    border-radius: var(--radius-xs);
   }
   .trow:hover { background: color-mix(in srgb, var(--bg-hover) 65%, transparent); }
   .trow.active {
@@ -284,8 +284,8 @@
     margin-left: auto;
     padding: 1px 7px;
     border-radius: 999px;
-    font-size: 10.5px;
-    font-weight: 650;
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
     color: var(--accent-on);
     background: var(--accent);
     font-variant-numeric: tabular-nums;
@@ -308,7 +308,7 @@
     width: 16px;
     height: 24px;
     color: var(--text-faint);
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
   }
   .chev svg { transition: transform 120ms ease; }
   .chev.open svg { transform: rotate(90deg); }
@@ -325,13 +325,13 @@
     padding: 0 6px 0 2px;
     text-align: left;
     color: var(--text-dim);
-    font-size: 12.5px;
+    font-size: var(--fs-md);
   }
   .tname:hover { color: var(--text); }
   .ticon { flex: none; color: var(--text-faint); }
   .root .ticon { color: var(--text-dim); }
-  .root .tname { color: var(--text); font-weight: 560; }
-  .trow.active .tname { color: var(--text); font-weight: 600; }
+  .root .tname { color: var(--text); font-weight: var(--fw-medium); }
+  .trow.active .tname { color: var(--text); font-weight: var(--fw-semibold); }
   .trow.active .ticon { color: var(--accent); }
   .label {
     min-width: 0;
@@ -344,7 +344,7 @@
     margin-left: auto;
     padding-left: 6px;
     color: var(--text-faint);
-    font-size: 10.5px;
+    font-size: var(--fs-xs);
     font-variant-numeric: tabular-nums;
   }
 </style>

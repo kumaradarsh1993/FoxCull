@@ -999,3 +999,16 @@ latest build, alongside the decisions still theirs to make. The handover now
 also carries what used to live only in this Mac's private Claude memory (how
 the owner likes to work, how to commit and install from this machine), so
 another machine can pick the work up as it stands.
+
+## 2026-10-04 (late night) — a design system, then a redesign in three parts
+
+The owner asked for a whole-app UI and UX audit against 2026–27 standards,
+then for everything to be revisited at a professional grade, shipped as three
+nightlies so each can be undone on its own. The audit measured what had
+crept in: ten font sizes and seven weights on one screen, ten corner radii,
+faint text below the contrast standard in every theme, and hundreds of
+colours written straight into the code. Part one put a design system under
+everything: six themes that pass contrast (with an accent choice, a "match
+system" option and the photographer's 18 % grey behind the pictures), one type
+scale, one set of radii, one icon set, and on the Mac a title bar folded into
+the toolbar the way current Mac apps do it.

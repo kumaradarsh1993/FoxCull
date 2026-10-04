@@ -172,10 +172,10 @@
     gap: 8px;
     margin: 0 0 7px 2px;
     color: var(--text-faint);
-    font-size: 11.5px;
-    font-weight: 650;
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-semibold);
   }
-  .count { color: var(--text-faint); font-size: 11px; font-weight: 500; }
+  .count { color: var(--text-faint); font-size: var(--fs-xs); font-weight: var(--fw-medium); }
 
   .groups { display: flex; flex-direction: column; gap: 7px; }
   .group {
@@ -192,23 +192,23 @@
   .group.off { opacity: 0.62; }
   .group input { margin-top: 2px; accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
   .gBody { min-width: 0; }
-  .gTitle { color: var(--text); font-size: 13px; font-weight: 620; }
-  .gWhere { margin-top: 2px; color: var(--text-dim); font-size: 12px; }
+  .gTitle { color: var(--text); font-size: var(--fs-md); font-weight: var(--fw-semibold); }
+  .gWhere { margin-top: 2px; color: var(--text-dim); font-size: var(--fs-sm); }
   .names { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
   code {
     padding: 1px 6px;
-    border-radius: 5px;
+    border-radius: var(--radius-xs);
     background: color-mix(in srgb, var(--bg-hover) 70%, transparent);
     color: var(--text-dim);
     font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
-    font-size: 11px;
+    font-size: var(--fs-xs);
   }
 
   .add { display: flex; gap: 7px; }
-  .add input { flex: 1; min-width: 0; min-height: var(--control-h); padding: 5px 10px; font-size: 12.5px; user-select: text; }
-  .error { margin: 7px 0 0; color: var(--reject); font-size: 12px; }
-  .empty { margin: 10px 0 0; color: var(--text-dim); font-size: 12.5px; line-height: 1.6; }
-  .empty b { color: var(--text); font-weight: 600; }
+  .add input { flex: 1; min-width: 0; min-height: var(--control-h); padding: 5px 10px; font-size: var(--fs-md); user-select: text; }
+  .error { margin: 7px 0 0; color: var(--reject); font-size: var(--fs-sm); }
+  .empty { margin: 10px 0 0; color: var(--text-dim); font-size: var(--fs-md); line-height: 1.6; }
+  .empty b { color: var(--text); font-weight: var(--fw-semibold); }
 
   .rules { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
   .rules li {
@@ -226,13 +226,13 @@
     border-radius: 999px;
     background: color-mix(in srgb, var(--accent) 14%, transparent);
     color: var(--accent);
-    font-size: 10.5px;
-    font-weight: 650;
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
   }
   .kind.name { background: color-mix(in srgb, var(--stack) 16%, transparent); color: var(--stack); }
-  .val { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12.5px; }
-  .rm { width: 26px; height: 26px; border-radius: 6px; color: var(--text-faint); font-size: 11px; }
+  .val { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: var(--fs-md); }
+  .rm { width: 26px; height: 26px; border-radius: var(--radius-xs); color: var(--text-faint); font-size: var(--fs-xs); }
   .rm:hover { background: var(--bg-hover); color: var(--reject); }
 
-  .always { margin: 18px 0 0; color: var(--text-faint); font-size: 11.5px; line-height: 1.6; }
+  .always { margin: 18px 0 0; color: var(--text-faint); font-size: var(--fs-sm); line-height: 1.6; }
 </style>

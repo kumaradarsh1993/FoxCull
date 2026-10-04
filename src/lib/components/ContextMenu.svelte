@@ -1,4 +1,5 @@
 <script lang="ts" module>
+  import { glyphSvg } from "$lib/icons";
   // A single menu entry: either a divider or an actionable row.
   export type MenuEntry =
     | { separator: true }
@@ -82,7 +83,7 @@
         role="menuitem"
         onclick={() => choose(entry)}
       >
-        <span class="cm-ic">{entry.icon ?? ""}</span>
+        <span class="cm-ic">{#if glyphSvg(entry.icon)}{@html glyphSvg(entry.icon)}{:else}{entry.icon ?? ""}{/if}</span>
         <span class="cm-lbl">{entry.label}</span>
         {#if entry.on}<span class="cm-check">✓</span>{/if}
       </button>
@@ -109,7 +110,7 @@
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow);
-    font-size: 12.5px;
+    font-size: var(--fs-md);
     user-select: none;
     backdrop-filter: blur(22px) saturate(1.1);
   }
@@ -121,7 +122,7 @@
     text-align: left;
     min-height: 31px;
     padding: 7px 10px;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     color: var(--text);
     line-height: 1.2;
   }
@@ -136,7 +137,10 @@
     background: color-mix(in srgb, var(--reject) 22%, var(--bg-hover));
   }
   .cm-ic {
+    display: grid;
+    place-items: center;
     width: 16px;
+    height: 16px;
     text-align: center;
     color: var(--text-dim);
     flex: 0 0 auto;
@@ -152,7 +156,7 @@
   }
   .cm-check {
     color: var(--accent);
-    font-size: 11px;
+    font-size: var(--fs-xs);
   }
   .cm-sep {
     height: 1px;

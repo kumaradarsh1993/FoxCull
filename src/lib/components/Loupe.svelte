@@ -1434,7 +1434,7 @@
   }
   .empty {
     color: var(--text-faint);
-    font-size: 14px;
+    font-size: var(--fs-lg);
   }
 
   .vwrap {
@@ -1590,11 +1590,11 @@
   .playrow .pp {
     width: 34px;
     height: 30px;
-    border-radius: 9px;
+    border-radius: var(--radius-sm);
     border: 1px solid rgba(255,255,255,.18);
     background: rgba(20,24,29,.78);
     color: var(--text);
-    font-size: 13px;
+    font-size: var(--fs-md);
     line-height: 1;
   }
   .playrow .pp:hover {
@@ -1618,15 +1618,15 @@
      pill is gone, and it has to stay legible over an arbitrary bright frame —
      hence the shadow and the weight on the current position. */
   .playrow .time {
-    font-size: 13px;
+    font-size: var(--fs-md);
     color: var(--text-dim);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
     text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
   }
   .playrow .time b {
-    font-size: 14px;
-    font-weight: 650;
+    font-size: var(--fs-lg);
+    font-weight: var(--fw-semibold);
     color: #fff;
   }
   .playrow .time .sep {
@@ -1646,10 +1646,10 @@
   .miniToggle {
     padding: 3px 7px;
     border: 1px solid rgba(255,255,255,.16);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     background: rgba(20,24,29,.72);
     color: rgba(255,255,255,.78);
-    font-size: 11.5px;
+    font-size: var(--fs-sm);
     white-space: nowrap;
   }
   .miniToggle.on {
@@ -1677,7 +1677,7 @@
     top: -2px;
     bottom: -2px;
     min-width: 3px;
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     background: color-mix(in srgb, var(--pick) 62%, transparent);
     box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.3);
     cursor: grab;
@@ -1696,8 +1696,8 @@
     left: 4px;
     top: 50%;
     transform: translateY(-50%);
-    font-size: 9.5px;
-    font-weight: 800;
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
     color: rgba(0, 0, 0, 0.7);
     pointer-events: none;
   }
@@ -1727,8 +1727,8 @@
   .mark::after {
     position: absolute;
     top: -12px;
-    font-size: 11px;
-    font-weight: 800;
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
     color: #fff;
     text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
   }
@@ -1753,13 +1753,13 @@
     border-radius: 999px;
     background: rgba(8, 10, 13, 0.78);
     color: #fff;
-    font-size: 12.5px;
+    font-size: var(--fs-md);
     pointer-events: none;
     white-space: nowrap;
     box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
   }
   .grip { cursor: grab; user-select: none; }
-  .cthint { margin: 8px 0 0; color: rgba(255, 255, 255, 0.55); font-size: 11.5px; line-height: 1.4; }
+  .cthint { margin: 8px 0 0; color: rgba(255, 255, 255, 0.55); font-size: var(--fs-sm); line-height: 1.4; }
   .cursor {
     position: absolute;
     top: -5px;
@@ -1775,7 +1775,7 @@
     position: absolute;
     bottom: calc(100% + 9px);
     transform: translateX(-50%);
-    border-radius: 7px;
+    border-radius: var(--radius-sm);
     border: 1px solid rgba(255, 255, 255, 0.18);
     background-color: #000;
     background-repeat: no-repeat;
@@ -1798,7 +1798,7 @@
     right: 0;
     bottom: 0;
     text-align: center;
-    font-size: 11px;
+    font-size: var(--fs-xs);
     line-height: 1.5;
     color: #fff;
     background: rgba(0, 0, 0, 0.55);
@@ -1810,7 +1810,7 @@
     margin-top: 10px;
     padding: 10px 12px;
     border: 1px solid rgba(255,255,255,.14);
-    border-radius: 13px;
+    border-radius: var(--radius-md);
     background: rgba(18,22,27,.78);
     box-shadow: 0 12px 32px rgba(0,0,0,.28);
     backdrop-filter: blur(18px);
@@ -1827,18 +1827,18 @@
   }
   .ctrls button {
     padding: 4px 10px;
-    border-radius: 7px;
+    border-radius: var(--radius-sm);
     border: 1px solid var(--border);
     background: var(--bg-elev);
     color: var(--text);
-    font-size: 12.5px;
+    font-size: var(--fs-md);
   }
   .ctrls button:hover {
     background: var(--bg-hover);
   }
   .len {
     color: var(--text-dim);
-    font-size: 12px;
+    font-size: var(--fs-sm);
   }
   .spacer {
     flex: 1;
@@ -1847,7 +1847,7 @@
     background: var(--accent);
     border-color: var(--accent);
     color: var(--accent-on);
-    font-weight: 600;
+    font-weight: var(--fw-semibold);
   }
   .ctrls .exp.secondary {
     background: color-mix(in srgb, var(--pick) 22%, var(--bg-elev));
@@ -1877,7 +1877,7 @@
     border: none;
     background: transparent;
     color: var(--text);
-    font-size: 11.5px;
+    font-size: var(--fs-sm);
     white-space: nowrap;
   }
   .segLabel strong {
@@ -1902,7 +1902,7 @@
   }
   .note {
     margin-top: 6px;
-    font-size: 12px;
+    font-size: var(--fs-sm);
     color: var(--text-dim);
   }
   .infoOverlay {
@@ -1913,10 +1913,10 @@
     max-width: min(560px, calc(100% - 44px));
     padding: 11px 13px;
     border: 1px solid rgba(255,255,255,.13);
-    border-radius: 12px;
+    border-radius: var(--radius-md);
     background: rgba(8, 10, 13, 0.64);
     color: #fff;
-    font-size: 14px;
+    font-size: var(--fs-lg);
     line-height: 1.45;
     box-shadow: 0 16px 38px rgba(0, 0, 0, 0.40);
     backdrop-filter: blur(14px) saturate(.8);
@@ -1934,8 +1934,8 @@
   }
   .vfail .vt {
     color: var(--text-dim);
-    font-weight: 600;
-    font-size: 15px;
+    font-weight: var(--fw-semibold);
+    font-size: var(--fs-lg);
     margin: 0;
   }
   .vfail p {
@@ -1945,18 +1945,18 @@
   /* The path a missing entry still points at — long, so it wraps and shrinks. */
   .vfail .vpath {
     font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 11.5px;
+    font-size: var(--fs-sm);
     color: var(--text-faint);
     word-break: break-all;
   }
   .obtn {
     margin-top: 4px;
     padding: 9px 16px;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     background: var(--accent);
     color: var(--accent-on);
-    font-size: 13.5px;
-    font-weight: 600;
+    font-size: var(--fs-md);
+    font-weight: var(--fw-semibold);
   }
   .obtn:hover {
     filter: brightness(1.06);
@@ -1969,11 +1969,11 @@
     background: transparent;
     border: 1px solid var(--border);
     color: var(--text-dim);
-    font-weight: 500;
+    font-weight: var(--fw-medium);
   }
   .vfail .subnote {
     margin: 0;
-    font-size: 12px;
+    font-size: var(--fs-sm);
     color: var(--text-faint);
     line-height: 1.5;
   }
@@ -1991,7 +1991,7 @@
     border-radius: 999px;
     background: rgba(0, 0, 0, 0.55);
     color: rgba(255, 255, 255, 0.85);
-    font-size: 11px;
+    font-size: var(--fs-xs);
     pointer-events: auto;
     z-index: 5;
   }
@@ -2005,7 +2005,7 @@
     border-radius: 999px;
     background: rgba(0, 0, 0, 0.55);
     color: rgba(255, 255, 255, 0.85);
-    font-size: 11px;
+    font-size: var(--fs-xs);
     font-variant-numeric: tabular-nums;
     pointer-events: auto;
     z-index: 5;

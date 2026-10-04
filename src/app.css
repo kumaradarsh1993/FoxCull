@@ -1,150 +1,377 @@
-/* FoxCull 2026 visual system.
+/* FoxCull visual system, rebuilt 2026-10-04 (docs/changes/2026-10-04-design-foundations.md).
    Media stays on a spectrally neutral stage; hierarchy comes from luminance,
-   depth and spacing rather than colour that could bias image judgement. */
-:root,
-:root[data-theme="light"] {
-  color-scheme: light;
-  --bg: #edf1f5;
-  --bg-panel: #f7f9fb;
-  --bg-elev: #ffffff;
-  --bg-hover: #e7edf3;
-  --viewport-bg: #d9e0e7;
-  --border: #cbd4dd;
-  --border-soft: rgba(38, 53, 68, 0.10);
-  --border-strong: #aebbc7;
-  --text: #111923;
-  --text-dim: #4f5e6d;
-  --text-faint: #7a8997;
-  --accent: #2d7fc2;
-  --accent-hover: #3b8fd2;
-  --accent-dim: #d7e9f8;
-  --accent-on: #ffffff;
-  --select: #2389d7;
-  --stack: #b87a1d;
-  --stack-strong: #d09025;
-  --reject: #d4475e;
-  --pick: #22865f;
-  --star: #b98216;
-  --shadow: 0 12px 38px rgba(20, 34, 48, 0.18), 0 2px 8px rgba(20, 34, 48, 0.10);
-  --shadow-soft: 0 1px 2px rgba(20, 34, 48, 0.08), 0 6px 18px rgba(20, 34, 48, 0.08);
+   depth and spacing rather than colour that could bias image judgement.
 
-  --label-red: #db4b61;
-  --label-green: #248962;
-  --label-yellow: #bf8614;
-  --label-blue: #267bc5;
-  --label-purple: #7358c7;
+   Six themes (data-theme), each passing WCAG AA for every text role on its
+   panels and raised cards. +layout.svelte resolves "Match system" to Graphite
+   or Daylight and stamps data-tone (dark/light) so an accent (data-accent)
+   can pick the right shade. Pick green, reject red and star amber are fixed
+   per theme and never offered as accents. data-surround sets the colour
+   behind the pictures (--viewport-bg). */
+
+:root {
+  color-scheme: dark;
+  --bg: #111214;
+  --bg-panel: #17181b;
+  --bg-elev: #1f2024;
+  --bg-hover: #28292e;
+  --viewport-bg: #0c0d0e;
+  --border: #2c2e33;
+  --border-soft: rgba(236, 236, 239, 0.07);
+  --border-strong: #3d4047;
+  --text: #ececef;
+  --text-dim: #b3b5bb;
+  --text-faint: #9a9da4;
+  --accent: #82abff;
+  --accent-hover: #9bbcff;
+  --accent-dim: #1d2c4d;
+  --accent-on: #0b1530;
+  --select: #82abff;
+  --stack: #d29a45;
+  --stack-strong: #e9b25e;
+  --reject: #ff6b6b;
+  --pick: #4cc38a;
+  --star: #f2c14e;
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.5), 0 3px 12px rgba(0, 0, 0, 0.34);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.34), 0 8px 22px rgba(0, 0, 0, 0.2);
+  --label-red: #ff6b6b;
+  --label-green: #4cc38a;
+  --label-yellow: #f2c14e;
+  --label-blue: #6aa8ff;
+  --label-purple: #a98bff;
 }
 
-:root[data-theme="dark"] {
+:root[data-theme="graphite"] {
   color-scheme: dark;
-  --bg: #0d1015;
-  --bg-panel: #141920;
-  --bg-elev: #1d242d;
-  --bg-hover: #27313c;
-  --viewport-bg: #07090c;
-  --border: #2d3742;
+  --bg: #111214;
+  --bg-panel: #17181b;
+  --bg-elev: #1f2024;
+  --bg-hover: #28292e;
+  --viewport-bg: #0c0d0e;
+  --border: #2c2e33;
+  --border-soft: rgba(236, 236, 239, 0.07);
+  --border-strong: #3d4047;
+  --text: #ececef;
+  --text-dim: #b3b5bb;
+  --text-faint: #9a9da4;
+  --accent: #82abff;
+  --accent-hover: #9bbcff;
+  --accent-dim: #1d2c4d;
+  --accent-on: #0b1530;
+  --select: #82abff;
+  --stack: #d29a45;
+  --stack-strong: #e9b25e;
+  --reject: #ff6b6b;
+  --pick: #4cc38a;
+  --star: #f2c14e;
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.5), 0 3px 12px rgba(0, 0, 0, 0.34);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.34), 0 8px 22px rgba(0, 0, 0, 0.2);
+  --label-red: #ff6b6b;
+  --label-green: #4cc38a;
+  --label-yellow: #f2c14e;
+  --label-blue: #6aa8ff;
+  --label-purple: #a98bff;
+}
+
+:root[data-theme="studio"] {
+  color-scheme: dark;
+  --bg: #2b2c2f;
+  --bg-panel: #333438;
+  --bg-elev: #3d3e43;
+  --bg-hover: #47484e;
+  --viewport-bg: #28292b;
+  --border: #4b4d53;
+  --border-soft: rgba(255, 255, 255, 0.08);
+  --border-strong: #5c5f66;
+  --text: #f4f4f5;
+  --text-dim: #d6d7da;
+  --text-faint: #b9bbc0;
+  --accent: #9dbdff;
+  --accent-hover: #b3cbff;
+  --accent-dim: #2c3a56;
+  --accent-on: #0d1a33;
+  --select: #9dbdff;
+  --stack: #e0a94f;
+  --stack-strong: #f0bf6a;
+  --reject: #ff8f8f;
+  --pick: #6fdba8;
+  --star: #f5c95c;
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.5), 0 3px 12px rgba(0, 0, 0, 0.34);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.34), 0 8px 22px rgba(0, 0, 0, 0.2);
+  --label-red: #ff8f8f;
+  --label-green: #6fdba8;
+  --label-yellow: #f5c95c;
+  --label-blue: #8fb8ff;
+  --label-purple: #bca6ff;
+}
+
+:root[data-theme="midnight"] {
+  color-scheme: dark;
+  --bg: #07080b;
+  --bg-panel: #0d0f14;
+  --bg-elev: #151821;
+  --bg-hover: #1d2230;
+  --viewport-bg: #030406;
+  --border: #222736;
   --border-soft: rgba(225, 235, 245, 0.07);
-  --border-strong: #465462;
-  --text: #f4f7fa;
-  --text-dim: #b5c0cb;
-  --text-faint: #758392;
-  --accent: #63b7f2;
-  --accent-hover: #79c4f7;
-  --accent-dim: #193b55;
-  --accent-on: #06131d;
-  --select: #62bdff;
+  --border-strong: #323a4d;
+  --text: #eef2f8;
+  --text-dim: #aeb7c6;
+  --text-faint: #8d98ab;
+  --accent: #5aaeff;
+  --accent-hover: #79bdff;
+  --accent-dim: #12304d;
+  --accent-on: #021325;
+  --select: #5aaeff;
   --stack: #d5a34b;
   --stack-strong: #ecc16b;
-  --reject: #ff637d;
-  --pick: #5bd39a;
-  --star: #f2bd52;
-  --shadow: 0 18px 54px rgba(0, 0, 0, 0.58), 0 3px 12px rgba(0, 0, 0, 0.45);
-  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.45), 0 8px 24px rgba(0, 0, 0, 0.24);
-
-  --label-red: #ff637d;
-  --label-green: #5bd39a;
-  --label-yellow: #f2bd52;
-  --label-blue: #60b5f4;
+  --reject: #ff6b86;
+  --pick: #43d19a;
+  --star: #f5c451;
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.5), 0 3px 12px rgba(0, 0, 0, 0.34);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.34), 0 8px 22px rgba(0, 0, 0, 0.2);
+  --label-red: #ff6b86;
+  --label-green: #43d19a;
+  --label-yellow: #f5c451;
+  --label-blue: #5aaeff;
   --label-purple: #a88cf2;
 }
 
-/* Studio is the default: restrained pro-app chrome around a black media stage. */
-:root[data-theme="neutral"] {
+:root[data-theme="amber"] {
   color-scheme: dark;
-  --bg: #17191d;
-  --bg-panel: #202329;
-  --bg-elev: #292d34;
-  --bg-hover: #343a43;
-  --viewport-bg: #0c0e11;
-  --border: #3a4049;
-  --border-soft: rgba(239, 244, 249, 0.07);
-  --border-strong: #525b66;
-  --text: #f3f5f7;
-  --text-dim: #bec5cc;
-  --text-faint: #858e98;
-  --accent: #78b9ef;
-  --accent-hover: #8bc7f5;
-  --accent-dim: #29465e;
-  --accent-on: #08131c;
-  --select: #6ac0ff;
-  --stack: #cf9b43;
-  --stack-strong: #e8b65d;
-  --reject: #ed6577;
-  --pick: #70c997;
-  --star: #e4b350;
-  --shadow: 0 18px 50px rgba(0, 0, 0, 0.48), 0 3px 12px rgba(0, 0, 0, 0.34);
-  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.34), 0 8px 22px rgba(0, 0, 0, 0.20);
-
-  --label-red: #ed6577;
-  --label-green: #70c997;
-  --label-yellow: #e4b350;
-  --label-blue: #78b9ef;
-  --label-purple: #ad98df;
-}
-
-:root[data-theme="warm"] {
-  color-scheme: dark;
-  --bg: #1b1917;
-  --bg-panel: #24211e;
-  --bg-elev: #302c27;
-  --bg-hover: #3b3630;
-  --viewport-bg: #0f0e0c;
-  --border: #443e37;
+  --bg: #17130f;
+  --bg-panel: #1e1914;
+  --bg-elev: #28221b;
+  --bg-hover: #322a21;
+  --viewport-bg: #0e0b08;
+  --border: #3b3127;
   --border-soft: rgba(255, 244, 229, 0.07);
-  --border-strong: #5e554a;
-  --text: #f6f1e9;
-  --text-dim: #cfc5b8;
-  --text-faint: #918679;
-  --accent: #d8ad68;
-  --accent-hover: #e7bf7d;
-  --accent-dim: #57462e;
-  --accent-on: #171006;
-  --select: #75b9ed;
+  --border-strong: #54473a;
+  --text: #f4ece0;
+  --text-dim: #d3c6b3;
+  --text-faint: #ab9c87;
+  --accent: #e2ab5c;
+  --accent-hover: #ecbd77;
+  --accent-dim: #4a3820;
+  --accent-on: #1b1206;
+  --select: #8bbce0;
   --stack: #cf8d42;
   --stack-strong: #e7a958;
-  --reject: #eb6e78;
-  --pick: #8ac58a;
-  --star: #e6ba62;
-  --shadow: 0 18px 50px rgba(0, 0, 0, 0.50), 0 3px 12px rgba(0, 0, 0, 0.34);
-  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.34), 0 8px 22px rgba(0, 0, 0, 0.20);
-
-  --label-red: #eb6e78;
-  --label-green: #8ac58a;
-  --label-yellow: #e6ba62;
+  --reject: #f2857a;
+  --pick: #a3d282;
+  --star: #f0c36a;
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.5), 0 3px 12px rgba(0, 0, 0, 0.34);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.34), 0 8px 22px rgba(0, 0, 0, 0.2);
+  --label-red: #f2857a;
+  --label-green: #a3d282;
+  --label-yellow: #f0c36a;
   --label-blue: #8bbce0;
   --label-purple: #c1a6d6;
 }
 
+:root[data-theme="daylight"] {
+  color-scheme: light;
+  --bg: #eceef1;
+  --bg-panel: #f6f7f9;
+  --bg-elev: #ffffff;
+  --bg-hover: #e6e9ee;
+  --viewport-bg: #dde1e6;
+  --border: #d3d8df;
+  --border-soft: rgba(17, 20, 24, 0.08);
+  --border-strong: #b4bcc6;
+  --text: #111418;
+  --text-dim: #3f4853;
+  --text-faint: #596270;
+  --accent: #1b63c0;
+  --accent-hover: #2a72cf;
+  --accent-dim: #dbe8f8;
+  --accent-on: #ffffff;
+  --select: #1b63c0;
+  --stack: #a0640f;
+  --stack-strong: #b8761a;
+  --reject: #bd2338;
+  --pick: #13703f;
+  --star: #8f5b00;
+  --shadow: 0 12px 38px rgba(20, 28, 38, 0.16), 0 2px 8px rgba(20, 28, 38, 0.08);
+  --shadow-soft: 0 1px 2px rgba(20, 28, 38, 0.07), 0 6px 18px rgba(20, 28, 38, 0.07);
+  --label-red: #d03b50;
+  --label-green: #1f8a55;
+  --label-yellow: #b98216;
+  --label-blue: #2672c2;
+  --label-purple: #6d55c4;
+}
+
+:root[data-theme="paper"] {
+  color-scheme: light;
+  --bg: #efebe4;
+  --bg-panel: #f7f4ee;
+  --bg-elev: #fffdf9;
+  --bg-hover: #ebe5db;
+  --viewport-bg: #e4ded3;
+  --border: #dcd4c7;
+  --border-soft: rgba(29, 26, 22, 0.08);
+  --border-strong: #c4b9a8;
+  --text: #1d1a16;
+  --text-dim: #4a443b;
+  --text-faint: #625a4f;
+  --accent: #a84a22;
+  --accent-hover: #b95a30;
+  --accent-dim: #f3e0d4;
+  --accent-on: #ffffff;
+  --select: #a84a22;
+  --stack: #9a5d14;
+  --stack-strong: #b06d1c;
+  --reject: #ad2c2a;
+  --pick: #286c41;
+  --star: #8a5e00;
+  --shadow: 0 12px 38px rgba(20, 28, 38, 0.16), 0 2px 8px rgba(20, 28, 38, 0.08);
+  --shadow-soft: 0 1px 2px rgba(20, 28, 38, 0.07), 0 6px 18px rgba(20, 28, 38, 0.07);
+  --label-red: #c0403a;
+  --label-green: #2f7d4c;
+  --label-yellow: #a87410;
+  --label-blue: #2f6aa8;
+  --label-purple: #7051a8;
+}
+
+/* Accents. "Theme" (no attribute) keeps each theme's own. */
+
+:root[data-tone="dark"][data-accent="blue"] {
+  --accent: #82abff;
+  --accent-hover: #9bbcff;
+  --accent-dim: #1d2c4d;
+  --accent-on: #0b1530;
+  --select: #82abff;
+}
+
+:root[data-tone="light"][data-accent="blue"] {
+  --accent: #1b63c0;
+  --accent-hover: #2a72cf;
+  --accent-dim: #dbe8f8;
+  --accent-on: #ffffff;
+  --select: #1b63c0;
+}
+
+:root[data-tone="dark"][data-accent="indigo"] {
+  --accent: #a397ff;
+  --accent-hover: #b5abff;
+  --accent-dim: #2a2550;
+  --accent-on: #140f33;
+  --select: #a397ff;
+}
+
+:root[data-tone="light"][data-accent="indigo"] {
+  --accent: #5446d0;
+  --accent-hover: #6457dc;
+  --accent-dim: #e5e2fa;
+  --accent-on: #ffffff;
+  --select: #5446d0;
+}
+
+:root[data-tone="dark"][data-accent="teal"] {
+  --accent: #4fd1c5;
+  --accent-hover: #6fdcd2;
+  --accent-dim: #123a37;
+  --accent-on: #04201d;
+  --select: #4fd1c5;
+}
+
+:root[data-tone="light"][data-accent="teal"] {
+  --accent: #0b7069;
+  --accent-hover: #11837b;
+  --accent-dim: #d6eeec;
+  --accent-on: #ffffff;
+  --select: #0b7069;
+}
+
+:root[data-tone="dark"][data-accent="fox"] {
+  --accent: #ff9a5c;
+  --accent-hover: #ffad7a;
+  --accent-dim: #45281a;
+  --accent-on: #2a1206;
+  --select: #ff9a5c;
+}
+
+:root[data-tone="light"][data-accent="fox"] {
+  --accent: #a84a22;
+  --accent-hover: #b95a30;
+  --accent-dim: #f6e2d7;
+  --accent-on: #ffffff;
+  --select: #a84a22;
+}
+
+:root[data-tone="dark"][data-accent="rose"] {
+  --accent: #ff86b3;
+  --accent-hover: #ff9fc3;
+  --accent-dim: #4a1f31;
+  --accent-on: #2c0817;
+  --select: #ff86b3;
+}
+
+:root[data-tone="light"][data-accent="rose"] {
+  --accent: #b02a5e;
+  --accent-hover: #c03a6e;
+  --accent-dim: #f7dbe6;
+  --accent-on: #ffffff;
+  --select: #b02a5e;
+}
+
+:root[data-tone="dark"][data-accent="mono"] {
+  --accent: #d9dadf;
+  --accent-hover: #ececef;
+  --accent-dim: #2e3036;
+  --accent-on: #111214;
+  --select: #d9dadf;
+}
+
+:root[data-tone="light"][data-accent="mono"] {
+  --accent: #2a2d33;
+  --accent-hover: #3a3e46;
+  --accent-dim: #e2e4e8;
+  --accent-on: #ffffff;
+  --select: #2a2d33;
+}
+
+/* What sits behind the pictures (grid gaps, Focus surround). "Dark" is each
+   theme's own --viewport-bg; 18% grey is the photographer's mid grey. */
+:root[data-surround="black"] { --viewport-bg: #000000; }
+:root[data-surround="grey"] { --viewport-bg: #767676; }
+:root[data-surround="light"] { --viewport-bg: #e4e5e8; }
+
 :root {
   --tree-w: 270px;
-  --font: "Segoe UI Variable Text", "Aptos", "Inter", "Segoe UI", system-ui, sans-serif;
-  --font-display: "Segoe UI Variable Display", "Aptos Display", var(--font);
-  --radius-xs: 5px;
-  --radius-sm: 8px;
-  --radius-md: 11px;
-  --radius-lg: 15px;
-  --radius-xl: 20px;
-  --control-h: 30px;
+  /* The platform's own UI face first (SF Pro on the Mac, Segoe UI Variable on
+     Windows), so FoxCull reads as native on both, on purpose. */
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+
+  /* Type scale: five sizes, three weights. Nothing below 11 px. */
+  --fs-xs: 11px;  /* counts, times, badges, captions */
+  --fs-sm: 12px;  /* buttons, labels, secondary text */
+  --fs-md: 13px;  /* body, menus, file names (the default) */
+  --fs-lg: 15px;  /* section heads, dialog titles */
+  --fs-xl: 20px;  /* window and sheet titles */
+  --fw-regular: 400;
+  --fw-medium: 560;
+  --fw-semibold: 650;
+
+  /* Shape: four radii. */
+  --radius-xs: 6px;   /* chips, badges */
+  --radius-sm: 8px;   /* buttons, fields, tiles */
+  --radius-md: 12px;  /* cards, menus, popovers */
+  --radius-lg: 12px;
+  --radius-xl: 16px;  /* sheets and dialogs */
+
+  /* Controls: 24 chip, 28 toolbar, 32 button, 40 hero. */
+  --control-h: 32px;
+  --control-h-sm: 28px;
+  --control-h-xs: 24px;
+
+  /* Motion. */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur-menu: 160ms;
+  --dur-sheet: 220ms;
 }
 
 * { box-sizing: border-box; }
@@ -157,7 +384,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
-  font-size: 13.5px;
+  font-size: var(--fs-md);
   font-variant-numeric: tabular-nums;
   overflow: hidden;
   user-select: none;
@@ -229,8 +456,8 @@ button:disabled { cursor: not-allowed; }
   background: linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 96%, white 4%), var(--bg-elev));
   border: 1px solid var(--border);
   color: var(--text);
-  font-size: 12.5px;
-  font-weight: 560;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
   box-shadow: inset 0 1px color-mix(in srgb, white 6%, transparent);
   transition: background 110ms ease, border-color 110ms ease, color 110ms ease, transform 90ms ease, box-shadow 110ms ease;
   white-space: nowrap;
@@ -263,7 +490,7 @@ input[type="range"]::-webkit-slider-thumb { margin-top: -5px; }
   background: color-mix(in srgb, var(--accent) 10%, var(--bg-panel));
   border-bottom: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
   color: var(--text-dim);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -292,7 +519,7 @@ input[type="range"]::-webkit-slider-thumb { margin-top: -5px; }
   top: 10px;
   width: 64px;
   height: 52px;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
   background: #2a323c;
   border: 2px solid #fff;
@@ -300,7 +527,7 @@ input[type="range"]::-webkit-slider-thumb { margin-top: -5px; }
   display: grid;
   place-items: center;
   color: rgba(255, 255, 255, 0.8);
-  font-size: 16px;
+  font-size: var(--fs-lg);
 }
 .dragGhost .dgCard img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .dragGhost .dg1 { transform: translate(5px, -4px) rotate(5deg); }
@@ -315,7 +542,20 @@ input[type="range"]::-webkit-slider-thumb { margin-top: -5px; }
   border-radius: 999px;
   background: #e5484d;
   color: #fff;
-  font: 700 12px/22px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font: var(--fw-semibold) var(--fs-sm)/22px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   text-align: center;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
 }
+
+/* macOS: the title bar is folded into each window's top bar (titleBarStyle
+   Overlay; traffic lights inset at 18,21 — tauri.conf.json / tool_windows.rs).
+   The top-left of every window keeps clear of the three buttons. */
+:root[data-platform="mac"] .tree-head,
+:root[data-platform="mac"] .editTop,
+:root[data-platform="mac"] .prog > header,
+:root[data-platform="mac"] .panel[role="main"] > header,
+:root[data-platform="mac"] .reel > header {
+  padding-left: 86px;
+}
+:root[data-platform="mac"] .treeCollapsed .bar { padding-left: 124px; }
+:root[data-platform="mac"] .treeRestore { left: 84px; top: 13px; }

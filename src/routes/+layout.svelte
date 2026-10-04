@@ -23,10 +23,24 @@
     activity.init(); // start listening for backend `activity` events
   });
 
+  // "Match system" follows the OS's light/dark switch, live.
+  const darkMq = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: dark)") : null;
+  let systemDark = $state(darkMq?.matches ?? true);
+  darkMq?.addEventListener("change", (e) => (systemDark = e.matches));
+  const LIGHT_THEMES = new Set(["daylight", "paper"]);
+
   // Apply appearance choices at the document root so component-scoped styles
-  // and native-looking overlays share one visual system.
+  // and native-looking overlays share one visual system. data-tone tells the
+  // accent which shade to use; data-platform lets the chrome follow the OS.
   $effect(() => {
-    document.documentElement.setAttribute("data-theme", settings.s.theme);
+    const root = document.documentElement;
+    const t = settings.s.theme === "system" ? (systemDark ? "graphite" : "daylight") : settings.s.theme;
+    root.setAttribute("data-theme", t);
+    root.setAttribute("data-tone", LIGHT_THEMES.has(t) ? "light" : "dark");
+    if (settings.s.accent && settings.s.accent !== "theme") root.setAttribute("data-accent", settings.s.accent);
+    else root.removeAttribute("data-accent");
+    root.setAttribute("data-surround", settings.s.surround ?? "dark");
+    root.setAttribute("data-platform", /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "mac" : "other");
     document.documentElement.setAttribute("data-ui-scale", settings.s.uiScale);
     void getCurrentWebview()
       .setZoom(ZOOM[settings.s.uiScale] ?? 1)

@@ -213,12 +213,12 @@
     gap: 2px;
   }
   .stName {
-    font-size: 13px;
-    font-weight: 600;
+    font-size: var(--fs-md);
+    font-weight: var(--fw-semibold);
   }
   .stSub,
   .stLabel {
-    font-size: 12px;
+    font-size: var(--fs-sm);
     color: var(--text-dim);
   }
   .stSub {
@@ -255,7 +255,7 @@
   }
   h3 {
     margin: 0 0 6px;
-    font-size: 13.5px;
+    font-size: var(--fs-md);
   }
   /* ── pairing guide ──────────────────────────────────────────────────────
      Two cards side by side, because the two directions (to the PC, back to
@@ -273,7 +273,7 @@
   }
   .card {
     border: 1px solid var(--border-soft);
-    border-radius: 13px;
+    border-radius: var(--radius-md);
     background: color-mix(in srgb, var(--bg-elev) 82%, transparent);
     padding: 14px 16px 12px;
     box-shadow: var(--shadow-soft);
@@ -282,13 +282,13 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 13px;
-    font-weight: 650;
+    font-size: var(--fs-md);
+    font-weight: var(--fw-semibold);
     margin-bottom: 8px;
   }
   .badge {
-    font-size: 10px;
-    font-weight: 700;
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
     letter-spacing: 0.4px;
     padding: 2px 7px;
     border-radius: 999px;
@@ -306,7 +306,7 @@
   .guide ol {
     margin: 0;
     padding-left: 18px;
-    font-size: 12.5px;
+    font-size: var(--fs-md);
     line-height: 1.5;
     color: var(--text-dim);
   }
@@ -327,7 +327,7 @@
   .path {
     display: block;
     margin: 3px 0;
-    font-size: 12px;
+    font-size: var(--fs-sm);
     color: var(--text-faint);
   }
   kbd {
@@ -337,19 +337,19 @@
     text-align: center;
     border: 1px solid var(--border);
     border-bottom-width: 2px;
-    border-radius: 5px;
+    border-radius: var(--radius-xs);
     background: var(--bg-panel);
     color: var(--text);
     font: inherit;
-    font-size: 11.5px;
-    font-weight: 600;
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-semibold);
     line-height: 1.5;
   }
   .tip {
     margin: 9px 0 0;
     padding-top: 8px;
     border-top: 1px solid var(--border);
-    font-size: 12px;
+    font-size: var(--fs-sm);
     line-height: 1.5;
     color: var(--text-faint);
   }
@@ -358,7 +358,7 @@
   }
   .note {
     margin: 4px 0 8px;
-    font-size: 12px;
+    font-size: var(--fs-sm);
     color: var(--text-faint);
     line-height: 1.5;
   }
@@ -366,8 +366,8 @@
     margin-bottom: 8px;
   }
   .grpName {
-    font-size: 10.5px;
-    font-weight: 700;
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--text-faint);
@@ -381,13 +381,13 @@
   }
   .lbl {
     flex: 0 0 190px;
-    font-size: 12.5px;
+    font-size: var(--fs-md);
   }
   .btnname {
     flex: 1;
-    font-size: 12.5px;
+    font-size: var(--fs-md);
     color: var(--accent);
-    font-weight: 600;
+    font-weight: var(--fw-semibold);
   }
   .btnname.none {
     color: var(--text-faint);
@@ -402,11 +402,11 @@
   }
   .b {
     padding: 4px 10px;
-    border-radius: 7px;
+    border-radius: var(--radius-sm);
     border: 1px solid var(--border);
     background: var(--bg-elev);
     color: var(--text);
-    font-size: 12px;
+    font-size: var(--fs-sm);
   }
   .b:hover:not(:disabled) {
     background: var(--bg-hover);
@@ -428,9 +428,9 @@
     min-height: 34px;
     padding: 6px 10px;
     border: 1px solid var(--border-soft);
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     background: color-mix(in srgb, var(--bg-elev) 78%, transparent);
-    font-size: 12.5px;
+    font-size: var(--fs-md);
   }
   .tester.live {
     border-color: var(--pick);
@@ -443,7 +443,7 @@
     border-radius: 999px;
     background: var(--bg-hover);
     color: var(--accent);
-    font-weight: 600;
+    font-weight: var(--fw-semibold);
   }
   .tester .chip i {
     color: var(--text-faint);

@@ -285,21 +285,21 @@
   .sp { position: absolute; inset: 0; display: flex; flex-direction: column; background: #050607; }
   .stage { flex: 1; min-height: 0; }
   video { flex: 1; min-height: 0; width: 100%; object-fit: contain; background: #050607; cursor: pointer; }
-  .fallback { position: absolute; left: 0; right: 0; bottom: 0; padding: 8px 10px; background: linear-gradient(transparent, rgba(0, 0, 0, 0.75)); color: rgba(255, 255, 255, 0.78); font-size: 11.5px; pointer-events: none; }
+  .fallback { position: absolute; left: 0; right: 0; bottom: 0; padding: 8px 10px; background: linear-gradient(transparent, rgba(0, 0, 0, 0.75)); color: rgba(255, 255, 255, 0.78); font-size: var(--fs-sm); pointer-events: none; }
   .controls { flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 10px 8px; background: #0b0d10; color: rgba(255, 255, 255, 0.85); }
-  .play { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; color: #fff; background: rgba(255, 255, 255, 0.1); }
+  .play { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--radius-sm); color: #fff; background: rgba(255, 255, 255, 0.1); }
   .play:hover:not(:disabled) { background: rgba(255, 255, 255, 0.18); }
   .play:disabled { opacity: 0.4; }
   .bar { position: relative; flex: 1; min-width: 0; height: 22px; display: flex; align-items: center; cursor: pointer; outline: none; touch-action: none; }
   .bar:focus-visible .track { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 60%, transparent); }
   /* The whole clip, dim; the parts that go in, lit. */
-  .track { position: relative; width: 100%; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.14); }
+  .track { position: relative; width: 100%; height: 6px; border-radius: var(--radius-xs); background: rgba(255, 255, 255, 0.14); }
   .track.whole { background: color-mix(in srgb, var(--accent) 70%, transparent); }
   .part { position: absolute; top: 0; bottom: 0; border-radius: 2px; background: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent); }
   .head { position: absolute; top: 2px; bottom: 2px; width: 2px; margin-left: -1px; border-radius: 1px; background: #fff; box-shadow: 0 0 3px rgba(0, 0, 0, 0.6); pointer-events: none; }
   .glimpse { position: absolute; bottom: 26px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 3px; pointer-events: none; z-index: 2; }
-  .gframe { display: block; border: 1px solid rgba(255, 255, 255, 0.5); border-radius: 4px; background-repeat: no-repeat; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5); }
-  .gtime { padding: 1px 6px; border-radius: 4px; background: rgba(0, 0, 0, 0.8); color: #fff; font-size: 11px; font-variant-numeric: tabular-nums; }
-  .time { flex: none; font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .gframe { display: block; border: 1px solid rgba(255, 255, 255, 0.5); border-radius: var(--radius-xs); background-repeat: no-repeat; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5); }
+  .gtime { padding: 1px 6px; border-radius: var(--radius-xs); background: rgba(0, 0, 0, 0.8); color: #fff; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+  .time { flex: none; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .which { color: rgba(255, 255, 255, 0.6); }
 </style>

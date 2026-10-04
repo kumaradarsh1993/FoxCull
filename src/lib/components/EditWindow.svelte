@@ -213,8 +213,8 @@
     z-index: 60;
     padding: 7px 14px;
     border-radius: 999px;
-    font-size: 12px;
-    font-weight: 600;
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-semibold);
     color: var(--accent-on);
     background: var(--accent);
     box-shadow: var(--shadow);
@@ -237,10 +237,10 @@
     gap: 10px;
     padding: 10px 12px;
     border: 1px solid var(--border-strong);
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     background: color-mix(in srgb, var(--bg-elev) 96%, transparent);
     box-shadow: var(--shadow);
-    font-size: 12.5px;
+    font-size: var(--fs-md);
     line-height: 1.45;
     color: var(--text);
     backdrop-filter: blur(16px);
@@ -254,7 +254,7 @@
     flex: 0 0 auto;
     width: 20px;
     height: 20px;
-    border-radius: 5px;
+    border-radius: var(--radius-xs);
     color: var(--text-faint);
   }
   .notice button:hover { background: var(--bg-hover); color: var(--text); }

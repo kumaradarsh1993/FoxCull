@@ -71,8 +71,8 @@
     overflow: hidden;
     text-overflow: ellipsis;
     font-family: var(--font-display);
-    font-size: 11.5px;
-    font-weight: 700;
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-semibold);
     letter-spacing: 0.04em;
     color: #fff;
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);

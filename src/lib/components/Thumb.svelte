@@ -463,8 +463,8 @@
   }
   .ph {
     color: var(--text-faint);
-    font-size: 12px;
-    font-weight: 600;
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-semibold);
     letter-spacing: 0.5px;
   }
   .ph.dim { opacity: 0; }
@@ -483,12 +483,12 @@
   }
   .ph.missing .qmark {
     font-size: 26px;
-    font-weight: 700;
+    font-weight: var(--fw-semibold);
     line-height: 1;
     color: color-mix(in srgb, var(--warn, #d9a441) 88%, var(--text-faint));
   }
   .ph.missing .mext {
-    font-size: 10px;
+    font-size: var(--fs-xs);
     letter-spacing: 0.08em;
     color: var(--text-faint);
   }
@@ -504,7 +504,7 @@
     );
   }
   .ph.vid .film {
-    font-size: 20px;
+    font-size: var(--fs-xl);
     color: var(--text);
     background: color-mix(in srgb, var(--text) 14%, transparent);
     width: 34px;
@@ -515,7 +515,7 @@
     justify-content: center;
     padding-left: 3px;
   }
-  .ph.vid .vext { font-size: 10px; font-weight: 700; color: var(--text-dim); letter-spacing: 0.5px; }
+  .ph.vid .vext { font-size: var(--fs-xs); font-weight: var(--fw-semibold); color: var(--text-dim); letter-spacing: 0.5px; }
   .scrubLayer {
     position: absolute;
     top: 50%;
@@ -576,7 +576,7 @@
     border-radius: 999px;
     background: rgba(0, 0, 0, 0.62);
     color: #fff;
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-variant-numeric: tabular-nums;
     pointer-events: none;
   }
@@ -594,7 +594,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 13px;
+    font-size: var(--fs-md);
     padding-left: 2px;
     pointer-events: none;
   }
@@ -605,11 +605,11 @@
     position: absolute;
     bottom: 4px;
     left: 4px;
-    font-size: 9px;
-    font-weight: 700;
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
     letter-spacing: 0.5px;
     padding: 1px 5px;
-    border-radius: 3px;
+    border-radius: var(--radius-xs);
     background: rgba(0, 0, 0, 0.6);
     color: #fff;
   }

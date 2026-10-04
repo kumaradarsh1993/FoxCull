@@ -283,8 +283,8 @@
     align-items: center;
     gap: 10px;
     font-family: var(--font-display);
-    font-size: 15px;
-    font-weight: 680;
+    font-size: var(--fs-lg);
+    font-weight: var(--fw-semibold);
     letter-spacing: -0.01em;
     color: var(--text);
     border-top: 1px solid var(--border-soft);
@@ -296,8 +296,8 @@
   .hdr.level-2 {
     left: 18px;
     right: 0;
-    font-size: 12px;
-    font-weight: 700;
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-semibold);
     color: var(--text-dim);
     border-top-style: dashed;
     background: color-mix(in srgb, var(--bg-panel) 68%, transparent);
@@ -309,7 +309,7 @@
     border-radius: 999px;
     background: color-mix(in srgb, var(--bg-elev) 82%, transparent);
     color: var(--text-faint);
-    font-size: 11px;
+    font-size: var(--fs-xs);
     text-align: center;
   }
   .cellpos {
