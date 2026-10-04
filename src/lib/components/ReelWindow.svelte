@@ -247,6 +247,8 @@
   async function onDroppedPaths(paths: string[]) {
     const audio = paths.find((p) => AUDIO_RE.test(p));
     if (audio) {
+      // A new song means a new section: back to step 1 to choose it.
+      step = 1;
       await setSong(audio);
       return;
     }
