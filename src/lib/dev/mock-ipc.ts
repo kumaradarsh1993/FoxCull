@@ -81,6 +81,7 @@ interface Item {
   tags: string[];
   events: string[];
   missing: boolean;
+  ranges?: { in_s: number; out_s: number }[];
   seed: number;
   aspect: [number, number];
 }
@@ -121,6 +122,8 @@ function folderItems(dir: string): Item[] {
       events: i > 20 && i < 70 ? ["Seattle — Discovery Park"] : [],
       // A few "?" entries, for the missing-item menus (folder and grid).
       missing: i % 23 === 11 && !forgotten.has(path),
+      // Some clips carry in/out ranges marked in Focus (the ✂ badge).
+      ranges: kind === "video" && i % 4 === 1 ? [{ in_s: 3, out_s: 9.5 }, { in_s: 21, out_s: 30 }] : kind === "video" && i % 4 === 3 ? [{ in_s: 5, out_s: 12 }] : undefined,
       seed: i + n,
       aspect: ASPECTS[Math.floor(r() * ASPECTS.length)],
     };
@@ -161,13 +164,39 @@ const forgotten = new Set<string>();
 /** Jobs stopped through cancel_job. */
 const stopped = new Set<string>();
 
+/** The fake merge's status (merge_status), shaped like the backend's. */
+const mockMerge: Record<string, any> = { state: "idle", paused: false, pct: 0 };
+
+/** Window inboxes and the shared clipboard live in localStorage so a second
+ *  tab opened as `?window=edit` / `?window=merge` sees what the library sent. */
+function lsGet(key: string): any {
+  try {
+    return JSON.parse(localStorage.getItem(key) || "null");
+  } catch {
+    return null;
+  }
+}
+function lsSet(key: string, v: unknown) {
+  try {
+    if (v == null) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(v));
+  } catch {
+    /* private window */
+  }
+}
+
 /** Play a backend job into the job centre the way `activity` events would. */
 async function fakeJob(id: string, total: number, ms: number, o: { unit?: "bytes"; label?: string; detail?: (f: number) => string } = {}) {
   const { activity } = await import("$lib/activity.svelte");
   const steps = Math.max(1, Math.round(ms / 150));
   for (let k = 0; k <= steps; k++) {
     if (stopped.delete(id)) return false;
+    while (id === "merge" && mockMerge.paused) {
+      await new Promise((r) => setTimeout(r, 150));
+      if (stopped.delete(id)) return false;
+    }
     const f = k / steps;
+    if (id === "merge") mockMerge.pct = Math.round(f * 100);
     // Slow start, like a real copy warming up, so the ETA visibly settles.
     activity.ingest({ id, label: o.label ?? "", done: Math.round(total * f), total, state: "running", unit: o.unit, cancellable: true, detail: o.detail?.(f) });
     await new Promise((r) => setTimeout(r, 150));
@@ -237,9 +266,15 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
   capture_dates: (a) => (a.paths as string[]).map((path) => ({ path, captured: byPath.get(path)?.mtime ?? 0 })),
   probe_media_info: (a) => ({
     duration: 83.4,
-    width: 3840,
-    height: 2160,
-    fps: 29.97,
+    ...(() => {
+      // Another tab (the Edit window) hasn't listed this folder: do it now.
+      if (!byPath.has(a.path)) folderItems(a.path.replace(/\/[^/]*$/, ""));
+      const it = byPath.get(a.path);
+      const vert = it ? it.aspect[0] < it.aspect[1] : false;
+      const small = it ? it.seed % 5 === 0 : false;
+      return { width: vert ? 2160 : small ? 1920 : 3840, height: vert ? 3840 : small ? 1080 : 2160 };
+    })(),
+    fps: (byPath.get(a.path)?.seed ?? 0) % 7 === 3 ? 29.97 : 59.94,
     codec: "hevc",
     camera: byPath.get(a.path)?.kind === "video" ? "DJI Mini 4 Pro" : "NIKON D5200",
     captured: byPath.get(a.path)?.mtime ?? null,
@@ -259,6 +294,8 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
   merge_probe: (a) =>
     (a.paths as string[])
       .map((p, i) => {
+        // Another tab (the Merge window) hasn't listed this folder: do it now.
+        if (!byPath.has(p)) folderItems(p.replace(/\/[^/]*$/, ""));
         const it = byPath.get(p)!;
         if (it.kind !== "video")
           return { path: p, name: it.name, kind: "photo", size: it.size, duration: 0, captured: it.mtime, width: 0, height: 0, fps: 0, fps_class: 0, rotation: 0, vcodec: "", profile: "", pix_fmt: "", vbitrate: 0, color: "", acodec: null, arate: 0, alayout: "", signature: "", error: null };
@@ -300,22 +337,56 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
   merge_videos: async (a) => {
     const n = (a.req.paths as string[]).length;
     const label = `Merging ${n} clips → ${a.req.name}.mp4`;
+    Object.assign(mockMerge, {
+      state: "running", paused: false, pct: 0, label, name: `${a.req.name}.mp4`, out_path: `${a.req.destDir}/${a.req.name}.mp4`,
+      dest_dir: a.req.destDir, clips: n, total_s: 60 * n, in_bytes: 63.1e9, convert: !!a.req.convert, detail: null,
+      started_ms: Date.now(), finished_ms: 0, out_bytes: 0, error: null,
+    });
     const ok = await fakeJob("merge", 100, a.req.convert ? 9000 : 6000, {
       label,
       detail: (f) => (a.req.convert ? `Converting clip ${Math.min(n, 1 + Math.floor(f * n))} of ${n}` : `${(f * 63.1).toFixed(1)} of 63.1 GB · 1.1 GB/s`),
     });
     const { activity } = await import("$lib/activity.svelte");
     if (!ok) {
+      Object.assign(mockMerge, { state: "cancelled", finished_ms: Date.now(), paused: false });
       activity.ingest({ id: "merge", label: "Merge stopped", done: 0, total: 100, state: "cancelled", detail: "Nothing was saved" });
       throw "export cancelled";
     }
-    activity.ingest({ id: "merge", label: label.replace("Merging", "Merged"), done: 100, total: 100, state: "done", detail: "63.1 GB in 1 min 2 s" });
+    Object.assign(mockMerge, { state: "done", pct: 100, finished_ms: Date.now(), out_bytes: 63.1e9 });
+    activity.ingest({ id: "merge", label: label.replace("Merging", "Merged"), done: 100, total: 100, state: "done", detail: "63.1 GB in 1 min 2 s", path: mockMerge.out_path });
     return { path: `${a.req.destDir}/${a.req.name}.mp4`, bytes: a.req.convert ? 88.4e9 : 63.1e9 };
   },
   cancel_job: (a) => {
     stopped.add(a.id);
+    if (a.id === "merge") mockMerge.paused = false;
     return true;
   },
+  merge_status: () => ({ ...mockMerge }),
+  merge_pause: async (a) => {
+    mockMerge.paused = !!a.paused;
+    const { activity } = await import("$lib/activity.svelte");
+    activity.ingest({ id: "merge", label: mockMerge.label, done: mockMerge.pct, total: 100, state: "running", detail: a.paused ? "Paused" : undefined, paused: !!a.paused, cancellable: true });
+    return { ...mockMerge };
+  },
+  merge_dismiss: () => {
+    if (mockMerge.state !== "running") Object.assign(mockMerge, { state: "idle", paused: false, pct: 0 });
+  },
+  open_tool_window: (a) => {
+    const key = `foxcull-mock-inbox-${a.kind}`;
+    if (a.payload) lsSet(key, [...(lsGet(key) ?? []), a.payload]);
+    console.info(`[mock-ipc] open_tool_window ${a.kind}: open ${location.origin}/?window=${a.kind} to see it`);
+    return null;
+  },
+  take_tool_inbox: (a) => {
+    const key = `foxcull-mock-inbox-${a.kind}`;
+    const xs = lsGet(key) ?? [];
+    lsSet(key, null);
+    return xs;
+  },
+  tile_windows: () => ({ tiled: true }),
+  stash_set: (a) => lsSet(`foxcull-mock-stash-${a.key}`, a.value),
+  stash_get: (a) => lsGet(`foxcull-mock-stash-${a.key}`),
+  quit_app: () => null,
   // A cross-drive move: bytes, speed and a Stop button in the job centre.
   move_media_files: async (a) => {
     const paths = a.paths as string[];

@@ -78,6 +78,7 @@
    *  batches, then the job's own detail (the file in flight). */
   function runningLine(j: Job): string {
     void activity.tick;
+    if (j.paused) return `Paused at ${pct(j)}%`;
     const parts: string[] = [];
     if (j.unit === "bytes" && j.total > 0) {
       parts.push(`${fmtBytes(j.done)} of ${fmtBytes(j.total)}`);
@@ -149,7 +150,7 @@
 {/snippet}
 
 {#snippet bar(j: Job | null, f: number)}
-  <span class="bar" class:thin={j?.quiet}>
+  <span class="bar" class:thin={j?.quiet} class:paused={j?.paused}>
     <span
       class="fill"
       class:indet={f < 0}
@@ -173,9 +174,9 @@
           <div class="rd"><span class="rdt" title={runningLine(j)}>{runningLine(j)}</span>{#if left(j)}<span class="rl2">{left(j)}</span>{/if}</div>
         {/if}
         {#if !j.queued}{@render bar(j, determinate(j) ? frac(j) : -1)}{/if}
-        {#if j.actions.length}
+        {#if activity.actionsOf(j).length}
           <div class="acts">
-            {#each j.actions as a (a.label)}<button class="act" onclick={a.run}>{a.label}</button>{/each}
+            {#each activity.actionsOf(j) as a (a.label)}<button class="act" onclick={a.run}>{a.label}</button>{/each}
           </div>
         {/if}
       {:else}
@@ -183,9 +184,9 @@
           {#if j.detail}<span class="rdt wrap" title={j.detail}>{j.detail}</span>{/if}
           <span class="age">{ago(j.ended)}</span>
         </div>
-        {#if j.actions.length}
+        {#if activity.actionsOf(j).length}
           <div class="acts">
-            {#each j.actions as a (a.label)}<button class="act" onclick={a.run}>{a.label}</button>{/each}
+            {#each activity.actionsOf(j) as a (a.label)}<button class="act" onclick={a.run}>{a.label}</button>{/each}
           </div>
         {/if}
       {/if}
@@ -254,9 +255,9 @@
           {/if}
         </div>
         <div class="barRow">{@render bar(lead, determinate(lead) ? frac(lead) : -1)}</div>
-        {#if lead.actions.length}
+        {#if activity.actionsOf(lead).length}
           <div class="acts">
-            {#each lead.actions as a (a.label)}<button class="act" onclick={a.run}>{a.label}</button>{/each}
+            {#each activity.actionsOf(lead) as a (a.label)}<button class="act" onclick={a.run}>{a.label}</button>{/each}
           </div>
         {/if}
       {:else if fresh}
@@ -268,7 +269,7 @@
               {#if fresh.detail}<span class="md" title={fresh.detail}>{fresh.detail}</span>{/if}
             </span>
           </button>
-          {#if fresh.actions.length}<button class="act sm" onclick={fresh.actions[0].run}>{fresh.actions[0].label}</button>{/if}
+          {#if activity.actionsOf(fresh).length}<button class="act sm" onclick={activity.actionsOf(fresh)[0].run}>{activity.actionsOf(fresh)[0].label}</button>{/if}
         </div>
       {:else}
         <button class="foot" onclick={() => (expanded = !expanded)} title="Recent tasks">
@@ -514,6 +515,7 @@
     transition: width 0.3s ease;
   }
   .fill.ok { background: var(--pick); }
+  .bar.paused .fill { background: var(--star); opacity: 0.7; }
   .fill.err { background: var(--reject); }
   .bar.thin .fill { background: color-mix(in srgb, var(--text-faint) 70%, transparent); }
   /* Indeterminate: a segment sweeping back and forth. */

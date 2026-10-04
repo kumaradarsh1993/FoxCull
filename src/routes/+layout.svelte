@@ -4,6 +4,13 @@
   import { settings } from "$lib/settings.svelte";
   import { activity } from "$lib/activity.svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
+  import { windowKind } from "$lib/windows";
+  import EditWindow from "$lib/components/EditWindow.svelte";
+  import MergeWindow from "$lib/components/MergeWindow.svelte";
+
+  // Every FoxCull window loads this app; its label decides what it is. The
+  // library page (children) only ever mounts in the main window.
+  const kind = windowKind();
 
   /** Page zoom per interface size. TV makes everything 22% larger for a screen
    *  across the room; Compact gives a small laptop 10% more canvas. */
@@ -26,4 +33,10 @@
   });
 </script>
 
-{@render children()}
+{#if kind === "edit"}
+  <EditWindow />
+{:else if kind === "merge"}
+  <MergeWindow />
+{:else}
+  {@render children()}
+{/if}

@@ -525,6 +525,54 @@ impl Catalog {
         let _ = conn.execute("DELETE FROM dir_counts", []);
     }
 
+    /// Every clip's marked ranges at or under a rel-prefix, in one pass: its
+    /// subclip segments if it has any, else its trim as one range. What the
+    /// library shows as "✂ 2" on a tile and hands to the Edit window on a drag.
+    pub fn ranges_under(&self, prefix: &str) -> HashMap<String, Vec<VideoSegment>> {
+        let conn = self.conn.lock();
+        let like = format!("{prefix}/%");
+        let all = prefix.is_empty();
+        let mut out: HashMap<String, Vec<VideoSegment>> = HashMap::new();
+        let mut collect = |sql: &str| {
+            if let Ok(mut st) = conn.prepare(sql) {
+                let rows = if all {
+                    st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?)))
+                        .map(|it| it.flatten().collect::<Vec<_>>())
+                } else {
+                    st.query_map(params![prefix, like], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?)))
+                        .map(|it| it.flatten().collect::<Vec<_>>())
+                };
+                if let Ok(rows) = rows {
+                    for (rel, in_s, out_s) in rows {
+                        out.entry(rel).or_default().push(VideoSegment { in_s, out_s });
+                    }
+                }
+            }
+        };
+        let filter = if all { "" } else { " WHERE rel = ?1 OR rel LIKE ?2" };
+        collect(&format!("SELECT rel, in_s, out_s FROM video_segments{filter} ORDER BY rel, idx"));
+        let with_segments: std::collections::HashSet<String> = out.keys().cloned().collect();
+        let mut trims: HashMap<String, Vec<VideoSegment>> = HashMap::new();
+        if let Ok(mut st) = conn.prepare(&format!("SELECT rel, in_s, out_s FROM trims{filter}")) {
+            let rows = if all {
+                st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?)))
+                    .map(|it| it.flatten().collect::<Vec<_>>())
+            } else {
+                st.query_map(params![prefix, like], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?)))
+                    .map(|it| it.flatten().collect::<Vec<_>>())
+            };
+            if let Ok(rows) = rows {
+                for (rel, in_s, out_s) in rows {
+                    if !with_segments.contains(&rel) {
+                        trims.insert(rel, vec![VideoSegment { in_s, out_s }]);
+                    }
+                }
+            }
+        }
+        out.extend(trims);
+        out
+    }
+
     /// Stored trim in/out (seconds) for a clip, if any.
     pub fn get_trim(&self, rel: &str) -> Option<(f64, f64)> {
         let conn = self.conn.lock();
@@ -1196,6 +1244,19 @@ mod transfer_tests {
         // Copy within one catalog: both rels carry the record.
         a.copy_media_entries(&[(rel.clone(), "Copy/DJI_0001.MP4".into())]).unwrap();
         assert_eq!(a.export_entries(&["Copy/DJI_0001.MP4".into()]), metas);
+
+        // The library's per-clip ranges: segments win over a trim; a trim
+        // alone is one range; the prefix keeps other folders out.
+        a.set_video_segments("Trip/B.MP4", &[super::VideoSegment { in_s: 1.0, out_s: 2.0 }, super::VideoSegment { in_s: 5.0, out_s: 7.5 }]).unwrap();
+        a.set_trim("Trip/B.MP4", 0.5, 9.0).unwrap();
+        a.set_trim("Trip/C.MP4", 3.0, 4.0).unwrap();
+        a.set_trim("Other/D.MP4", 1.0, 2.0).unwrap();
+        let r = a.ranges_under("Trip");
+        assert_eq!(r["Trip/B.MP4"].iter().map(|s| (s.in_s, s.out_s)).collect::<Vec<_>>(), vec![(1.0, 2.0), (5.0, 7.5)]);
+        assert_eq!(r["Trip/C.MP4"].iter().map(|s| (s.in_s, s.out_s)).collect::<Vec<_>>(), vec![(3.0, 4.0)]);
+        assert_eq!(r["Trip/DJI_0001.MP4"].iter().map(|s| (s.in_s, s.out_s)).collect::<Vec<_>>(), vec![(2.0, 3.0)]);
+        assert!(!r.contains_key("Other/D.MP4"));
+        assert!(a.ranges_under("").contains_key("Other/D.MP4"));
 
         // Nothing recorded → an empty record, which imports as nothing.
         assert_eq!(a.export_entries(&["nope.jpg".into()]), vec![MediaMeta::default()]);

@@ -15,6 +15,7 @@
     type LibraryInfo,
     type TrashItem,
     type EventInfo,
+    type ClipRef,
   } from "$lib/types";
   import TreeNode from "$lib/components/TreeNode.svelte";
   import Thumb from "$lib/components/Thumb.svelte";
@@ -26,12 +27,10 @@
   import ContextMenu, { type MenuEntry } from "$lib/components/ContextMenu.svelte";
   import ActivityBar from "$lib/components/ActivityBar.svelte";
   import { mediaDrag } from "$lib/drag.svelte";
-  import EditStudio from "$lib/components/EditStudio.svelte";
   import ControllerPanel from "$lib/components/ControllerPanel.svelte";
   import ExcludePanel from "$lib/components/ExcludePanel.svelte";
   import { keepInView } from "$lib/keep-in-view";
   import Welcome from "$lib/components/Welcome.svelte";
-  import MergeDialog from "$lib/components/MergeDialog.svelte";
   import UpdatePanel from "$lib/components/UpdatePanel.svelte";
   import { updates, primeUpdateCheck } from "$lib/updates.svelte";
   import { pad, PAD_ACTIONS, buttonName, type PadActionId } from "$lib/gamepad.svelte";
@@ -447,10 +446,8 @@
   let resumeDir = $state<string | null>(null);
   /** Open "Merge videos" window: everything selected (photos too; the window
    *  flags what can't be merged rather than FoxCull dropping it silently). */
-  let mergeReq = $state<{ items: MediaItem[]; sourceDir: string } | null>(null);
-  /** The merge window is running in the background (job centre has it). */
-  let mergeHidden = $state(false);
-  const showMergeAction = { label: "Show merge window", run: () => (mergeHidden = false) };
+  // Merge and Edit are separate windows (2026-10-04): the library hands them
+  // work through the backend (open_tool_window) and hears back through events.
   /** Video lengths (seconds) by path: the tile badge and the selection summary.
    *  Filled per folder from the per-drive cache (MP4/MOV headers, so cheap). */
   let durations = $state<Record<string, number>>({});
@@ -479,22 +476,12 @@
     if (t?.closest(".pop, .filtermenu, .arrangeMenu, .clearMenu, .castMenu, .arrange, .filterwrap, .clearWrap, .castWrap, .gear")) return;
     closeAllPopovers();
   }
-  let editOpen = $state(false);
   let treeCollapsed = $state(false);
   // Bumped by the tree's ↻ button to make expanded folders recount their badges.
   let countsGen = $state(0);
   let folderRefreshKey = $state(0);
   let gridComp = $state<{ scrollToIndex: (i: number, center?: boolean) => void; columnCount?: () => number } | null>(null);
   let loupeComp = $state<{ togglePlay: () => void; seekBy: (d: number) => void; setInPoint?: () => void; setOutPoint?: () => void; toggleGlimpse?: () => void } | null>(null);
-  let editComp = $state<{
-    setOutputPreview?: (on: boolean) => void | Promise<void>;
-    setIn?: () => void;
-    setOut?: () => void;
-    togglePlay?: () => void;
-    seekBy?: (d: number) => void;
-    deleteSelected?: () => void;
-    cutAtPlayhead?: () => void;
-  } | null>(null);
 
   const HOLD_MS = 850;
   let holdMs = $state(0);
@@ -1128,6 +1115,47 @@
     } catch {
       /* */
     }
+    // The Merge and Edit windows work in the background; the library's
+    // progress panel is where their jobs show. A merge there gets Pause /
+    // Resume and a way back to its window (which may have been closed).
+    activity.addActions((j) => {
+      if (j.id !== "merge") return [];
+      const show = { label: "Show merge window", run: () => void api.openToolWindow("merge", { type: "show" }) };
+      if (j.state !== "running") return [show];
+      return [
+        j.paused
+          ? { label: "Resume", run: () => void api.mergePause(false).catch(() => {}) }
+          : { label: "Pause", run: () => void api.mergePause(true).catch(() => {}) },
+        show,
+      ];
+    });
+    activity.addActions((j) => (j.id === "edit-export" ? [{ label: "Show Edit window", run: () => void api.openToolWindow("edit") }] : []));
+    // A merge, export or saved frame landed: show it if it's in this folder.
+    void api
+      .onMediaOutput((path) => {
+        if (!currentDir) return;
+        const dir = parentOf(path);
+        if (samePath(dir, currentDir) || (settings.s.includeSub && isUnder(path, currentDir))) void refreshAfterMediaOutput(path);
+        else countsGen++;
+      })
+      .catch(() => {});
+    // Quitting with work running: say what would stop, and let the owner
+    // decide. The backend kills ffmpeg and deletes half-written files.
+    void api
+      .onConfirmQuit(() => {
+        const running = activity.foreground.map((j) => j.label.split(" → ")[0]);
+        openAsk({
+          title: "Quit while FoxCull is still working?",
+          body:
+            (running.length ? `Still running: ${running.join(", ")}.\n\n` : "") +
+            "Quitting stops it. A merge or export in progress is deleted (nothing half-finished is left behind); files a move already finished stay where they went.",
+          confirmLabel: "Stop and quit",
+          onconfirm: async () => {
+            await api.quitApp().catch(() => {});
+          },
+        });
+      })
+      .catch(() => {});
     // Live progress for the bulk RAW→JPEG export (drives the ActivityBar chip).
     try {
       await api.onRawExportProgress((p) =>
@@ -1417,14 +1445,11 @@
     if (vids.length < 2 || !currentDir) return;
     const first = vids[0].path;
     const sourceDir = first.slice(0, Math.max(first.lastIndexOf("/"), first.lastIndexOf("\\"))) || currentDir;
-    // One merge at a time: while one runs in the background, asking for
-    // another brings that one back instead of throwing it away.
-    if (mergeReq && activity.jobs["merge"]?.state === "running") {
-      mergeHidden = false;
-      return;
-    }
-    mergeHidden = false;
-    mergeReq = { items: ts, sourceDir };
+    // One merge at a time: while one runs, the window shows it (and says
+    // the new selection has to wait) instead of throwing it away.
+    void api
+      .openToolWindow("merge", { type: "review", items: $state.snapshot(ts), sourceDir })
+      .catch((e) => openAsk({ title: "Couldn't open the Merge window", body: String(e) }));
   }
 
   /** Whether the current view depends on real capture dates. */
@@ -1475,13 +1500,39 @@
   }
 
   function setView(v: ViewMode) {
-    editOpen = false;
     settings.set({ viewMode: v });
   }
 
-  function openEditMode() {
-    editOpen = true;
-    api.cancelWarm();
+  /** The library's clips as the Edit window takes them: path, kind, and the
+   *  in/out ranges marked in Focus (each becomes its own segment there). */
+  function clipRefs(ts: MediaItem[]): ClipRef[] {
+    return ts.map((i) => ({ path: i.path, name: i.name, kind: i.kind, ext: i.ext, mtime: i.mtime, size: i.size, ranges: i.ranges ?? [], missing: i.missing }));
+  }
+
+  /** Open (or bring forward) the Edit window with the selected videos.
+   *  "seed" fills only an EMPTY timeline (the toolbar's Edit button);
+   *  "append" always adds them after the last clip (E, the menu). */
+  async function openEditWindow(mode: "seed" | "append") {
+    const ts = targets();
+    const refs = clipRefs(ts.filter((i) => i.kind === "video" || mode === "append"));
+    try {
+      await api.openToolWindow("edit", refs.length ? { type: "add", clips: refs, mode } : null);
+      if (mode === "append" && refs.length) {
+        const vids = refs.filter((r) => r.kind === "video" && !r.missing).length;
+        showUndoToast(vids ? `Added ${vids} clip${vids === 1 ? "" : "s"} to the Edit timeline` : "Nothing to add: the timeline takes videos");
+      }
+    } catch (e) {
+      openAsk({ title: "Couldn't open the Edit window", body: String(e) });
+    }
+  }
+
+  /** ⌘C: remember the selection for ⌘V in the Edit window. */
+  async function copyClips() {
+    const ts = targets().filter((i) => !i.missing);
+    if (!ts.length) return;
+    await api.stashSet("clips", clipRefs(ts));
+    const vids = ts.filter((i) => i.kind === "video").length;
+    showUndoToast(vids ? `Copied ${vids} clip${vids === 1 ? "" : "s"}: paste them into the Edit window with ${isMac ? "⌘" : "Ctrl+"}V` : "Copied (the Edit timeline only takes videos)");
   }
 
   function targets(): MediaItem[] {
@@ -1509,6 +1560,13 @@
       e.dataTransfer.effectAllowed = "copyMove";
       e.dataTransfer.setData("application/x-foxcull-paths", JSON.stringify(paths));
       e.dataTransfer.setData("text/plain", paths.join("\n"));
+      // For the Edit window: the clips with their marked in/out ranges. Also
+      // parked in the backend, because a drag into ANOTHER window may arrive
+      // carrying only the plain text, depending on the platform's webview.
+      const byPath = new Map(items.map((x) => [x.path, x]));
+      const refs = clipRefs(paths.map((p) => byPath.get(p)).filter((x): x is MediaItem => !!x));
+      e.dataTransfer.setData("application/x-foxcull-clips", JSON.stringify(refs));
+      void api.stashSet("drag", refs);
       if (paths.length) setDragGhost(e, item, paths.length);
     }
   }
@@ -1560,9 +1618,13 @@
     setTimeout(() => ghost.remove(), 0);
   }
 
+  let dragStashTimer: ReturnType<typeof setTimeout> | null = null;
   function endMediaDrag() {
     draggingPaths = [];
     mediaDrag.count = 0;
+    // The Edit window may still be reading the parked drag as this fires.
+    if (dragStashTimer) clearTimeout(dragStashTimer);
+    dragStashTimer = setTimeout(() => void api.stashSet("drag", null), 4000);
   }
 
   // Moves run one after another (two copies to one disk would each go at half
@@ -2812,9 +2874,9 @@
       ...(ctx.kind === "video"
         ? [
             {
-              label: "Open in Edit",
+              label: ts.length > 1 ? `Add ${ts.filter((i) => i.kind === "video" && !i.missing).length} to the Edit timeline` : "Add to the Edit timeline",
               icon: "✎",
-              action: openEditMode,
+              action: () => void openEditWindow("append"),
             },
           ]
         : []),
@@ -3158,8 +3220,8 @@
       }
       if (nowFs) {
         fsPrevView = viewMode;
-        if (!editOpen && active) setView("loupe");
-      } else if (!editOpen) {
+        if (active) setView("loupe");
+      } else {
         setView(fsPrevView);
       }
     }
@@ -3365,9 +3427,6 @@
   }
 
   async function onkeydown(e: KeyboardEvent) {
-    // The merge window owns the keyboard while it's open: its Delete removes
-    // rows from the merge list and must never reach the grid behind it.
-    if (mergeReq && !mergeHidden) return;
     const t = e.target as HTMLElement;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
     const k = e.key.toLowerCase();
@@ -3408,7 +3467,7 @@
       menu = null;
       return;
     }
-    if (inTrashFolder && !editOpen) {
+    if (inTrashFolder) {
       // ⌘[ / Alt+← is Back everywhere on a Mac and in Explorer.
       if (((e.metaKey || e.ctrlKey) && e.key === "[") || (e.altKey && e.key === "ArrowLeft")) {
         void leaveTrash();
@@ -3418,36 +3477,6 @@
       // Moving files out of the Trash by cut/paste would skip Restore's bookkeeping.
       if ((e.ctrlKey || e.metaKey) && (k === "x" || k === "v")) return;
     }
-    if (editOpen) {
-      // Delete/cut the selection, or the clip under the playhead. editComp's
-      // deleteSelected/cutAtPlayhead exports land alongside this change (see
-      // EditStudio.svelte) — until then these calls are no-ops via `?.`.
-      if (e.key === "Delete" || e.key === "Backspace") { editComp?.deleteSelected?.(); e.preventDefault(); return; }
-      if (k === "c" && !e.ctrlKey && !e.metaKey && !e.altKey) { editComp?.cutAtPlayhead?.(); e.preventDefault(); return; }
-      // Same step-scrub keys as Focus mode (`,`/`.`), for consistency.
-      if (e.key === "," || e.key === "<") { editComp?.seekBy?.(-5); e.preventDefault(); return; }
-      if (e.key === "." || e.key === ">") { editComp?.seekBy?.(5); e.preventDefault(); return; }
-      if (e.key === " " || e.code === "Space") { editComp?.togglePlay?.(); e.preventDefault(); return; }
-      if (e.key === "[") { editComp?.setIn?.(); e.preventDefault(); return; }
-      if (e.key === "]") { editComp?.setOut?.(); e.preventDefault(); return; }
-      if (e.shiftKey && e.key === "ArrowRight") { editComp?.seekBy?.(5); e.preventDefault(); return; }
-      if (e.shiftKey && e.key === "ArrowLeft") { editComp?.seekBy?.(-5); e.preventDefault(); return; }
-      if (k === "f") {
-        const entering = !fullscreen;
-        if (entering) await editComp?.setOutputPreview?.(true);
-        await toggleFullscreen();
-        if (!entering) await editComp?.setOutputPreview?.(false);
-        e.preventDefault();
-        return;
-      }
-      if (k === "l") { dimLevel = (dimLevel + 1) % 3; e.preventDefault(); return; }
-      if (e.key === "Escape") {
-        if (fullscreen) toggleFullscreen();
-        else if (dimLevel > 0) dimLevel = 0;
-        else editOpen = false;
-      }
-      return;
-    }
     if ((e.ctrlKey || e.metaKey) && k === "z") {
       void (e.shiftKey ? redoLast() : undoLast());
       e.preventDefault();
@@ -3455,6 +3484,20 @@
     }
     if ((e.ctrlKey || e.metaKey) && k === "y") {
       void redoLast();
+      e.preventDefault();
+      return;
+    }
+    // ⌘C: copy the selected clips for ⌘V in the Edit window. (Text fields
+    // returned above, so copying text still works.)
+    if ((e.ctrlKey || e.metaKey) && k === "c" && !inTrashFolder) {
+      void copyClips();
+      e.preventDefault();
+      return;
+    }
+    // E: add the selected videos (with their marked in/out ranges) to the
+    // Edit timeline, opening the window if it isn't.
+    if (k === "e" && !e.ctrlKey && !e.metaKey && !e.altKey && !inTrashFolder) {
+      void openEditWindow("append");
       e.preventDefault();
       return;
     }
@@ -3567,7 +3610,6 @@
   // keyboard uses. The mouse's extra buttons route through it too, so both
   // input surfaces share the mapper in the Controller panel.
   function handlePadAction(a: PadActionId | string, _strength = 1) {
-    if (editOpen) return; // the pad drives the culling views only
     // No culling marks on deleted files.
     if (inTrashFolder && /^(pick|reject|clearMarks|rate\d|label\d)$/.test(a)) return;
     switch (a) {
@@ -3668,7 +3710,6 @@
   // preventDefault stops the webview trying to navigate its history and
   // blanking the single-page app.
   function onmouseup(e: MouseEvent) {
-    if (editOpen) return;
     if (e.button === 3) {
       handlePadAction(settings.s.mouseBack);
       e.preventDefault();
@@ -3708,13 +3749,13 @@
       <div class="tool-group viewGroup">
         <span class="ctl-label">View</span>
         <div class="seg modes" title="View">
-          <button class="chip viewChip" class:on={viewMode === "grid" && !editOpen} onclick={() => setView("grid")} title="Grid (G)">
+          <button class="chip viewChip" class:on={viewMode === "grid"} onclick={() => setView("grid")} title="Grid (G)">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Grid</span>
           </button>
-          <button class="chip viewChip" class:on={viewMode === "details" && !editOpen} onclick={() => setView("details")} title="Details list (D)">
+          <button class="chip viewChip" class:on={viewMode === "details"} onclick={() => setView("details")} title="Details list (D)">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/></svg><span>Details</span>
           </button>
-          <button class="chip viewChip" class:on={viewMode === "loupe" && !editOpen} onclick={() => setView("loupe")} title="Focus — one item large (Enter)">
+          <button class="chip viewChip" class:on={viewMode === "loupe"} onclick={() => setView("loupe")} title="Focus — one item large (Enter)">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H4a1 1 0 0 0-1 1v4M16 3h4a1 1 0 0 1 1 1v4M8 21H4a1 1 0 0 1-1-1v-4M16 21h4a1 1 0 0 0 1-1v-4"/><circle cx="12" cy="12" r="4"/></svg><span>Focus</span>
           </button>
         </div>
@@ -3800,10 +3841,11 @@
         {#if item.flag === "reject"}<span class="fl x">✕</span>{/if}
         {#if item.flag === "pick"}<span class="fl pick">✓</span>{/if}
         {#if item.rating > 0}<span class="stars">{"★".repeat(item.rating)}</span>{/if}
-        {#if item.tags.length || item.events.length || len != null}
+        {#if item.tags.length || item.events.length || len != null || item.ranges?.length}
           <!-- One bottom-right cluster, so the length badge and the tag/event
                glyphs line up instead of being hand-offset around each other. -->
           <span class="br">
+            {#if item.ranges?.length}<span class="cutdot" title={`${item.ranges.length} in/out range${item.ranges.length === 1 ? "" : "s"} marked: ${item.ranges.length === 1 ? "it goes" : "they go"} to Edit as ${item.ranges.length === 1 ? "a segment" : "separate segments"}`}>✂{item.ranges.length > 1 ? item.ranges.length : ""}</span>{/if}
             {#if item.events.length}<span class="evtdot" title={`Event: ${item.events.join(", ")}`}>✦</span>{/if}
             {#if item.tags.length}<span class="tagdot" title={item.tags.join(", ")}>🏷</span>{/if}
             {#if len != null}<span class="dur">{fmtDur(len)}</span>{/if}
@@ -3955,7 +3997,7 @@
       <div class="banner">Read-only location — rating works; the delete sweep is disabled here.</div>
     {/if}
 
-    {#if inTrashFolder && !editOpen}
+    {#if inTrashFolder}
       <!-- Trash mode's own bar: a way back, what you're looking at, and the
            two things you can do here. Nothing from culling or editing. -->
       <div class="bar trashBar">
@@ -3984,7 +4026,6 @@
     {:else}
     <!-- top bar -->
     <div class="bar">
-      {#if !editOpen}
       {@render viewModes()}
 
       <span class="div"></span>
@@ -4198,25 +4239,17 @@
         {/if}
       </div>
 
-      {#if viewMode === "grid" && !editOpen}
+      {#if viewMode === "grid"}
         <span class="div"></span>
         <div class="grp zoom" title="Thumbnail size">
           <span class="mini">▦</span>
           <input type="range" min="110" max="360" bind:value={settings.s.gridSize} onchange={() => settings.set({ gridSize: settings.s.gridSize })} />
         </div>
       {/if}
-      {:else}
-        <div class="tool-group editModeTitle">
-          <span class="ctl-label">Mode</span>
-          <strong>Edit</strong>
-          <span>{items.filter((item) => item.kind === "video").length} videos in folder</span>
-        </div>
-      {/if}
 
       <div class="spacer"></div>
 
       <div class="rightTools">
-        {#if !editOpen}
         <!-- actions (top-right) -->
         <button class="btn sm danger" onclick={rejectSelected} disabled={actionTargets.length === 0} title="Toggle rejected on the active item or selection (X)">
           <svg class="btn-ico" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
@@ -4254,7 +4287,6 @@
             <span class="actionText">Delete{rejectedCount ? ` ${rejectedCount}` : ""}</span>
           </span>
         </button>
-        {/if}
         <!-- Cast to TV: discovery popover; the chip doubles as the connected
              indicator (name shown while casting). -->
         <div class="grp castWrap">
@@ -4306,10 +4338,12 @@
             </div>
           {/if}
         </div>
-        <div class="modeToggle" title="Workspace mode">
-          <button class:on={!editOpen} onclick={() => (editOpen = false)}>Library</button>
-          <button class:on={editOpen} onclick={openEditMode} disabled={!currentDir}>Edit</button>
-        </div>
+        <!-- Edit is its own window now (2026-10-04): this opens it beside the
+             library, bringing the selected videos if its timeline is empty. -->
+        <button class="btn sm editWinBtn" onclick={() => void openEditWindow("seed")} title="Open the Edit window (videos you select here go on its timeline: E adds them, or drag them across)">
+          <svg class="btn-ico" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 15h18M8 15v4M13 15v4"/></svg>
+          <span class="actionText">Edit</span>
+        </button>
         {@render gearButton()}
       </div>
     </div>
@@ -4464,29 +4498,6 @@
 
     {#if controllerOpen}
       <ControllerPanel onclose={() => (controllerOpen = false)} />
-    {/if}
-    {#if mergeReq}
-      <MergeDialog
-        items={mergeReq.items}
-        sourceDir={mergeReq.sourceDir}
-        {drives}
-        hidden={mergeHidden}
-        onclose={() => {
-          mergeReq = null;
-          mergeHidden = false;
-        }}
-        onhide={() => {
-          mergeHidden = true;
-          activity.setActions("merge", [showMergeAction]);
-        }}
-        ondone={(path, dir) => {
-          activity.setActions("merge", [
-            { label: "Show in folder", run: () => void api.reveal(path) },
-            ...(mergeHidden ? [{ label: "Details", run: () => (mergeHidden = false) }] : []),
-          ]);
-          if (currentDir && (samePath(dir, currentDir) || (settings.s.includeSub && isUnder(dir, currentDir)))) void refreshAfterMediaOutput(path);
-        }}
-      />
     {/if}
     {#if excludesOpen}
       <ExcludePanel onclose={closeExcludes} />
@@ -4691,7 +4702,7 @@
 
     <!-- body: viewport, with the filmstrip optionally docked left or right -->
     <div class="body">
-      {#if !editOpen && settings.s.filmstripPos === "left" && view.length && fsMode !== 2}
+      {#if settings.s.filmstripPos === "left" && view.length && fsMode !== 2}
         <aside class="lstrip" class:fsDim={fullscreen} style="width:{settings.s.filmstripSize}px">
           <VirtualStrip items={view} {activeIndex} orientation="v" cellSize={stripCell} cell={stripCellSnip} />
         </aside>
@@ -4726,8 +4737,6 @@
             onshowtree={() => (treeCollapsed = false)}
             onexcludes={openExcludes}
           />
-        {:else if editOpen}
-          <EditStudio {active} {selectedItems} sourceItems={items} currentDir={currentDir} recursive={settings.s.includeSub} refreshKey={folderRefreshKey} onexported={() => void refreshAfterMediaOutput()} bind:this={editComp} />
         {:else if view.length === 0 && inTrashFolder}
           <div class="welcome trashEmpty">
             <span class="teIcon" aria-hidden="true">
@@ -4755,6 +4764,10 @@
             casting={!!castDevice}
             castPlayerState={castStatus.playerState}
             oncasttoggle={() => void toggleCastPlayback()}
+            onranges={(path, r) => {
+              const it = items.find((i) => i.path === path);
+              if (it) it.ranges = r;
+            }}
             bind:this={loupeComp}
           />
         {:else if viewMode === "details"}
@@ -4783,7 +4796,7 @@
         {/if}
       </div>
 
-      {#if !editOpen && settings.s.filmstripPos === "right" && view.length && fsMode !== 2}
+      {#if settings.s.filmstripPos === "right" && view.length && fsMode !== 2}
         <div class="vsplit" role="separator" tabindex="-1" onpointerdown={startStripResize}></div>
         <aside class="rstrip" class:fsDim={fullscreen} style="width:{settings.s.filmstripSize}px">
           <VirtualStrip items={view} {activeIndex} orientation="v" cellSize={stripCell} cell={stripCellSnip} />
@@ -4792,7 +4805,7 @@
     </div>
 
     <!-- active-item info bar -->
-    {#if active && !editOpen && inTrashFolder}
+    {#if active && inTrashFolder}
       {@const trows = trashTargets()}
       {@const one = trashRowFor(active)}
       <div class="info trashInfo">
@@ -4812,7 +4825,7 @@
         </button>
         <button class="btn sm danger" disabled={!trows.length} onclick={() => purgeSelected(trows)} title="Erase from the disk: no undo (Delete)">Delete permanently</button>
       </div>
-    {:else if active && !editOpen}
+    {:else if active}
       <div class="info">
         <span class="activeIdentity">
           {#if selectionSummary}
@@ -4881,7 +4894,7 @@
          strip is hidden, so there is always something to click to bring it back
          (and it costs 8px, not a panel). Hiding from a left/right dock parks the
          control here too — one consistent place for "the strip is away". -->
-    {#if !editOpen && view.length && fsMode !== 2 && (settings.s.filmstripPos === "bottom" || stripHidden)}
+    {#if view.length && fsMode !== 2 && (settings.s.filmstripPos === "bottom" || stripHidden)}
       <div
         class="hsplit"
         class:collapsed={stripHidden}
@@ -5046,15 +5059,10 @@
   .zoom { gap: 6px; }
   .zoom .mini { color: var(--text-faint); font-size: 12px; }
   .zoom input { width: 90px; accent-color: var(--accent); }
-  .modeToggle { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elev); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bg-hover) 55%, transparent); }
-  .modeToggle button { min-width: 72px; padding: 7px 12px; border-radius: 8px; color: var(--text-dim); font-size: 13px; font-weight: 800; }
-  .modeToggle button:hover { background: var(--bg-hover); }
-  .modeToggle button.on { background: var(--accent); color: var(--accent-on); }
-  .modeToggle button:disabled { opacity: 0.45; cursor: not-allowed; }
-  .editModeTitle { gap: 9px; }
-  .editModeTitle strong { font-size: 13.5px; }
-  .editModeTitle span:last-child { color: var(--text-faint); font-size: 12px; white-space: nowrap; }
   .btn.sm { padding: 5px 9px; border-radius: 7px; font-size: 12.5px; }
+  /* Opens the Edit window (it used to be a Library/Edit mode toggle). */
+  .editWinBtn { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--accent); }
+  .editWinBtn:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev)); }
   .btn.sm.on { border-color: var(--accent); color: var(--accent); }
 
   .div { flex: 0 0 auto; align-self: stretch; width: 1px; margin: 2px 4px; background: var(--border); }
@@ -5625,6 +5633,8 @@
   .tagdot { font-size: 11px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
   /* Event marker — sits inboard of the tag glyph so a photo can carry both. */
   .evtdot { font-size: 11px; color: var(--accent); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.65)); }
+  /* In/out ranges marked in Focus: what a drag to Edit will carry. */
+  .cutdot { padding: 0 4px; border-radius: 4px; font-size: 10.5px; font-weight: 700; color: #fff; background: rgba(0,0,0,0.55); }
   /* Video length, YouTube-style: it lands in the letterbox under a landscape
      clip, space the tile was leaving empty. */
   .dur { padding: 1px 5px; border-radius: 4px; background: rgba(0,0,0,0.66); color: #fff; font-size: 10.5px; font-weight: 650; line-height: 1.45; font-variant-numeric: tabular-nums; letter-spacing: .01em; }
@@ -5848,9 +5858,6 @@
   .ico:active { transform: translateY(1px); }
   .btn.sm { min-height: 29px; border-radius: 8px; font-weight: 560; }
   .rightTools { gap: 6px; }
-  .modeToggle { gap: 2px; padding: 3px; border-color: var(--border-soft); border-radius: 10px; box-shadow: inset 0 1px 4px rgba(0,0,0,.2); }
-  .modeToggle button { min-width: 68px; padding: 6px 10px; border-radius: 7px; font-size: 12.5px; }
-  .modeToggle button.on { box-shadow: inset 0 1px color-mix(in srgb, white 16%, transparent), 0 2px 8px color-mix(in srgb, var(--accent) 20%, transparent); }
   .zoom input { width: 78px; }
   .castBadge { height: 27px; padding-inline: 9px; border-color: color-mix(in srgb, var(--accent) 48%, var(--border)); background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev)); }
 
@@ -5970,7 +5977,6 @@
     .div { margin-inline: 1px; }
     .rightTools { gap: 4px; }
     .zoom input { width: 62px; }
-    .modeToggle button { min-width: 58px; padding-inline: 8px; }
   }
 
   /* XPS split-screen / small window: preserve every control in two calm rows
@@ -5991,7 +5997,6 @@
     .viewChip span { display: none; }
     .viewChip { width: 31px; padding-inline: 0; }
     .zoom { display: none; }
-    .modeToggle button { min-width: 48px; }
     .info .name { max-width: 145px; }
     .tags { display: none; }
   }

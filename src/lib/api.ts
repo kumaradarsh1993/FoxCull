@@ -25,9 +25,38 @@ import type {
   EventInfo,
   ScanReport,
   RelinkOutcome,
+  MergeStatus,
 } from "./types";
 
 export const api = {
+  // ── separate windows (Edit, Merge) ────────────────────────────────────────
+  /** Open or focus the Edit/Merge window, queueing `payload` (JSON) for it. */
+  openToolWindow: (kind: "edit" | "merge", payload: unknown = null) =>
+    invoke<void>("open_tool_window", { kind, payload: payload == null ? null : JSON.stringify(payload) }),
+  /** Everything queued for this window since it last looked. */
+  takeToolInbox: <T>(kind: "edit" | "merge") =>
+    invoke<string[]>("take_tool_inbox", { kind }).then((xs) => xs.map((x) => JSON.parse(x) as T)),
+  /** "Something new in your inbox" (sent to the window after a queue). */
+  onToolInbox: (cb: () => void): Promise<UnlistenFn> => listen("tool-inbox", () => cb()),
+  /** Library left half, `kind` right half of the library's screen. */
+  tileWindows: (kind: "edit" | "merge") => invoke<{ tiled: boolean }>("tile_windows", { kind }),
+  /** Shared scratchpad between windows (⌘C clips, the drag in progress). */
+  stashSet: (key: string, value: unknown) =>
+    invoke<void>("stash_set", { key, value: value == null ? null : JSON.stringify(value) }).catch(() => {}),
+  stashGet: <T>(key: string) =>
+    invoke<string | null>("stash_get", { key }).then((v) => (v ? (JSON.parse(v) as T) : null)).catch(() => null),
+  /** A merge/export/snapshot wrote a file (any window refreshes its folder). */
+  onMediaOutput: (cb: (path: string) => void): Promise<UnlistenFn> =>
+    listen<string>("media-output", (e) => cb(e.payload)),
+  /** The backend asks the library to confirm quitting with work running. */
+  onConfirmQuit: (cb: () => void): Promise<UnlistenFn> => listen("confirm-quit", () => cb()),
+  /** Quit now: stop running work, remove half-written files. */
+  quitApp: () => invoke<void>("quit_app"),
+  /** The running (or just finished) merge. */
+  mergeStatus: () => invoke<MergeStatus>("merge_status"),
+  mergePause: (paused: boolean) => invoke<MergeStatus>("merge_pause", { paused }),
+  mergeDismiss: () => invoke<void>("merge_dismiss").catch(() => {}),
+
   /** Raw byte-range read, returned as an ArrayBuffer (binary IPC — no JSON
    *  overhead). I/O primitive of the WebCodecs scrub engine: the frontend
    *  parses MP4 sample tables and fetches exactly the bytes it decodes.
@@ -56,8 +85,9 @@ export const api = {
     invoke<{ path: string; duration: number }[]>("video_durations", { dir, paths }),
   /** Stream signature, length and recording time per clip, in shooting order. */
   mergeProbe: (paths: string[]) => invoke<MergeClip[]>("merge_probe", { paths }),
-  /** Join clips end to end with no re-encode. Progress: `onExportProgress`;
-   *  cancel: `cancelEditExport`. */
+  /** Join clips end to end (or convert, then join). Runs as job "merge":
+   *  progress through `activity` events and `mergeStatus`, stop with
+   *  `cancelJob("merge")`, pause with `mergePause`. */
   mergeVideos: (req: { paths: string[]; destDir: string; name: string; convert?: MergeConvert | null }) =>
     invoke<MergeOutcome>("merge_videos", { req }),
   /** Free bytes on the volume holding `path`. */

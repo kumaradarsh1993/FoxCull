@@ -75,6 +75,11 @@ native-tls = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2", "stream"] }
 tokio = { version = "1", features = ["time"] }
 
+# Pause/Resume a running merge's ffmpeg (SIGSTOP/SIGCONT) and stop it on
+# quit (SIGKILL). Bindings only, no C toolchain. Windows uses ntdll directly.
+[target."cfg(unix)".dependencies]
+libc = "0.2"
+
 [target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
 tauri-plugin-single-instance = "2"
 

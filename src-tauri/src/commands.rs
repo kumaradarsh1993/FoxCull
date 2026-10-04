@@ -305,6 +305,12 @@ pub struct Activity {
     /// The job can be stopped with `cancel_job(id)`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cancellable: bool,
+    /// Paused by the owner (a merge): no progress until resumed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub paused: bool,
+    /// The file a finished job made ("Show in folder").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 fn emit_activity(app: &AppHandle, id: &str, label: &str, done: u64, total: u64, state: &str) {
@@ -356,13 +362,19 @@ pub fn cancel_job(state: State<'_, AppState>, id: String) -> bool {
         state.export_gen.fetch_add(1, Ordering::SeqCst);
         return true;
     }
-    match JOB_CANCELS.lock().get(&id) {
+    let found = match JOB_CANCELS.lock().get(&id) {
         Some(flag) => {
             flag.store(true, Ordering::SeqCst);
             true
         }
         None => false,
+    };
+    // A paused merge's ffmpeg writes nothing, so its watcher would never get
+    // to see the stop flag: let it run again to be stopped.
+    if id == "merge" {
+        crate::procs::set_merge_paused(false);
     }
+    found
 }
 
 /// Seconds since the Unix epoch.
@@ -426,6 +438,10 @@ pub struct MediaItem {
     /// The row still carries every mark; the grid draws it as a "?" placeholder
     /// so the metadata can be relinked instead of silently lost.
     pub missing: bool,
+    /// A video's marked in/out ranges (subclips, else its trim). Empty = the
+    /// whole clip. Carried to the Edit window when the clip is dragged there.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ranges: Vec<VideoSegment>,
 }
 
 #[derive(Serialize)]
@@ -555,6 +571,24 @@ fn validate_active_dir(
         }
     }
     Ok(dir)
+}
+
+/// A media file wherever it lives, for the Edit and Merge windows. Their clips
+/// can come from a drive other than the one the library has open right now:
+/// the owner switches drives while the merge window is up, or puts SSD and
+/// phone clips on one timeline. Never a file inside FoxCull's own data.
+fn validate_media_anywhere(state: &AppState, path: &str) -> Result<PathBuf, String> {
+    let p = canonical_file(Path::new(path))?;
+    if !media::is_media(&p) {
+        return Err("not a supported media file".into());
+    }
+    let in_library = p
+        .components()
+        .any(|c| c.as_os_str().to_string_lossy().eq_ignore_ascii_case(LIB_DIRNAME));
+    if in_library || within(&p, &state.data_root) {
+        return Err("refusing to use a file inside FoxCull's library folder".into());
+    }
+    Ok(p)
 }
 
 fn is_audio_file(path: &Path) -> bool {
@@ -1628,6 +1662,7 @@ pub async fn list_folder_media(
                 tags: Vec::new(),
                 events: Vec::new(),
                 missing: false,
+                ranges: Vec::new(),
             }
         })
         .collect();
@@ -1658,6 +1693,13 @@ pub async fn list_folder_media(
     for item in &mut items {
         if let Some(events) = evmap.remove(&item.rel) {
             item.events = events;
+        }
+    }
+    // And each video's marked in/out ranges.
+    let mut rangemap = catalog.ranges_under(&prefix);
+    for item in items.iter_mut().filter(|i| i.kind == "video") {
+        if let Some(r) = rangemap.remove(&item.rel) {
+            item.ranges = r;
         }
     }
 
@@ -1697,6 +1739,7 @@ pub async fn list_folder_media(
                 tags: tagmap_missing.remove(&rel).unwrap_or_default(),
                 events: evmap_missing.remove(&rel).unwrap_or_default(),
                 missing: true,
+                ranges: Vec::new(),
             });
         }
     }
@@ -2851,12 +2894,10 @@ fn parse_merge_streams(err: &str, clip: &mut MergeClip) {
 /// flagged. Returned in shooting order (recording time, then name).
 #[tauri::command]
 pub async fn merge_probe(state: State<'_, AppState>, paths: Vec<String>) -> Result<Vec<MergeClip>, String> {
-    let root = canonical_active_root(&state.root.lock().clone())?;
-    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
     let ffmpeg = state.ffmpeg.clone().ok_or("ffmpeg not available")?;
     let mut files: Vec<PathBuf> = Vec::with_capacity(paths.len());
     for p in &paths {
-        files.push(validate_active_media_file(&root, lib.as_ref(), p)?);
+        files.push(validate_media_anywhere(&state, p).map_err(|e| format!("{}: {e}", file_label(p)))?);
     }
     let mut clips: Vec<MergeClip> = tauri::async_runtime::spawn_blocking(move || {
         warm_pool().install(|| {
@@ -3041,13 +3082,119 @@ fn friendly_file_stem(s: &str) -> String {
     }
 }
 
+/// The merge that's running or just finished: one at a time, owned by the
+/// backend so the Merge window can be closed mid-merge and reopened onto it.
+#[derive(Serialize, Clone, Default)]
+pub struct MergeStatus {
+    /// "idle" | "running" | "done" | "error" | "cancelled"
+    pub state: String,
+    pub paused: bool,
+    pub label: String,
+    /// Output file name and folder.
+    pub name: String,
+    pub out_path: String,
+    pub dest_dir: String,
+    pub clips: usize,
+    pub total_s: f64,
+    pub in_bytes: u64,
+    pub convert: bool,
+    pub pct: u64,
+    pub detail: Option<String>,
+    pub started_ms: i64,
+    pub finished_ms: i64,
+    pub out_bytes: u64,
+    pub error: Option<String>,
+}
+
+static MERGE: std::sync::LazyLock<Mutex<MergeStatus>> = std::sync::LazyLock::new(|| Mutex::new(MergeStatus::default()));
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[tauri::command]
+pub fn merge_status() -> MergeStatus {
+    let mut m = MERGE.lock().clone();
+    if m.state.is_empty() {
+        m.state = "idle".into();
+    }
+    m.paused = m.state == "running" && crate::procs::merge_paused();
+    m
+}
+
+/// Pause or resume the running merge (its ffmpeg is suspended in place).
+#[tauri::command]
+pub fn merge_pause(app: AppHandle, paused: bool) -> Result<MergeStatus, String> {
+    if MERGE.lock().state != "running" {
+        return Err("no merge is running".into());
+    }
+    crate::procs::set_merge_paused(paused);
+    let m = merge_status();
+    emit_job(
+        &app,
+        Activity {
+            id: "merge".into(),
+            label: m.label.clone(),
+            done: m.pct,
+            total: 100,
+            state: "running".into(),
+            detail: if paused { Some("Paused".into()) } else { m.detail.clone() },
+            cancellable: true,
+            paused,
+            ..Default::default()
+        },
+    );
+    crate::log::line(&format!("MERGE {}", if paused { "paused" } else { "resumed" }));
+    Ok(m)
+}
+
+/// Forget a finished merge (the window's "Done").
+#[tauri::command]
+pub fn merge_dismiss() {
+    let mut m = MERGE.lock();
+    if m.state != "running" {
+        *m = MergeStatus::default();
+    }
+}
+
+/// What went wrong, in words the owner can act on. ffmpeg's last stderr line
+/// ("Error writing trailer: No space left on device") is accurate but says
+/// nothing about which drive or what to do.
+fn friendly_merge_error(raw: &str, files: &[PathBuf], dest: &Path) -> String {
+    let lower = raw.to_lowercase();
+    if let Some(gone) = files.iter().find(|f| !f.exists()) {
+        let name = gone.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        return format!("Lost access to {name} partway through (was the card or drive removed?). Nothing was saved.");
+    }
+    if !dest.parent().is_some_and(|d| d.is_dir()) {
+        return "The destination folder disappeared partway through (was the drive removed?). Nothing was saved.".into();
+    }
+    if lower.contains("no space left") || lower.contains("disk full") || lower.contains("not enough space") {
+        return "The destination drive ran out of space. Nothing was saved: free some space or pick a bigger drive.".into();
+    }
+    if lower.contains("input/output error") || lower.contains("device not configured") {
+        return format!("A drive stopped responding while merging ({raw}). Nothing was saved. Check the cable or card and try again.");
+    }
+    if lower.contains("invalid data found") || lower.contains("moov atom not found") {
+        return format!("One of the clips is damaged or incomplete ({raw}). Nothing was saved. Remove it from the list and try again.");
+    }
+    if lower.contains("permission denied") || lower.contains("operation not permitted") {
+        return "FoxCull isn't allowed to write to that folder. Pick another one, or allow FoxCull in System Settings → Privacy & Security.".into();
+    }
+    format!("The merge failed: {raw}. Nothing was saved.")
+}
+
 /// Join clips end to end with a stream copy (ffmpeg's concat demuxer): no
 /// re-encode, so the result is exactly the camera's video and audio, and the
 /// work is a straight file copy (about as fast as the disks allow). Only the
 /// main video and first audio stream are kept; DJI's ~5 Mbps debug track,
 /// timecode, metadata track and cover JPEG are dropped. Refuses up front if
 /// the destination volume can't hold the result, rather than failing an hour in.
-/// Progress and cancel use the same channel as Edit exports.
+/// Runs as job "merge" with its own Stop and Pause (see `MergeStatus`), so the
+/// Merge window can close while it works.
 #[tauri::command]
 pub async fn merge_videos(
     app: AppHandle,
@@ -3057,21 +3204,28 @@ pub async fn merge_videos(
     if req.paths.len() < 2 {
         return Err("pick at least two videos to merge".into());
     }
-    let root = canonical_active_root(&state.root.lock().clone())?;
-    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
     let mut files: Vec<PathBuf> = Vec::with_capacity(req.paths.len());
     for p in &req.paths {
-        let src = validate_active_media_file(&root, lib.as_ref(), p)?;
+        let src = validate_media_anywhere(&state, p).map_err(|e| {
+            if !Path::new(p).exists() {
+                format!("{} isn't there any more (was the card or drive removed?)", file_label(p))
+            } else {
+                format!("{}: {e}", file_label(p))
+            }
+        })?;
         if !matches!(media::classify(&src), Kind::Video) {
-            return Err(format!("not a video: {p}"));
+            return Err(format!("not a video: {}", file_label(p)));
         }
         files.push(src);
     }
-    let dest_dir = canonical_dir(Path::new(&req.dest_dir))?;
-    if let Some(l) = &lib {
-        if within(&dest_dir, l) {
-            return Err("choose a folder outside FoxCull's library".into());
-        }
+    let dest_dir = canonical_dir(Path::new(&req.dest_dir))
+        .map_err(|_| "That destination folder isn't available (was the drive removed?). Pick another one.".to_string())?;
+    if dest_dir
+        .components()
+        .any(|c| c.as_os_str().to_string_lossy().eq_ignore_ascii_case(LIB_DIRNAME))
+        || within(&dest_dir, &state.data_root)
+    {
+        return Err("choose a folder outside FoxCull's library".into());
     }
     let ext = files[0]
         .extension()
@@ -3114,7 +3268,24 @@ pub async fn merge_videos(
         return Err("A merge is already running. Wait for it to finish, or stop it from the progress panel.".into());
     }
     let flag = job_token("merge");
+    crate::procs::set_merge_paused(false);
     let in_bytes: u64 = files.iter().map(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0)).sum();
+    {
+        let out_name = dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        *MERGE.lock() = MergeStatus {
+            state: "running".into(),
+            label: format!("Merging {} clips → {out_name}", files.len()),
+            name: out_name,
+            out_path: dest.to_string_lossy().to_string(),
+            dest_dir: dest_dir.to_string_lossy().to_string(),
+            clips: files.len(),
+            total_s,
+            in_bytes,
+            convert: req.convert.is_some(),
+            started_ms: now_ms(),
+            ..Default::default()
+        };
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let out_name = dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let watch = ExportWatch {
@@ -3145,10 +3316,31 @@ pub async fn merge_videos(
             None => merge_copy(&ffmpeg, &files, &dest, Some(&watch)),
         };
         job_finished("merge", &flag);
+        crate::procs::set_merge_paused(false);
+        let res = res.map_err(|e| if e == EXPORT_CANCELLED { e } else { friendly_merge_error(&e, &files, &dest) });
+        {
+            let mut m = MERGE.lock();
+            m.finished_ms = now_ms();
+            match &res {
+                Ok(()) => {
+                    m.state = "done".into();
+                    m.pct = 100;
+                    m.out_bytes = std::fs::metadata(&dest).map(|x| x.len()).unwrap_or(0);
+                    m.detail = None;
+                }
+                Err(e) if e == EXPORT_CANCELLED => m.state = "cancelled".into(),
+                Err(e) => {
+                    m.state = "error".into();
+                    m.error = Some(e.clone());
+                }
+            }
+        }
         match res {
             Ok(()) => {
                 let bytes = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
                 let secs = watch.started.elapsed().as_secs_f64();
+                // Any window showing that folder (the library) refreshes.
+                let _ = app.emit("media-output", dest.to_string_lossy().to_string());
                 emit_job(
                     &app,
                     Activity {
@@ -3158,6 +3350,7 @@ pub async fn merge_videos(
                         total: 100,
                         state: "done".into(),
                         detail: Some(format!("{} in {}", fmt_bytes(bytes), fmt_secs(secs))),
+                        path: Some(dest.to_string_lossy().to_string()),
                         ..Default::default()
                     },
                 );
@@ -3350,6 +3543,7 @@ fn merge_convert(ffmpeg: &Path, files: &[PathBuf], conv: &MergeConvert, dest: &P
         .ok_or("no destination folder")?
         .join(format!(".foxcull-merge-{}-{}-{}", std::process::id(), now(), CONVERT_SEQ.fetch_add(1, Ordering::Relaxed)));
     std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+    crate::procs::scratch_add(&work);
     let sub_watch = |detail: String, secs: f64, base: f64, span: f64| {
         watch.map(|w| ExportWatch {
             app: w.app.clone(),
@@ -3432,6 +3626,7 @@ fn merge_convert(ffmpeg: &Path, files: &[PathBuf], conv: &MergeConvert, dest: &P
         merge_copy(ffmpeg, &parts, dest, w.as_ref())
     })();
     let _ = std::fs::remove_dir_all(&work);
+    crate::procs::scratch_remove(&work);
     res
 }
 
@@ -4376,7 +4571,10 @@ impl ExportWatch {
     }
     /// `written`: bytes ffmpeg has written so far (its `total_size`), 0 if unknown.
     fn emit_with(&self, pct: u64, state: &str, written: u64) {
-        let detail = if self.expect_bytes > 0 && written > 0 && state == "running" {
+        let paused = self.job == "merge" && state == "running" && crate::procs::merge_paused();
+        let detail = if paused {
+            Some("Paused".to_string())
+        } else if self.expect_bytes > 0 && written > 0 && state == "running" {
             let secs = self.started.elapsed().as_secs_f64().max(0.001);
             Some(format!(
                 "{} of {} · {}/s",
@@ -4395,15 +4593,30 @@ impl ExportWatch {
                 done: pct,
                 total: 100,
                 state: state.to_string(),
-                detail,
+                detail: detail.clone(),
                 unit: None,
                 cancellable: state == "running",
+                paused,
+                path: None,
             },
         );
+        if self.job == "merge" && state == "running" {
+            let mut m = MERGE.lock();
+            m.pct = pct;
+            m.detail = detail;
+        }
         if self.job == "edit-export" {
             let _ = self.app.emit("export-progress", pct);
         }
     }
+}
+
+/// A file's name for a message ("DJI_0123.MP4"), or the path if it has none.
+fn file_label(p: &str) -> String {
+    Path::new(p)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| p.to_string())
 }
 
 /// "830 MB", "12.4 GB" — decimal units, as Finder and Explorer's drive sizes.
@@ -4436,6 +4649,8 @@ fn run_ffmpeg_watched(mut cmd: Command, watch: Option<&ExportWatch>, dest: &Path
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    // Reachable by Pause (a merge) and by Quit (kill it, delete `dest`).
+    let token = crate::procs::register(&child, Some(dest), w.job == "merge");
     let stderr_thread = child.stderr.take().map(|mut err| {
         std::thread::spawn(move || {
             use std::io::Read;
@@ -4472,7 +4687,9 @@ fn run_ffmpeg_watched(mut cmd: Command, watch: Option<&ExportWatch>, dest: &Path
             }
         }
     }
-    let status = child.wait().map_err(|e| e.to_string())?;
+    let status = child.wait();
+    crate::procs::unregister(token);
+    let status = status.map_err(|e| e.to_string())?;
     let err_text = stderr_thread
         .and_then(|t| t.join().ok())
         .unwrap_or_default();
@@ -4970,12 +5187,16 @@ pub async fn edit_export(
     if req.clips.is_empty() {
         return Err("nothing to export".into());
     }
-    let root = canonical_active_root(&state.root.lock().clone())?;
-    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
     for clip in &mut req.clips {
-        let p = validate_active_media_file(&root, lib.as_ref(), &clip.path)?;
+        let p = validate_media_anywhere(&state, &clip.path).map_err(|e| {
+            if !Path::new(&clip.path).exists() {
+                format!("{} isn't there any more (was the card or drive removed?)", file_label(&clip.path))
+            } else {
+                format!("{}: {e}", file_label(&clip.path))
+            }
+        })?;
         if !matches!(media::classify(&p), Kind::Video) {
-            return Err(format!("not a video file: {}", clip.path));
+            return Err(format!("not a video file: {}", file_label(&clip.path)));
         }
         clip.path = p.to_string_lossy().to_string();
     }
@@ -5084,7 +5305,24 @@ pub async fn edit_export(
         };
         let res = run();
         match &res {
-            Ok(_) => watch.emit(100, "done"),
+            Ok(out) => {
+                let name = Path::new(&out.path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                emit_job(
+                    &watch.app,
+                    Activity {
+                        id: "edit-export".into(),
+                        label: format!("Exported {name}"),
+                        done: 100,
+                        total: 100,
+                        state: "done".into(),
+                        detail: Some(format!("{} in {}", fmt_bytes(std::fs::metadata(&out.path).map(|m| m.len()).unwrap_or(0)), fmt_secs(watch.started.elapsed().as_secs_f64()))),
+                        path: Some(out.path.clone()),
+                        ..Default::default()
+                    },
+                );
+                let _ = watch.app.emit("export-progress", 100u64);
+                let _ = watch.app.emit("media-output", out.path.clone());
+            }
             // Terminal state reaches the frontend via the command result — only
             // the activity chip needs closing here.
             Err(e) if e == EXPORT_CANCELLED => {
@@ -5115,12 +5353,11 @@ pub fn path_exists(path: String) -> bool {
 
 #[tauri::command]
 pub async fn edit_snapshot(
+    app: AppHandle,
     state: State<'_, AppState>,
     mut req: EditSnapshotRequest,
 ) -> Result<String, String> {
-    let root = canonical_active_root(&state.root.lock().clone())?;
-    let lib = canonical_lib_dir(&state.lib_dir.lock().clone());
-    let src = validate_active_media_file(&root, lib.as_ref(), &req.path)?;
+    let src = validate_media_anywhere(&state, &req.path)?;
     if !matches!(media::classify(&src), Kind::Video) {
         return Err("not a video file".into());
     }
@@ -5129,7 +5366,9 @@ pub async fn edit_snapshot(
     let dest = snapshot_output_path(&req, &src);
     tauri::async_runtime::spawn_blocking(move || {
         export_snapshot(&ffmpeg, &req, &src, &dest)?;
-        Ok(dest.to_string_lossy().to_string())
+        let out = dest.to_string_lossy().to_string();
+        let _ = app.emit("media-output", out.clone());
+        Ok(out)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5422,6 +5661,8 @@ fn transfer_files(
             detail: Some(format!("{} of {n} · {name}", i + 1)),
             unit: (total > 0).then_some("bytes"),
             cancellable: true,
+            paused: false,
+            path: None,
         });
     };
     for (i, src) in srcs.iter().enumerate() {
@@ -5452,7 +5693,19 @@ fn transfer_files(
                 done += b;
                 report(done, total, i, &shown, false, &mut last_emit);
             };
-            result = copy_file_progress(src, &target, !plan.copy_mode, cancel, &mut on_bytes);
+            // Copied under a hidden name and renamed into place only when
+            // it's complete and checked, so a quit or crash mid-copy can't
+            // leave a truncated file that looks like the real one.
+            let part = target.with_file_name(format!(".{}.foxcull-part", target.file_name().unwrap_or_default().to_string_lossy()));
+            crate::procs::scratch_add(&part);
+            result = copy_file_progress(src, &part, !plan.copy_mode, cancel, &mut on_bytes);
+            if result.is_ok() {
+                if let Err(e) = std::fs::rename(&part, &target) {
+                    let _ = std::fs::remove_file(&part);
+                    result = Err(format!("couldn't finish the copy: {e}"));
+                }
+            }
+            crate::procs::scratch_remove(&part);
             if result.is_ok() && !plan.copy_mode {
                 // Copied and on the disk: now the original can go. If it
                 // won't, the "move" must not leave a duplicate behind.

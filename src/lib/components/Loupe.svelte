@@ -19,6 +19,7 @@
     casting = false,
     castPlayerState = null,
     oncasttoggle = () => {},
+    onranges = () => {},
   }: {
     item: MediaItem | null;
     showInfo?: boolean;
@@ -29,7 +30,20 @@
     casting?: boolean;
     castPlayerState?: string | null;
     oncasttoggle?: () => void;
+    /** The clip's marked in/out ranges changed (the library's ✂ badge and
+     *  what a drag to the Edit window carries). */
+    onranges?: (path: string, ranges: VideoSegment[]) => void;
   } = $props();
+
+  /** What goes to Edit: the marked subclips, else the trim, else nothing. */
+  function currentRanges(): VideoSegment[] {
+    if (segments.length) return sortedSegments();
+    const end = outS ?? dur;
+    return inS > 0 || outS != null ? (end > inS ? [{ in_s: inS, out_s: end }] : []) : [];
+  }
+  function reportRanges() {
+    if (item) onranges(item.path, currentRanges());
+  }
 
   // Image transitions: the PREVIOUS photo stays painted until the next sharp
   // preview is fully decoded, then we swap in one frame — no black gap, and no
@@ -778,6 +792,7 @@
     outS = null;
     if (item) api.clearTrim(item.path);
     exportNote = null;
+    reportRanges();
   }
   function persist() {
     if (!item) return;
@@ -790,6 +805,7 @@
       // Loud on purpose. This write failed silently for months (see api.ts).
       exportNote = `Couldn't save in/out (${e})`;
     });
+    reportRanges();
   }
 
   function sortedSegments(next = segments) {
@@ -800,6 +816,7 @@
 
   function persistSegments(next = segments) {
     if (item) api.setVideoSegments(item.path, sortedSegments(next));
+    reportRanges();
   }
 
   function addSegment() {

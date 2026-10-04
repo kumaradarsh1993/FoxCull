@@ -19,43 +19,35 @@
   //     re-encoded to one format at a generous bitrate. Different shapes,
   //     HDR mixed with SDR, and photos can't, and stay flagged.
   //   * Chronological (oldest first) by default; rows can be dragged to reorder.
-  //   * Clicking a row previews it on the right (photo, or video with hover
-  //     scrub and Play). Clicking outside never closes the window.
-  //   * Once it's merging, "Run in background" hides the window: the merge
-  //     keeps going in the job centre (bottom-left), with Stop and a Show
-  //     button to bring this window back. It has its own stop flag, so an
-  //     Edit export started meanwhile can't cancel it (2026-10-04).
-  import { onDestroy, onMount } from "svelte";
-  import { openUrl } from "@tauri-apps/plugin-opener";
+  //   * Clicking a row previews it on the right (photo, or a video tile you
+  //     hover to scrub). No Play: playing a 4K original from a card was slow,
+  //     and a merge window isn't where you watch footage (owner, 2026-10-04).
+  //   * This is the Merge WINDOW's review step (its own OS window since
+  //     2026-10-04). Once the merge starts the window switches to a progress
+  //     view (MergeWindow.svelte) and can be closed: the merge runs in the
+  //     backend, with Pause/Stop there and in the library's progress panel.
+  import { onMount } from "svelte";
   import { api } from "$lib/api";
-  import { activity } from "$lib/activity.svelte";
-  import type { MediaItem, MergeClip, MergeConvert, TreeDir } from "$lib/types";
+  import type { MediaItem, MergeClip, MergeConvert } from "$lib/types";
   import Thumb from "./Thumb.svelte";
   import ContextMenu, { type MenuEntry } from "./ContextMenu.svelte";
 
   let {
     items,
     sourceDir,
-    drives,
-    hidden = false,
     onclose,
-    onhide,
-    ondone,
+    onstarted,
   }: {
     /** Everything that was selected, photos included. */
     items: MediaItem[];
     /** Folder the clips live in: the default place to save. */
     sourceDir: string;
-    drives: TreeDir[];
-    /** Running in the background: the window is out of sight but alive. */
-    hidden?: boolean;
     onclose: () => void;
-    /** "Run in background": the page hides this window. */
-    onhide?: () => void;
-    ondone: (path: string, dir: string) => void;
+    /** The backend has the merge: switch to the progress view. */
+    onstarted: () => void;
   } = $props();
 
-  type Phase = "probing" | "ready" | "merging" | "done" | "error";
+  type Phase = "probing" | "ready" | "starting" | "error";
   let phase = $state<Phase>("probing");
   let byPath = $state<Record<string, MergeClip>>({});
   /** The merge sequence, as paths, in play order. */
@@ -64,17 +56,11 @@
   let sel = $state<Set<string>>(new Set());
   let anchor: string | null = null;
   let previewPath = $state<string | null>(null);
-  let playing = $state(false);
-  let playFailed = $state(false);
   let photoSrc = $state<string | null>(null);
   let menu = $state<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
   let name = $state("");
   let destDir = $state("");
   let error = $state("");
-  let pct = $state(0);
-  let startedAt = 0;
-  let now = $state(Date.now());
-  let result = $state<{ path: string; bytes: number } | null>(null);
   let listEl = $state<HTMLDivElement | null>(null);
 
   type Dest = { label: string; path: string; free: number | null };
@@ -304,7 +290,7 @@
 
   async function loadDestinations() {
     const list: Dest[] = [{ label: `Same folder as the clips (${baseName(sourceDir)})`, path: sourceDir, free: null }];
-    const sug = await api.suggestedFolders();
+    const [sug, drives] = await Promise.all([api.suggestedFolders(), api.listDrives().catch(() => [])]);
     const movies = sug.find((s) => s.kind === "videos");
     if (movies) list.push({ label: `This computer: ${movies.label}`, path: movies.path, free: null });
     for (const d of drives) {
@@ -335,11 +321,9 @@
   }
 
   // Preview: photos get the sharp Focus-size JPEG; videos show as a large
-  // tile (hover to scrub) until Play swaps in a real player.
+  // tile you hover to scrub.
   $effect(() => {
     const p = previewPath;
-    playing = false;
-    playFailed = false;
     photoSrc = null;
     const c = p ? byPath[p] : undefined;
     if (c?.kind === "photo") {
@@ -458,14 +442,13 @@
   function onkeydown(e: KeyboardEvent) {
     // This window owns the keyboard while it's open (the page ignores keys
     // then), and it never closes on Escape: only Cancel / ✕ close it.
-    if (hidden || menu) return; // hidden: keys belong to the library again
+    if (menu) return; // the context menu handles its own keys
     const t = e.target as HTMLElement;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
     if (phase !== "ready") return;
     if (e.key === "Escape") {
       e.preventDefault();
-      if (playing) playing = false;
-      else sel = new Set();
+      sel = new Set();
       return;
     }
     if (e.key === "Delete" || e.key === "Backspace") {
@@ -499,58 +482,36 @@
   }
 
   // ── merge ─────────────────────────────────────────────────────────────────
-  // Progress comes from the job centre's "merge" entry (the backend reports
-  // there), so this window and the bottom-left card always agree.
-  let ticker: ReturnType<typeof setInterval> | null = null;
-  let job = $derived(activity.jobs["merge"]);
-  $effect(() => {
-    if (phase === "merging" && job?.state === "running") pct = job.done;
-  });
+  // Starting hands the merge to the backend, which marks it running before
+  // its first frame; the window then switches to the progress view, which
+  // reads that state (so it survives this window closing). A refusal up front
+  // (no space, a clip gone, another merge running) comes back as an error and
+  // the list stays as it was.
   async function start() {
-    if (blocker) return;
+    if (blocker || phase === "starting") return;
     error = "";
-    playing = false;
-    phase = "merging";
-    pct = 0;
-    startedAt = Date.now();
-    ticker = setInterval(() => (now = Date.now()), 1000);
-    const n = clean.length;
-    activity.start("merge", {
-      label: `Merging ${n} clips → ${name}.mp4`,
-      kind: "merge",
-      total: 100,
-      unit: "pct",
-      cancel: () => void api.cancelJob("merge"),
-    });
-    try {
-      result = await api.mergeVideos({ paths: clean.map((c) => c.path), destDir, name, convert: converting ? target : null });
-      phase = "done";
-      ondone(result.path, destDir);
-    } catch (e) {
-      const msg = String(e);
-      phase = "ready";
-      if (!msg.includes("cancelled")) error = msg;
-      // A refusal before the backend started (another merge running, no
-      // space) never reached the job centre; don't leave a spinner there.
-      if (activity.jobs["merge"]?.state === "running") activity.finish("merge", { state: "error", label: "Merge failed", detail: msg });
-    } finally {
-      if (ticker) clearInterval(ticker);
+    phase = "starting";
+    const t0 = Date.now();
+    let settled = false;
+    void api
+      .mergeVideos({ paths: clean.map((c) => c.path), destDir, name, convert: converting ? target : null })
+      .catch((e) => {
+        if (settled) return;
+        settled = true;
+        phase = "ready";
+        const msg = String(e);
+        if (!msg.includes("cancelled")) error = msg;
+      });
+    for (let i = 0; i < 150 && !settled; i++) {
+      const st = await api.mergeStatus().catch(() => null);
+      if (st && st.state !== "idle" && st.started_ms >= t0 - 1000) {
+        settled = true;
+        onstarted();
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 100));
     }
   }
-
-  onDestroy(() => {
-    if (ticker) clearInterval(ticker);
-  });
-
-  let eta = $derived.by(() => {
-    if (phase !== "merging") return "";
-    const fromJob = activity.eta("merge");
-    if (fromJob) return `${fromJob} left`;
-    if (pct < 2) return "";
-    const elapsed = (now - startedAt) / 1000;
-    const left = (elapsed * (100 - pct)) / pct;
-    return left > 90 ? `about ${Math.round(left / 60)} min left` : `about ${Math.max(1, Math.round(left))} s left`;
-  });
 
   let preview = $derived(previewPath ? byPath[previewPath] : undefined);
   let previewItem = $derived(previewPath ? itemFor(previewPath) : undefined);
@@ -561,8 +522,7 @@
 
 <!-- The backdrop is inert on purpose: a stray click must not throw away a
      half-reviewed list. -->
-<div class="backdrop" class:hidden role="presentation"></div>
-<div class="panel" class:hidden role="dialog" aria-label="Merge videos" aria-modal="true">
+<div class="panel" role="main" aria-label="Merge videos">
   <header>
     <div>
       <h2>Merge videos</h2>
@@ -571,13 +531,7 @@
       </p>
     </div>
     <span class="grow"></span>
-    {#if phase !== "merging"}
-      <button class="x" onclick={onclose} title="Close" aria-label="Close">✕</button>
-    {:else if onhide}
-      <button class="x" onclick={onhide} title="Run in background: keep merging, follow it bottom-left" aria-label="Run in background">
-        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 12h12" /></svg>
-      </button>
-    {/if}
+    <button class="x" onclick={onclose} title="Close" aria-label="Close" disabled={phase === "starting"}>✕</button>
   </header>
 
   {#if phase === "probing"}
@@ -702,21 +656,10 @@
           {#if preview && previewItem}
             {#if preview.kind === "photo"}
               {#if photoSrc}<img src={photoSrc} alt={preview.name} />{:else}<div class="stage"><Thumb item={previewItem} size={480} /></div>{/if}
-            {:else if preview.kind === "video" && playing && !playFailed}
-              <!-- svelte-ignore a11y_media_has_caption -->
-              <video src={api.fileSrc(preview.path)} controls autoplay onerror={() => (playFailed = true)}></video>
             {:else}
               <div class="stage"><Thumb item={previewItem} size={480} armed /></div>
               {#if preview.kind === "video"}
-                <div class="playbar">
-                  {#if playFailed}
-                    <span class="pf">This clip can't play in here.</span>
-                    <button class="btn sm" onclick={() => api.openExternal(preview!.path)}>Open in player</button>
-                  {:else}
-                    <span class="hint">Hover to scrub</span>
-                    <button class="btn sm accent" onclick={() => (playing = true)}>▶ Play</button>
-                  {/if}
-                </div>
+                <div class="playbar"><span class="hint">Hover to scrub</span></div>
               {/if}
             {/if}
           {:else}
@@ -733,30 +676,14 @@
         {/if}
 
         <div class="settings">
-          {#if phase === "done" && result}
-            <div class="doneBox">
-              <div class="doneIcon">✓</div>
-              <h3 title={result.path}>{baseName(result.path)}</h3>
-              <p>{gb(result.bytes)} · {fmtLong(totalSecs)} · {clean.length} clips</p>
-              <p class="hint2">
-                {#if converting && target}Upload this file to YouTube as it is. It's encoded at {Math.round(target.bitrateKbps / 1000)} Mbps, well above what YouTube keeps, so nothing you'd see is lost.{:else}Upload this file to YouTube as it is: that gives YouTube the original quality.{/if}
-                Your clips are untouched, so you can delete this file after the upload to get the space back.
-              </p>
-              <div class="doneActions">
-                <button class="btn" onclick={() => api.reveal(result!.path)}>Show in folder</button>
-                <button class="btn" onclick={() => openUrl("https://www.youtube.com/upload")}>Open YouTube upload</button>
-                <button class="btn accent" onclick={onclose}>Done</button>
-              </div>
-            </div>
-          {:else}
             {#if fixable.length || converting}
               <span class="fl">How to join</span>
               <div class="modes" role="radiogroup" aria-label="How to join">
-                <button class="mode" class:on={!converting} role="radio" aria-checked={!converting} disabled={phase === "merging"} onclick={() => (mode = "copy")}>
+                <button class="mode" class:on={!converting} role="radio" aria-checked={!converting} disabled={phase === "starting"} onclick={() => (mode = "copy")}>
                   <span class="mt">Lossless</span>
                   <span class="md">Exact camera quality. Only clips in the same format.</span>
                 </button>
-                <button class="mode" class:on={converting} role="radio" aria-checked={converting} disabled={phase === "merging"} onclick={() => (mode = "convert")}>
+                <button class="mode" class:on={converting} role="radio" aria-checked={converting} disabled={phase === "starting"} onclick={() => (mode = "convert")}>
                   <span class="mt">Convert to match</span>
                   <span class="md">Brings in the {fixable.length} that differ. Re-encoded; takes a few minutes.</span>
                 </button>
@@ -775,61 +702,45 @@
             </div>
 
             <label class="fl" for="mergeName">File name</label>
-            <input id="mergeName" type="text" bind:value={name} spellcheck="false" disabled={phase === "merging"} />
+            <input id="mergeName" type="text" bind:value={name} spellcheck="false" disabled={phase === "starting"} />
 
             <span class="fl">Save to</span>
             <div class="dests">
               {#each dests as d (d.path)}
-                <button class="dest" class:on={destDir === d.path} class:tight={d.free !== null && !fits(d)} disabled={phase === "merging"} onclick={() => (destDir = d.path)} title={d.path}>
+                <button class="dest" class:on={destDir === d.path} class:tight={d.free !== null && !fits(d)} disabled={phase === "starting"} onclick={() => (destDir = d.path)} title={d.path}>
                   <span class="dl">{d.label}</span>
                   <span class="df">{#if d.free === null}checking…{:else if !fits(d)}too small · {gb(d.free)} free{:else}{gb(d.free)} free{/if}</span>
                 </button>
               {/each}
-              <button class="dest choose" disabled={phase === "merging"} onclick={chooseFolder}>Choose another folder…</button>
+              <button class="dest choose" disabled={phase === "starting"} onclick={chooseFolder}>Choose another folder…</button>
             </div>
 
             {#if error}<p class="warn">{error}</p>{/if}
 
-            {#if phase === "merging"}
-              <div class="progress" role="progressbar" aria-valuenow={pct} aria-valuemin="0" aria-valuemax="100">
-                <div class="bar"><div class="fill" style="width:{pct}%"></div></div>
-                <span>{converting ? "Converting" : "Merging"}… {pct}%{eta ? ` · ${eta}` : ""}</span>
-                {#if job?.state === "running" && job.detail}<span class="pdetail">{job.detail}</span>{/if}
-              </div>
-            {/if}
-
             <div class="actions">
-              {#if phase === "merging"}
-                <span class="meanwhile">You can keep using FoxCull meanwhile.</span>
-                <span class="grow"></span>
-                <button class="btn" onclick={() => activity.cancel("merge")}>Stop</button>
-                {#if onhide}<button class="btn accent" onclick={onhide} title="The merge keeps going; follow it in the bottom-left corner">Run in background</button>{/if}
-              {:else}
-                {#if blocker}<span class="why">{blocker}</span>{/if}
-                <span class="grow"></span>
-                <button class="btn" onclick={onclose}>Cancel</button>
-                <button class="btn accent" disabled={!!blocker} onclick={start}>{converting ? "Convert and merge" : "Merge"} {clean.length} clips</button>
-              {/if}
+              {#if blocker}<span class="why">{blocker}</span>{/if}
+              <span class="grow"></span>
+              <button class="btn" onclick={onclose} disabled={phase === "starting"}>Cancel</button>
+              <button class="btn accent" disabled={!!blocker || phase === "starting"} onclick={start}>
+                {phase === "starting" ? "Starting…" : `${converting ? "Convert and merge" : "Merge"} ${clean.length} clips`}
+              </button>
             </div>
-          {/if}
         </div>
       </section>
     </div>
   {/if}
 </div>
 
-{#if menu && !hidden}
+{#if menu}
   <ContextMenu x={menu.x} y={menu.y} entries={menu.entries} onclose={() => (menu = null)} />
 {/if}
 
 <style>
-  .backdrop { position: fixed; inset: 0; z-index: 100; background: rgba(0, 0, 0, 0.66); backdrop-filter: blur(6px); }
+  /* The whole Merge window. */
   .panel {
-    position: fixed; inset: 16px; z-index: 101; margin: auto;
-    max-width: 1400px; max-height: 900px;
+    position: fixed; inset: 0;
     display: flex; flex-direction: column; overflow: hidden;
-    background: color-mix(in srgb, var(--bg-panel) 97%, transparent);
-    border: 1px solid var(--border-strong); border-radius: var(--radius-xl); box-shadow: var(--shadow);
+    background: var(--bg-panel);
   }
   header { display: flex; align-items: center; gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--border-soft); flex-shrink: 0; }
   h2 { margin: 0; font-family: var(--font-display); font-size: 17px; letter-spacing: -0.015em; }
@@ -918,11 +829,10 @@
   }
 
   .preview { position: relative; height: 250px; margin: 12px 14px 0; border-radius: var(--radius-md); overflow: hidden; background: #050607; display: flex; align-items: center; justify-content: center; }
-  .preview img, .preview video { width: 100%; height: 100%; object-fit: contain; background: #050607; }
+  .preview img { width: 100%; height: 100%; object-fit: contain; background: #050607; }
   .stage { width: 100%; height: 100%; }
   .playbar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: linear-gradient(transparent, rgba(0, 0, 0, 0.7)); }
   .playbar .hint { flex: 1; color: rgba(255, 255, 255, 0.7); font-size: 11.5px; }
-  .playbar .pf { flex: 1; color: #fff; font-size: 12px; }
   .noPreview { color: var(--text-faint); font-size: 12.5px; }
   .pcap { display: flex; flex-direction: column; gap: 2px; margin: 8px 14px 0; }
   .pname { overflow: hidden; color: var(--text); font-size: 12.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
@@ -951,14 +861,6 @@
   .dest.tight .df { color: var(--reject); }
   .dest.choose { justify-content: center; color: var(--accent); }
   .warn { margin: 0; color: var(--reject); font-size: 12.5px; line-height: 1.5; }
-  .progress { display: flex; flex-direction: column; gap: 6px; color: var(--text-dim); font-size: 12.5px; }
-  .pdetail { color: var(--text-faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
-  .meanwhile { color: var(--text-faint); font-size: 12px; }
-  /* Running in the background: alive (the merge's promise lives here) but out
-     of sight; the job centre's Show brings it back. */
-  .backdrop.hidden, .panel.hidden { display: none; }
-  .bar { height: 6px; border-radius: 999px; background: var(--bg-hover); overflow: hidden; }
-  .fill { height: 100%; background: var(--accent); transition: width 300ms ease; }
   /* Always in view, however short the window: the button is the point. */
   .actions {
     position: sticky; bottom: 0; z-index: 1;
@@ -971,12 +873,6 @@
   /* What's still in the way, on its own line above the buttons. */
   .actions .why { flex: 1 0 100%; color: var(--star); font-size: 12px; line-height: 1.4; }
 
-  .doneBox { padding: 14px 4px 4px; text-align: center; }
-  .doneIcon { display: inline-grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; background: color-mix(in srgb, var(--pick) 18%, transparent); color: var(--pick); font-size: 20px; }
-  .doneBox h3 { margin: 10px 0 4px; overflow: hidden; color: var(--text); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
-  .doneBox p { margin: 0; color: var(--text-dim); font-size: 12.5px; }
-  .doneBox .hint2 { margin-top: 10px; line-height: 1.55; }
-  .doneActions { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 14px; }
 
   /* Short windows (TV size on a laptop): the list and the settings need the
      height more than a big preview does. */

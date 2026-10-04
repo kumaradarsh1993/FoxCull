@@ -55,6 +55,10 @@ export interface Job {
   cancellable: boolean;
   /** Waiting its turn (a move queued behind another): no progress bar yet. */
   queued?: boolean;
+  /** Paused by the owner (a merge): no progress, no time left. */
+  paused?: boolean;
+  /** The file a finished job made (offers "Show in folder"). */
+  path?: string;
   actions: JobAction[];
   /** When it started, and when it last changed state (for ordering/ages). */
   started: number;
@@ -71,6 +75,8 @@ interface ActivityEvent {
   detail?: string;
   unit?: "bytes";
   cancellable?: boolean;
+  paused?: boolean;
+  path?: string;
 }
 
 const QUIET_LINGER_MS = 2000;
@@ -215,12 +221,31 @@ class ActivityStore {
   );
   problems = $derived(this.recent.filter((j) => j.state === "error").length);
 
+  /** Extra actions per job from whoever knows about it (the library adds a
+   *  merge's Pause/Resume and "Show merge window"), plus "Show in folder" for
+   *  any finished job that made a file. Computed at render, so no job object
+   *  is rewritten (and no effect loops on it). */
+  private providers: ((j: Job) => JobAction[])[] = [];
+  addActions(fn: (j: Job) => JobAction[]): () => void {
+    this.providers.push(fn);
+    return () => (this.providers = this.providers.filter((p) => p !== fn));
+  }
+  actionsOf(j: Job): JobAction[] {
+    const out = [...j.actions, ...this.providers.flatMap((p) => p(j))];
+    if (j.state === "done" && j.path && !out.some((a) => a.label === "Show in folder")) {
+      const path = j.path;
+      out.unshift({ label: "Show in folder", run: () => void import("$lib/api").then(({ api }) => api.reveal(path)) });
+    }
+    const seen = new Set<string>();
+    return out.filter((a) => (seen.has(a.label) ? false : (seen.add(a.label), true)));
+  }
+
   /** Seconds remaining for a determinate running job, from the recent rate —
    *  a sliding window, so multi-phase jobs (fast photos, then slow videos)
    *  adapt instead of averaging the phases into nonsense. NaN = don't show. */
   etaSeconds(id: string): number {
     const j = this.jobs[id];
-    if (!j || j.state !== "running" || j.total <= 0 || j.done <= 0) return NaN;
+    if (!j || j.state !== "running" || j.paused || j.total <= 0 || j.done <= 0) return NaN;
     const r = this.rate(id);
     return r > 0 ? (j.total - j.done) / r : NaN;
   }
@@ -270,6 +295,8 @@ class ActivityStore {
       cancellable: e.state === "running" && (!!e.cancellable || this.cancels.has(e.id)),
       actions: prev?.actions ?? [],
       queued: false,
+      paused: !!e.paused,
+      path: e.path ?? prev?.path,
       started: prev && prev.state === "running" ? prev.started : Date.now(),
     });
   }

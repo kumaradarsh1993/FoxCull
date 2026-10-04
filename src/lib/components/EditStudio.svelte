@@ -1,5 +1,12 @@
 <script module lang="ts">
+  import type { EditAdjustments as Adj } from "$lib/types";
   type TrimMemory = { inS: number; outS: number };
+  /** What a drop/paste/E brought, for the toast and the mismatch check. */
+  export type AddResult = { clips: number; segments: number; photos: number; missing: number; other: number; paths: string[] };
+  /** A timeline as saved between sessions (the window can be closed). */
+  export type SavedClip = { path: string; name: string; inS: number; outS: number; duration: number; start: number; lane: number; cropX: number; cropY: number; zoom: number };
+  export type SavedAudio = { path: string; name: string; start: number; duration: number; lane: number };
+  export type TimelineState = { v: 1; clips: SavedClip[]; audio: SavedAudio[]; preset: string; adjustments: Adj; look: string | null; lookIntensity: number; keepSourceAudio: boolean };
   const sessionTrimMemory = new Map<string, TrimMemory>();
   // Which Look preset groups are expanded, remembered for the whole app session
   // (survives leaving and re-entering the edit studio). Missing key = default open.
@@ -7,37 +14,34 @@
 </script>
 
 <script lang="ts">
+  // The Edit window's studio: timeline, preview, Look and export. It has no
+  // media picker of its own (2026-10-04, owner's spec): clips come from the
+  // library window, by drag, by ⌘C/⌘V, or with E / "Add to Edit timeline",
+  // and each in/out range marked in the library arrives as its own segment.
+  // See docs/design/edit-window-rework.md.
   import { tick } from "svelte";
   import { api } from "$lib/api";
   import type {
+    ClipRef,
     EditAdjustments,
     EditExportRequest,
     EditSnapshotRequest,
     EditSourceItem,
-    MediaItem,
     MediaProbe,
   } from "$lib/types";
   import ContextMenu, { type MenuEntry } from "./ContextMenu.svelte";
-  import Thumb from "./Thumb.svelte";
 
   let {
-    active,
-    selectedItems,
-    sourceItems = [],
-    currentDir = null,
-    recursive = true,
-    refreshKey = 0,
-    onexported,
+    onchange,
+    onsidebyside,
+    ondropped,
   }: {
-    active: MediaItem | null;
-    selectedItems: MediaItem[];
-    sourceItems?: MediaItem[];
-    currentDir?: string | null;
-    recursive?: boolean;
-    refreshKey?: number;
-    /** Called after a file lands next to a source (export/snapshot), so the
-     *  library can refresh and show it without a manual reload. */
-    onexported?: () => void;
+    /** The timeline changed (debounce and persist it). */
+    onchange?: (state: TimelineState) => void;
+    /** "Side by side" with the library. */
+    onsidebyside?: () => void;
+    /** A drop on a track added clips (the window reports what happened). */
+    ondropped?: (r: AddResult) => void;
   } = $props();
 
   type PresetId = "original" | "landscape" | "square" | "reels" | "mobile";
@@ -58,8 +62,6 @@
   type LookGroupId = "portrait" | "landscape" | "bw" | "cinematic" | "clean";
   type Encoder = "auto" | "x264" | "nvenc";
   type Quality = "best" | "high" | "standard" | "small";
-  type SourceView = "details" | "list" | "thumbs";
-  type SourceFilter = "all" | "video" | "audio";
   type DragMode = "move" | "trimIn" | "trimOut";
 
   type TimelineClip = {
@@ -238,68 +240,29 @@
   let videoH = $state(9);
   let currentTime = $state(0);
   let previewPreparing = $state(false);
-  let sourceBase = $state<EditSourceItem[]>([]);
-  let sourceLoading = $state(false);
-  let sourceFocusPath = $state<string | null>(null);
-  let sourceView = $state<SourceView>("details");
-  let sourceFilter = $state<SourceFilter>("all");
   let probes = $state<Record<string, MediaProbe>>({});
   let timelineScale = $state(26);
   let timelineViewportEl = $state<HTMLDivElement | null>(null);
   let timelineViewportW = $state(0);
-  let sourcePanelW = $state(360);
   let inspectorPanelW = $state(320);
   let timelinePanelH = $state(260);
   /** Width of the whole studio, for sharing it out below. */
   let shellW = $state(0);
 
-  // The side panels keep the widths the user dragged them to while there is
-  // room, and give way proportionally when there isn't, so the work pane
-  // (preview, format bar, Export) always gets at least WORK_MIN. With fixed
-  // 360 + 320 px panels a 1280 px Mac window with the folder tree open left
-  // the work pane ~318 px, and its toolbar painted over the Look panel.
+  // The Look panel keeps the width the user dragged it to while there is room
+  // and gives way when there isn't, so the work pane (preview, format bar,
+  // Export) always gets at least WORK_MIN.
   const WORK_MIN = 460;
   const PANEL_MIN = 230;
   let panelW = $derived.by(() => {
-    let src = sourceCollapsed ? 0 : sourcePanelW;
     let insp = inspectorCollapsed ? 0 : inspectorPanelW;
-    const gutters = (src ? 6 : 0) + (insp ? 6 : 0);
-    const over = src + insp + gutters + WORK_MIN - shellW;
-    if (shellW > 0 && over > 0) {
-      const give = (w: number) => (w ? Math.max(0, w - PANEL_MIN) : 0);
-      const slack = give(src) + give(insp);
-      const cut = Math.min(over, slack);
-      if (slack > 0) {
-        src -= (give(src) / slack) * cut;
-        insp -= (give(insp) / slack) * cut;
-      }
-    }
-    return { src: Math.round(src), insp: Math.round(insp) };
+    const over = insp + (insp ? 6 : 0) + WORK_MIN - shellW;
+    if (shellW > 0 && over > 0 && insp) insp = Math.max(PANEL_MIN, insp - over);
+    return { insp: Math.round(insp) };
   });
-
-  // Below this width even minimum-width panels on both sides starve the work
-  // pane (a 1024 px window with the folder tree open left it ~280 px, and the
-  // format bar and Export ran over the Look panel). Narrow studios show ONE
-  // side panel: whichever was opened most recently; on entering narrow mode
-  // the media list stays, since it is where clips come from.
-  const NARROW_W = PANEL_MIN * 2 + 12 + WORK_MIN;
-  let prevInspectorOpen = true;
-  $effect(() => {
-    const srcOpen = !sourceCollapsed;
-    const inspOpen = !inspectorCollapsed;
-    if (shellW > 0 && shellW < NARROW_W && srcOpen && inspOpen) {
-      if (!prevInspectorOpen) sourceCollapsed = true;
-      else inspectorCollapsed = true;
-    }
-    prevInspectorOpen = !inspectorCollapsed;
-  });
-  let sourceCollapsed = $state(false);
   let inspectorCollapsed = $state(false);
   let timelineCollapsed = $state(false);
   let productionPreview = $state(false);
-  let dragSourcePath = $state<string | null>(null);
-  let seededKey = $state("");
-  let seeding = $state(false);
   let timelineDrag: TimelineDrag | null = null;
   let sourceMenu = $state<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
   let exportMenuOpen = $state(false);
@@ -358,9 +321,6 @@
     sessionLookGroupOpen[id] = next;
   }
 
-  let activeVideo = $derived(active?.kind === "video" ? active : null);
-  let selectedVideos = $derived(selectedItems.filter((i) => i.kind === "video"));
-  let initialVideos = $derived.by(() => (selectedVideos.length ? selectedVideos : activeVideo ? [activeVideo] : []));
   let outPreset = $derived(PRESETS[preset]);
   let outAspect = $derived(outPreset.fit === "original" ? videoW / videoH : outPreset.w / outPreset.h);
   let selectedClip = $derived(clips.find((c) => c.id === selectedId) ?? clips[0] ?? null);
@@ -661,184 +621,6 @@
     !productionPreview && !!selectedClip && (segAt(playheadS)?.clip?.id ?? null) === (selectedClip?.id ?? null),
   );
 
-  function mediaToSource(item: MediaItem): EditSourceItem {
-    return {
-      name: item.name,
-      path: item.path,
-      kind: "video",
-      ext: item.ext,
-      mtime: item.mtime,
-      size: item.size,
-    };
-  }
-
-  /// Stable `MediaItem` identity per source path.
-  ///
-  /// The template calls `sourceToMedia(item)` to feed `<Thumb>`. Returning a
-  /// fresh object each call handed every tile a brand-new `item` prop on every
-  /// re-render, which re-runs Thumb's load effect and re-issues its poster
-  /// request plus two IPC calls — times 229.
-  ///
-  /// The nightly.5 instrumentation is what caught this: the log shows
-  /// `edit-mem close` and `edit-mem open` **1 ms apart**, repeatedly. That pair
-  /// can only come from the effect's dependency changing identity, i.e. the
-  /// source list recomputing while its contents are unchanged. One entry per
-  /// source path, so the cache is bounded by the folder.
-  const mediaCache = new Map<string, MediaItem>();
-  function sourceToMedia(item: EditSourceItem): MediaItem {
-    const hit = mediaCache.get(item.path);
-    // Reuse only if the underlying file really is unchanged — a rescan that
-    // finds a different size/mtime must produce a new object so tiles refresh.
-    if (hit && hit.name === item.name && hit.size === item.size && hit.mtime === item.mtime) {
-      return hit;
-    }
-    const made: MediaItem = {
-      name: item.name,
-      path: item.path,
-      rel: item.name,
-      kind: "video",
-      ext: item.ext,
-      mtime: item.mtime,
-      size: item.size,
-      rating: 0,
-      label: null,
-      flag: null,
-      tags: [],
-      events: [],
-      missing: false,
-    };
-    mediaCache.set(item.path, made);
-    return made;
-  }
-
-  let sources = $derived.by(() => {
-    const seen = new Set<string>();
-    const out: EditSourceItem[] = [];
-    for (const item of [...sourceBase, ...initialVideos.map(mediaToSource), ...sourceItems.filter((i) => i.kind === "video").map(mediaToSource)]) {
-      const key = normPath(item.path);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(item);
-    }
-    return out;
-  });
-
-  let sourceMetaByPath = $derived.by(() => {
-    const m = new Map<string, MediaItem>();
-    for (const item of [...sourceItems, ...selectedItems, ...(active ? [active] : [])]) {
-      m.set(normPath(item.path), item);
-    }
-    return m;
-  });
-
-  let filteredSources = $derived.by(() => {
-    const arr = sourceFilter === "all" ? sources : sources.filter((s) => s.kind === sourceFilter);
-    return [...arr].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
-  });
-
-  let focusedSource = $derived(filteredSources.find((item) => item.path === sourceFocusPath) ?? filteredSources[0] ?? null);
-
-  $effect(() => {
-    const dir = currentDir;
-    const rec = recursive;
-    refreshKey;
-    let alive = true;
-    sourceBase = [];
-    if (!dir) return;
-    sourceLoading = true;
-    api
-      .listEditSources(dir, rec)
-      .then((items) => {
-        if (alive) sourceBase = items;
-      })
-      .catch(() => {
-        if (alive) sourceBase = sourceItems.filter((i) => i.kind === "video").map(mediaToSource);
-      })
-      .finally(() => {
-        if (alive) sourceLoading = false;
-      });
-    return () => {
-      alive = false;
-    };
-  });
-
-  $effect(() => {
-    const first = filteredSources[0]?.path ?? null;
-    if (!sourceFocusPath || !filteredSources.some((item) => item.path === sourceFocusPath)) {
-      sourceFocusPath = first;
-    }
-  });
-
-  // ── memory instrumentation ────────────────────────────────────────────────
-  // Opening Edit on a 229-clip 4K60 folder took the WebView2 group to ~8 GB
-  // (renderer 4.5 GB, two Utility processes at 2.1 and 1.2 GB). The fixes in
-  // this file and in Thumb.svelte address work that provably should not have
-  // been happening, but they were NOT proven to be the whole of that 8 GB —
-  // renderer bytes are JS heap and DOM, while Utility bytes are hardware video
-  // decode, and those have different causes. This samples the JS heap so the
-  // next run says which half moved instead of leaving it to argument.
-  function heapMb(): number | null {
-    const m = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
-    return m ? Math.round(m.usedJSHeapSize / 1048576) : null;
-  }
-  $effect(() => {
-    const n = filteredSources.length;
-    if (!n) return;
-    const at = (tag: string) => api.logNote(`edit-mem ${tag} sources=${n} heap=${heapMb() ?? "n/a"}MB`);
-    at("open");
-    // Again once the pane has settled, so a slow climb is visible as a delta
-    // rather than a single number with nothing to compare it to.
-    const t = setTimeout(() => at("open+15s"), 15_000);
-    return () => {
-      clearTimeout(t);
-      at("close");
-    };
-  });
-
-  // Probe a source when it actually scrolls into view — see `probeOnView`.
-  //
-  // This replaces a blind `filteredSources.slice(0, 80)` sweep on open, which
-  // was wrong in both directions at once on a large folder. Owner's report:
-  // 229 Osmo 4K60 clips, 2-15 minutes each.
-  //   - Everything past #80 was NEVER probed, so those items showed
-  //     "Reading details..." permanently. Not slow — never requested at all.
-  //   - The first 80 fired ffmpeg immediately on open, competing for the same
-  //     disk with the 229 poster extractions the (unvirtualized) source pane
-  //     kicked off, which is why even those crawled.
-  function probeOnView(node: HTMLElement, src: EditSourceItem) {
-    let current = src;
-    const io = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          if (!e.isIntersecting) continue;
-          ensureProbe(current);
-          io.disconnect(); // a probe is cached forever; once is enough
-          return;
-        }
-      },
-      { rootMargin: "200px" },
-    );
-    io.observe(node);
-    return {
-      update(next: EditSourceItem) {
-        current = next;
-      },
-      destroy() {
-        io.disconnect();
-      },
-    };
-  }
-
-  $effect(() => {
-    const key = initialVideos.map((i) => i.path).join("|");
-    if (!key || clips.length || seeding || seededKey === key) return;
-    seededKey = key;
-    seeding = true;
-    void seedInitial(initialVideos.map(mediaToSource)).finally(() => {
-      seeding = false;
-    });
-  });
-
   // Keep the paused player parked on the correct frame: the clip under the
   // playhead (or a trim edge, mid-drag). While PLAYING, the engine owns the
   // video and this effect bows out (it reads `playing` first, so it doesn't even
@@ -1001,43 +783,10 @@
     });
   }
 
-  function sourceDuration(src: EditSourceItem): string {
-    const p = probes[src.path];
-    if (p?.duration) return fmt(p.duration);
-    return src.kind === "audio" ? "Audio" : "Video";
-  }
-
-  function sourceSubline(src: EditSourceItem): string {
-    const p = probes[src.path];
-    if (!p) return src.kind === "audio" ? src.ext.toUpperCase() : "Reading details...";
-    if (src.kind === "audio") return [p.codec ?? src.ext.toUpperCase(), fmtSize(src.size)].filter(Boolean).join(" - ");
-    const res = p.width && p.height ? `${p.width}x${p.height}` : "";
-    const fps = p.fps ? `${Math.round(p.fps)}fps` : "";
-    return [res, fps, p.codec ?? src.ext.toUpperCase()].filter(Boolean).join(" - ");
-  }
-
-  function sourceMetaChips(src: EditSourceItem): string[] {
-    const p = probes[src.path];
-    if (src.kind === "audio") return [fmtDate(src.mtime), fmtSize(src.size)].filter((v) => v && v !== "-");
-    return [p?.camera ?? "", fmtDate(p?.captured ?? src.mtime), fmtSize(src.size)].filter((v) => v && v !== "-");
-  }
-
-  function sourceStateChips(src: EditSourceItem): string[] {
-    const meta = sourceMetaByPath.get(normPath(src.path));
-    if (!meta) return [];
-    const out: string[] = [];
-    if (meta.flag === "pick") out.push("Pick");
-    if (meta.flag === "reject") out.push("Reject");
-    if (meta.rating > 0) out.push(`${meta.rating} star${meta.rating === 1 ? "" : "s"}`);
-    if (meta.label) out.push(meta.label);
-    if (meta.tags.length) out.push(...meta.tags.slice(0, 2).map((t) => `#${t}`));
-    return out;
-  }
-
-  // Every probe spawns an ffmpeg process on the backend, so the source-pane
-  // sweep (up to 80 files) must not fire them all at once — an unthrottled
-  // burst forks dozens of ffmpeg processes and pins a thin laptop. A small
-  // queue keeps a few in flight and drains in request order.
+  // Every probe spawns an ffmpeg process on the backend, so a drop of many
+  // clips must not fire them all at once — an unthrottled burst forks dozens
+  // of ffmpeg processes and pins a thin laptop. A small queue keeps a few in
+  // flight and drains in request order.
   const PROBE_PARALLEL = 4;
   const probeQueue: EditSourceItem[] = [];
   let probesInFlight = 0;
@@ -1126,64 +875,193 @@
     exportNote = null;
   }
 
-  // Seed the timeline from the library selection, carrying over any in/out marks
-  // made in Focus/Loupe (persisted per-path in the catalog): marked subclips seed
-  // one timeline clip each; otherwise the saved trim (or the full clip) is used.
-  async function seedInitial(items: EditSourceItem[]) {
+  /// Put clips from the library on the timeline. Each in/out range marked in
+  /// the library becomes its own segment, in order; a clip with none goes on
+  /// whole. `at` = a track and time (a drop on the timeline); otherwise they
+  /// go on V1 after the last clip (a drop elsewhere, a paste, E). Never on top
+  /// of an existing clip: a collision pushes right. Photos and missing files
+  /// can't go on a video timeline and are counted, not dropped silently.
+  export async function addClips(refs: ClipRef[], at?: { lane: number; start: number } | null): Promise<AddResult> {
+    const res: AddResult = { clips: 0, segments: 0, photos: 0, missing: 0, other: 0, paths: [] };
+    const lane = at?.lane ?? 0;
+    let cursor = at ? at.start : nextVideoStart(0);
     const made: TimelineClip[] = [];
-    let cursor = nextVideoStart(0);
-    for (const item of items.filter((s) => s.kind === "video")) {
-      const duration = await durationFor(item);
+    for (const ref of refs) {
+      if (ref.missing) {
+        res.missing++;
+        continue;
+      }
+      if (ref.kind === "image" || ref.kind === "raw") {
+        res.photos++;
+        continue;
+      }
+      if (ref.kind !== "video") {
+        res.other++;
+        continue;
+      }
+      const src: EditSourceItem = { name: ref.name, path: ref.path, kind: "video", ext: ref.ext, mtime: ref.mtime, size: ref.size };
+      const duration = await durationFor(src);
       const full = Math.max(0.1, duration || 1);
-      let ranges: { inS: number; outS: number }[] = [];
-      try {
-        const segs = await api.getVideoSegments(item.path);
-        if (segs?.length) {
-          ranges = segs.map((s) => ({
-            inS: Math.max(0, Math.min(s.in_s, full - 0.05)),
-            outS: Math.min(full, Math.max(s.out_s, Math.max(0, s.in_s) + 0.05)),
-          }));
-        }
-      } catch {
-        /* no segments — fall through to trim */
-      }
-      if (!ranges.length) {
-        let t = rememberedTrim(item.path, full);
-        try {
-          const bt = await api.getTrim(item.path);
-          if (bt) {
-            const inS = Math.max(0, Math.min(bt[0], full - 0.05));
-            t = { inS, outS: Math.min(full, Math.max(bt[1], inS + 0.05)) };
-          }
-        } catch {
-          /* no saved trim — keep session/default */
-        }
-        ranges = [t];
-      }
-      const cachedProxy = await api.videoProxyCached(item.path);
-      const src = api.fileSrc(cachedProxy ?? item.path);
+      // Ranges past the clip's end (a file replaced since it was marked) are
+      // clamped, and inverted or sub-frame ones are dropped.
+      let ranges = (ref.ranges ?? [])
+        .map((r) => ({ inS: Math.max(0, Math.min(r.in_s, full - 0.05)), outS: Math.min(full, Math.max(r.out_s, 0)) }))
+        .filter((r) => r.outS - r.inS >= 0.04);
+      if (!ranges.length) ranges = [rememberedTrim(ref.path, full)];
+      const cachedProxy = await api.videoProxyCached(ref.path);
+      const vsrc = api.fileSrc(cachedProxy ?? ref.path);
       for (const r of ranges) {
-        made.push({
+        const len = Math.max(0.05, r.outS - r.inS);
+        const clip: TimelineClip = {
           id: uid(),
-          path: item.path,
-          name: item.name,
-          src,
+          path: ref.path,
+          name: ref.name,
+          src: vsrc,
           inS: r.inS,
           outS: r.outS,
           duration: full,
-          start: cursor,
-          lane: 0,
+          start: 0,
+          lane,
           cropX: 0.5,
           cropY: 0.5,
           zoom: 1,
-        });
-        cursor += Math.max(0.1, r.outS - r.inS);
+        };
+        // Lay the new ones end to end, clear of what's already there AND of
+        // each other (they aren't in `clips` until the end).
+        let st = freeStart(lane, cursor, len);
+        for (let g = 0; g < 400; g++) {
+          const hit = made.find((o) => o.lane === lane && st < o.start + clipLen(o) - 1e-4 && st + len > o.start + 1e-4);
+          if (!hit) break;
+          st = freeStart(lane, hit.start + clipLen(hit), len);
+        }
+        clip.start = st;
+        cursor = st + len;
+        made.push(clip);
+        res.segments++;
       }
+      res.clips++;
+      res.paths.push(ref.path);
     }
-    if (!made.length) return;
-    clips = [...clips, ...made];
-    selectClip(made[made.length - 1].id);
+    if (made.length) {
+      clips = [...clips, ...made];
+      selectClip(made[made.length - 1].id);
+      exportNote = null;
+    }
+    return res;
+  }
+
+  export function isEmpty() {
+    return clips.length === 0 && audioClips.length === 0;
+  }
+
+  // ── saving the timeline (the window can be closed and reopened) ──────────
+  /** Files of timeline clips that weren't there when the timeline came back
+   *  (a drive unplugged): drawn dashed, and named in a notice. */
+  let unavailable = $state<Set<string>>(new Set());
+
+  export function serialize(): TimelineState {
+    return {
+      v: 1,
+      clips: clips.map((c) => ({ path: c.path, name: c.name, inS: c.inS, outS: c.outS, duration: c.duration, start: c.start, lane: c.lane, cropX: c.cropX, cropY: c.cropY, zoom: c.zoom })),
+      audio: audioClips.map((a) => ({ path: a.path, name: a.name, start: a.start, duration: a.duration, lane: a.lane })),
+      preset,
+      adjustments: { ...adjustments },
+      look: activeLook,
+      lookIntensity,
+      keepSourceAudio: preserveSourceAudio,
+    };
+  }
+
+  export async function restore(st: TimelineState): Promise<{ missing: string[] }> {
+    const missing: string[] = [];
+    const gone = new Set<string>();
+    const made: TimelineClip[] = [];
+    const checked = new Map<string, boolean>();
+    for (const c of st.clips ?? []) {
+      if (!checked.has(c.path)) checked.set(c.path, await api.pathExists(c.path).catch(() => false));
+      const there = checked.get(c.path)!;
+      if (!there) {
+        gone.add(c.path);
+        if (!missing.includes(c.name)) missing.push(c.name);
+      }
+      const proxy = there ? await api.videoProxyCached(c.path).catch(() => null) : null;
+      made.push({ ...c, id: uid(), src: api.fileSrc(proxy ?? c.path) });
+      if (there) ensureProbe({ name: c.name, path: c.path, kind: "video", ext: extOf(c.path), mtime: 0, size: 0 });
+    }
+    clips = made;
+    audioClips = (st.audio ?? []).map((a) => ({ ...a, id: uid() }));
+    if (st.preset && st.preset in PRESETS) preset = st.preset as PresetId;
+    if (st.adjustments) adjustments = { ...NEUTRAL_ADJ, ...st.adjustments };
+    activeLook = st.look && st.look in LOOK_PRESETS ? (st.look as LookPresetId) : null;
+    lookIntensity = st.lookIntensity ?? 1;
+    preserveSourceAudio = st.keepSourceAudio ?? true;
+    unavailable = gone;
+    selectedId = clips[0]?.id ?? null;
+    selectedIds = new Set(selectedId ? [selectedId] : []);
+    return { missing };
+  }
+
+  /** Start over: an empty timeline, neutral look (the aspect stays). */
+  export function clearTimeline() {
+    stopPlayback();
+    clips = [];
+    audioClips = [];
+    selectedId = null;
+    selectedIds = new Set();
+    selectedAudioId = null;
+    playheadS = 0;
+    unavailable = new Set();
     exportNote = null;
+  }
+
+  $effect(() => {
+    // Read everything that defines the timeline, so any change re-runs this.
+    const st = serialize();
+    onchange?.(st);
+  });
+
+  // ── does a clip match the rest? ───────────────────────────────────────────
+  // The timeline's format is its first clip's (as in Premiere). A clip that
+  // differs gets a ≠ badge saying how, and arriving clips that differ are
+  // named in a notice with what the export will do about it, rather than the
+  // owner finding out from a slow export or a squashed frame.
+  const FPS_CLASSES = [12, 15, 24, 25, 30, 48, 50, 60, 72, 90, 100, 120, 240];
+  const fpsClass = (f: number) => (f > 0 ? (FPS_CLASSES.find((c) => c >= f * 0.995) ?? Math.round(f)) : 0);
+  const orient = (p: MediaProbe) => (p.width && p.height ? (p.height > p.width ? "vertical" : p.height === p.width ? "square" : "landscape") : "");
+  let refClip = $derived(orderedClips.find((c) => probes[c.path]?.width) ?? null);
+  let refProbe = $derived(refClip ? probes[refClip.path] : null);
+
+  function mismatchOf(path: string): string | null {
+    const ref = refProbe;
+    const p = probes[path];
+    if (!ref || !p || !refClip || path === refClip.path) return null;
+    const notes: string[] = [];
+    if (orient(p) && orient(ref) && orient(p) !== orient(ref)) notes.push(`${orient(p)}, the timeline is ${orient(ref)}`);
+    else if (p.width !== ref.width || p.height !== ref.height) notes.push(`${p.width}×${p.height}, the timeline is ${ref.width}×${ref.height}`);
+    if (fpsClass(p.fps) && fpsClass(ref.fps) && fpsClass(p.fps) !== fpsClass(ref.fps)) notes.push(`${fpsClass(p.fps)} fps, the timeline is ${fpsClass(ref.fps)}`);
+    if (!!p.hdr !== !!ref.hdr) notes.push(p.hdr ? "HDR among SDR clips" : "SDR among HDR clips");
+    if (p.codec && ref.codec && p.codec !== ref.codec && outPreset.fit === "original") notes.push(`${p.codec}, the timeline is ${ref.codec}`);
+    return notes.length ? notes.join(" · ") : null;
+  }
+
+  /** Notices for clips that just arrived: what differs, and what the export
+   *  will do about it. Waits for their probes (already queued by addClips). */
+  export async function compatNotes(paths: string[]): Promise<string[]> {
+    const distinct = [...new Set(paths)];
+    for (const p of distinct) await durationFor({ name: basename(p), path: p, kind: "video", ext: extOf(p), mtime: 0, size: 0 });
+    const out: string[] = [];
+    const unread = distinct.filter((p) => !probes[p]?.width);
+    if (unread.length) out.push(`Couldn't read ${unread.map(basename).join(", ")}: ${unread.length === 1 ? "it" : "they"} may not preview or export.`);
+    const differ = distinct.map((p) => ({ p, why: mismatchOf(p) })).filter((x) => x.why);
+    if (differ.length) {
+      const list = differ.map((x) => `${basename(x.p)} (${x.why})`).join("; ");
+      const what =
+        outPreset.fit === "original"
+          ? "They can't be joined as they are, so exporting re-encodes everything to match the first clip (slower than a straight copy)."
+          : `Each is fitted to the ${outPreset.label} frame on export${differ.some((x) => /fps/.test(x.why ?? "")) ? ", and everything plays at one frame rate" : ""}${differ.some((x) => /HDR/.test(x.why ?? "")) ? "; HDR is converted to SDR so the colours match" : ""}.`;
+      out.push(`${differ.length === 1 ? "This clip differs" : `${differ.length} clips differ`} from the timeline: ${list}. ${what}`);
+    }
+    return out;
   }
 
   // Default to A3 so picked music doesn't sit under V1's source-audio mirror bars.
@@ -1691,22 +1569,6 @@
     return clampPanel(n, timelineZoomMin, TIMELINE_ZOOM_MAX);
   }
 
-  function startSourceResize(e: PointerEvent) {
-    e.preventDefault();
-    sourceCollapsed = false;
-    const startX = e.clientX;
-    const startW = panelW.src || sourcePanelW; // what is on screen, not the wish
-    const move = (ev: PointerEvent) => {
-      sourcePanelW = clampPanel(startW + ev.clientX - startX, 260, 560);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-
   function startInspectorResize(e: PointerEvent) {
     e.preventDefault();
     inspectorCollapsed = false;
@@ -1785,37 +1647,7 @@
       mtime: 0,
       size: 0,
     };
-    sourceBase = [src, ...sourceBase.filter((s) => s.path !== picked)];
-    sourceFocusPath = picked;
     await addAudio(src);
-  }
-
-  function openSourceMenu(e: MouseEvent, item: EditSourceItem) {
-    e.preventDefault();
-    e.stopPropagation();
-    sourceFocusPath = item.path;
-    ensureProbe(item);
-    const entries: MenuEntry[] = [
-      {
-        label: item.kind === "audio" ? "Add to A1" : "Add to V1",
-        icon: "+",
-        action: () => (item.kind === "audio" ? void addAudio(item, 0) : void addVideos([item], 0)),
-      },
-      {
-        label: item.kind === "audio" ? "Add to next audio gap" : "Add to end",
-        icon: "→",
-        action: () => (item.kind === "audio" ? void addAudio(item) : void addVideos([item])),
-      },
-      { separator: true },
-      { label: "Reveal in Explorer", icon: "↗", action: () => api.reveal(item.path) },
-      { label: "Open externally", icon: "□", action: () => api.openExternal(item.path) },
-      {
-        label: "Copy path",
-        icon: "⧉",
-        action: () => navigator.clipboard?.writeText(item.path).catch(() => {}),
-      },
-    ];
-    sourceMenu = { x: e.clientX, y: e.clientY, entries };
   }
 
   function openTimelineMenu(e: MouseEvent, clip: TimelineClip) {
@@ -1997,7 +1829,6 @@
       };
       const out = await api.editExport(req);
       exportNote = `Saved ${basename(out.path)} (${out.reencoded ? out.mode : "stream copy"})`;
-      onexported?.();
       api.reveal(out.path);
     } catch (e) {
       const msg = `${e}`;
@@ -2035,7 +1866,6 @@
       const out = await api.editSnapshot(req);
       const saved = basename(out);
       exportNote = `Saved frame ${saved}`;
-      onexported?.();
       frameToast = `Frame saved: ${saved}`;
       setTimeout(() => {
         if (frameToast === `Frame saved: ${saved}`) frameToast = null;
@@ -2215,32 +2045,56 @@
     seekTimeline(Math.max(0, Math.min(videoEnd, (e.clientX - rect.left) / timelineScale)));
   }
 
-  function startSourceDrag(e: DragEvent, item: EditSourceItem) {
-    dragSourcePath = item.path;
-    e.dataTransfer?.setData("application/x-foxcull-edit-path", item.path);
-    e.dataTransfer?.setData("text/plain", item.path);
-    if (e.dataTransfer) e.dataTransfer.effectAllowed = "copy";
+  /** Is this a drag of clips from the library? (Read during dragover, when
+   *  only the types are visible, not the data.) */
+  export function isClipDrag(e: DragEvent): boolean {
+    const t = Array.from(e.dataTransfer?.types ?? []);
+    return t.includes("application/x-foxcull-clips") || t.includes("application/x-foxcull-paths") || t.includes("text/plain");
   }
 
-  function endSourceDrag() {
-    dragSourcePath = null;
+  /** The clips a drop carries: the library's own payload, else its paths,
+   *  else the drag it parked in the backend (a drag from another window can
+   *  arrive with only plain text, depending on the platform's webview). */
+  export async function clipsFromDrop(e: DragEvent): Promise<ClipRef[]> {
+    const dt = e.dataTransfer;
+    const raw = dt?.getData("application/x-foxcull-clips");
+    if (raw) {
+      try {
+        return JSON.parse(raw) as ClipRef[];
+      } catch {
+        /* fall through */
+      }
+    }
+    const parked = await api.stashGet<ClipRef[]>("drag");
+    const text = dt?.getData("application/x-foxcull-paths") || dt?.getData("text/plain") || "";
+    let paths: string[] = [];
+    try {
+      paths = text.trim().startsWith("[") ? (JSON.parse(text) as string[]) : text.split(/\r?\n/).filter(Boolean);
+    } catch {
+      paths = [];
+    }
+    if (parked?.length && (!paths.length || paths.every((p) => parked.some((c) => c.path === p)))) return parked;
+    return paths.map((p) => ({ path: p, name: basename(p), kind: "video", ext: extOf(p), mtime: 0, size: 0, ranges: [] }));
   }
 
   function allowDrop(e: DragEvent) {
+    if (!isClipDrag(e)) return;
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
   }
 
-  function dropOnLane(e: DragEvent, kind: "video" | "audio", lane: number) {
+  /** A drop ON a video track: the clips go on that track at that time. */
+  async function dropOnLane(e: DragEvent, kind: "video" | "audio", lane: number) {
+    if (!isClipDrag(e)) return;
     e.preventDefault();
-    const path = e.dataTransfer?.getData("application/x-foxcull-edit-path") || dragSourcePath;
-    const item = sources.find((v) => v.path === path);
-    if (!item) return;
+    e.stopPropagation(); // the window's "drop anywhere" must not add them again
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const start = snapTime((e.clientX - rect.left) / timelineScale);
-    if (kind === "video" && item.kind === "video") void addVideos([item], lane, start);
-    if (kind === "audio" && item.kind === "audio") void addAudio(item, lane, start);
-    dragSourcePath = null;
+    const start = snapTime(Math.max(0, (e.clientX - rect.left) / timelineScale));
+    const refs = await clipsFromDrop(e);
+    // Audio tracks take music (Add music…), not clips: their sound already
+    // rides with them on the matching A track.
+    const res = await addClips(refs, kind === "video" ? { lane, start } : null);
+    ondropped?.(res);
   }
 
   let imageRect = $derived.by(() => {
@@ -2408,97 +2262,12 @@
 
 <div
   class="editShell"
-  class:sourceCollapsed
   class:inspectorCollapsed
   class:timelineCollapsed
   class:productionPreviewMode={productionPreview}
   bind:clientWidth={shellW}
-  style={`--source-w:${panelW.src}px; --source-splitter-w:${sourceCollapsed ? 0 : 6}px; --inspector-w:${panelW.insp}px; --inspector-splitter-w:${inspectorCollapsed ? 0 : 6}px; --timeline-h:${timelineCollapsed ? 0 : timelinePanelH}px;`}
+  style={`--inspector-w:${panelW.insp}px; --inspector-splitter-w:${inspectorCollapsed ? 0 : 6}px; --timeline-h:${timelineCollapsed ? 0 : timelinePanelH}px;`}
 >
-  <aside class="sourcePane">
-    <div class="sourceHead">
-      <div>
-        <strong>Source</strong>
-        <span>{sources.filter((s) => s.kind === "video").length} video · {sources.filter((s) => s.kind === "audio").length} audio</span>
-      </div>
-      <div class="sourceTools">
-        <button class="miniIcon" onclick={() => (sourceCollapsed = true)} title="Collapse source" aria-label="Collapse source">|&lt;</button>
-        <div class="seg">
-          <button class="chip" class:on={sourceFilter === "all"} onclick={() => (sourceFilter = "all")}>All</button>
-          <button class="chip" class:on={sourceFilter === "video"} onclick={() => (sourceFilter = "video")}>Video</button>
-          <button class="chip" class:on={sourceFilter === "audio"} onclick={() => (sourceFilter = "audio")}>Audio</button>
-        </div>
-        <div class="iconSeg" title="Source view">
-          <button class:on={sourceView === "thumbs"} onclick={() => (sourceView = "thumbs")}>▦</button>
-          <button class:on={sourceView === "list"} onclick={() => (sourceView = "list")}>☰</button>
-          <button class:on={sourceView === "details"} onclick={() => (sourceView = "details")}>≡</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="sourceList {sourceView}">
-      {#if sourceLoading && !filteredSources.length}
-        <div class="emptyState">Reading source folder.</div>
-      {:else if filteredSources.length}
-        {#each filteredSources as item (item.path)}
-          <button
-            class="sourceItem"
-            use:probeOnView={item}
-            class:audio={item.kind === "audio"}
-            class:focused={sourceFocusPath === item.path}
-            draggable={true}
-            ondragstart={(e) => startSourceDrag(e, item)}
-            ondragend={endSourceDrag}
-            oncontextmenu={(e) => openSourceMenu(e, item)}
-            onclick={() => {
-              sourceFocusPath = item.path;
-              ensureProbe(item);
-            }}
-            ondblclick={() => item.kind === "video" ? addVideos([item]) : addAudio(item)}
-            title={item.path}
-          >
-            <span class="sourceThumb">
-              {#if item.kind === "video"}
-                <Thumb item={sourceToMedia(item)} size={192} deferUntilVisible />
-              {:else}
-                <span class="audioIcon">♪</span>
-              {/if}
-            </span>
-            <span class="sourceName">
-              <span class="sourceTitle">
-                <strong>{item.name}</strong>
-                <span>{sourceDuration(item)}</span>
-              </span>
-              <em>{sourceSubline(item)}</em>
-              <span class="sourceChips">
-                {#each sourceMetaChips(item).slice(0, sourceView === "thumbs" ? 2 : 4) as chip}
-                  <span>{chip}</span>
-                {/each}
-              </span>
-              {#if sourceStateChips(item).length}
-                <span class="sourceChips stateChips">
-                  {#each sourceStateChips(item).slice(0, sourceView === "thumbs" ? 2 : 4) as chip}
-                    <span>{chip}</span>
-                  {/each}
-                </span>
-              {/if}
-            </span>
-            {#if sourceView === "details"}
-              <span>{probes[item.path]?.camera ?? (item.kind === "audio" ? "Audio" : "-")}</span>
-              <span>{fmtDate(probes[item.path]?.captured ?? item.mtime)}</span>
-              <span>{fmtSize(item.size)}</span>
-            {/if}
-          </button>
-        {/each}
-      {:else}
-        <div class="emptyState">No edit-ready video or audio in this folder.</div>
-      {/if}
-    </div>
-  </aside>
-
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="panelSplitter sourceSplitter" onpointerdown={startSourceResize} role="separator" title="Resize source"></div>
-
   <section class="workPane">
     <div class="editTop">
       <div class="presetGroup">
@@ -2510,9 +2279,11 @@
         {/each}
       </div>
       <div class="layoutTools">
-        <button class="miniBtn" class:on={!sourceCollapsed} onclick={() => (sourceCollapsed = !sourceCollapsed)}>Media</button>
         <button class="miniBtn" class:on={!timelineCollapsed} onclick={() => (timelineCollapsed = !timelineCollapsed)}>Timeline</button>
         <button class="miniBtn" class:on={!inspectorCollapsed} onclick={() => (inspectorCollapsed = !inspectorCollapsed)}>Look</button>
+        {#if onsidebyside}
+          <button class="miniBtn" onclick={onsidebyside} title="Library on the left, Edit on the right">Side by side</button>
+        {/if}
       </div>
       <span class="topGap"></span>
       <button class="miniBtn" class:on={productionPreview} onclick={toggleProductionPreview} disabled={!selectedClip}>
@@ -2582,12 +2353,6 @@
           </feComponentTransfer>
         </filter>
       </svg>
-      {#if sourceCollapsed && !productionPreview}
-        <button class="restoreTab restoreSource" onclick={() => (sourceCollapsed = false)} title="Show media picker">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><line x1="9.5" y1="4.5" x2="9.5" y2="19.5"/><path d="m14 9 3 3-3 3"/></svg>
-          Media
-        </button>
-      {/if}
       {#if inspectorCollapsed}
         <button class="restoreTab restoreLook" onclick={() => (inspectorCollapsed = false)} title="Show Look panel">Look</button>
       {/if}
@@ -2664,7 +2429,12 @@
           </button>
         {/if}
       {:else}
-        <div class="emptyState">Drag a video to the timeline.</div>
+        <div class="emptyState emptyEdit">
+          <strong>Bring clips in from the library</strong>
+          <span>Drag them here (or onto a track, at a time), press <kbd>E</kbd> with clips selected there, or copy them there with <kbd>⌘C</kbd> and paste here with <kbd>⌘V</kbd>.</span>
+          <span class="dim">In/out ranges you marked in Focus come in as separate segments.</span>
+          {#if onsidebyside}<button class="miniBtn" onclick={onsidebyside}>Put the library beside this window</button>{/if}
+        </div>
       {/if}
     </div>
 
@@ -2694,7 +2464,7 @@
         <span class="spacer"></span>
         <button class="ghost" onclick={cutAtPlayhead} disabled={!clips.length} title="Split at playhead (C)">✂ Cut</button>
         <button class="ghost" onclick={() => (timelineCollapsed = true)}>Collapse</button>
-        <button class="ghost" onclick={() => { clips = []; audioClips = []; }} disabled={!clips.length && !audioClips.length}>Clear</button>
+        <button class="ghost" onclick={clearTimeline} disabled={!clips.length && !audioClips.length}>Clear</button>
       </div>
       <div class="timelineViewport" bind:this={timelineViewportEl} onwheel={onTimelineWheel}>
         <div class="timelineCanvas" style="width:{timelineWidth}px">
@@ -2710,17 +2480,20 @@
             <div class="track videoTrack" onpointerdown={onTrackClick} ondragover={allowDrop} ondrop={(e) => dropOnLane(e, "video", lane)}>
               <span class="trackLabel">V{lane + 1}</span>
               {#each clips.filter((c) => c.lane === lane) as clip (clip.id)}
+                {@const why = mismatchOf(clip.path)}
                 <button
                   class="timelineClip video"
                   class:on={selectedIds.has(clip.id)}
+                  class:gone={unavailable.has(clip.path)}
                   style="left:{clip.start * timelineScale}px; width:{Math.max(42, clipLen(clip) * timelineScale)}px"
                   onclick={(e) => onClipClick(e, clip)}
                   oncontextmenu={(e) => openTimelineMenu(e, clip)}
                   onpointerdown={(e) => startTimelinePointer(e, "video", clip.id, "move")}
-                  title={clip.path}
+                  title={unavailable.has(clip.path) ? `${clip.path}\nNot available — is its drive plugged in?` : why ? `${clip.path}\nDiffers from the timeline: ${why}` : clip.path}
                 >
                   <!-- svelte-ignore a11y_no_static_element_interactions -->
                   <span class="handle left" onpointerdown={(e) => startTimelinePointer(e, "video", clip.id, "trimIn")}></span>
+                  {#if why}<span class="mm" aria-label="Differs from the timeline">≠</span>{/if}
                   <strong>{clip.name}</strong>
                   <em>{fmt(clipLen(clip))}</em>
                   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -3102,8 +2875,6 @@
     height: 100%;
     display: grid;
     grid-template-columns:
-      var(--source-w, 360px)
-      var(--source-splitter-w, 6px)
       minmax(0, 1fr)
       var(--inspector-splitter-w, 6px)
       var(--inspector-w, 320px);
@@ -3114,13 +2885,11 @@
     overflow: hidden;
   }
   .productionPreviewMode,
-  .productionPreviewMode.sourceCollapsed,
-  .productionPreviewMode.inspectorCollapsed,
-  .productionPreviewMode.sourceCollapsed.inspectorCollapsed {
-    grid-template-columns: 0 0 minmax(0, 1fr) 0 0;
+  .productionPreviewMode.inspectorCollapsed {
+    grid-template-columns: minmax(0, 1fr) 0 0;
     background: #000;
   }
-  .sourcePane,
+  
   .inspector {
     grid-row: 1;
     min-width: 0;
@@ -3130,25 +2899,22 @@
     display: flex;
     flex-direction: column;
   }
-  .sourcePane {
-    grid-column: 1;
-  }
   /* The work pane stacks ABOVE the inspector: its popups (export menu) must
      drop over the Look panel, never slide behind it. */
   .inspector {
-    grid-column: 5;
+    grid-column: 3;
     border-right: 0;
     border-left: 1px solid var(--border);
     overflow-y: auto;
     position: relative;
     z-index: 1;
   }
-  .sourceCollapsed .sourcePane,
+  
   .inspectorCollapsed .inspector {
     border: 0;
     overflow: hidden;
   }
-  .sourceCollapsed .sourcePane > *,
+  
   .inspectorCollapsed .inspector > * {
     display: none;
   }
@@ -3159,13 +2925,10 @@
     background: color-mix(in srgb, var(--border) 35%, transparent);
     transition: background 0.12s ease;
   }
-  .sourceSplitter {
+  .inspectorSplitter {
     grid-column: 2;
   }
-  .inspectorSplitter {
-    grid-column: 4;
-  }
-  .sourceCollapsed .sourceSplitter,
+  
   .inspectorCollapsed .inspectorSplitter {
     display: none;
   }
@@ -3173,12 +2936,12 @@
   .panelSplitter:active {
     background: color-mix(in srgb, var(--accent) 58%, var(--border));
   }
-  .productionPreviewMode .sourcePane,
+  
   .productionPreviewMode .panelSplitter,
   .productionPreviewMode .inspector {
     display: none;
   }
-  .sourceHead,
+  
   .editTop,
   .timelineHead {
     display: flex;
@@ -3188,22 +2951,6 @@
     padding: 8px 10px;
     border-bottom: 1px solid var(--border);
     background: var(--bg-panel);
-  }
-  .sourceHead {
-    align-items: flex-start;
-    justify-content: space-between;
-  }
-  .sourceHead > div:first-child {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .sourceTools {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 5px;
   }
   .miniIcon {
     width: 28px;
@@ -3219,17 +2966,15 @@
     background: var(--bg-hover);
     color: var(--text);
   }
-  .sourceHead span,
+  
   .timelineHead span,
   .small,
   .note,
-  .time,
-  .sourceName em {
+  .time {
     color: var(--text-faint);
     font-size: 12px;
   }
-  .seg,
-  .iconSeg {
+  .seg {
     display: flex;
     align-items: center;
     gap: 3px;
@@ -3242,168 +2987,29 @@
     background: var(--bg-elev);
     font-size: 12px;
   }
-  .chip.on,
-  .iconSeg button.on {
+  .chip.on {
     background: var(--accent);
     color: var(--accent-on);
     border-color: var(--accent);
-  }
-  .iconSeg {
-    padding: 2px;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    background: var(--bg-elev);
-  }
-  .iconSeg button {
-    width: 25px;
-    height: 22px;
-    border-radius: 5px;
-    color: var(--text-dim);
-    font-size: 12px;
-  }
-  .sourceList {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    padding: 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
   }
   /* Scrolling columns: rows keep their height and the column scrolls. With the
      default flex-shrink the list squashed each 76px row to 74px and the rating
      and tag chips ran into the next clip's name (seen at 1280x820). Same for
      the Look panel, where the slider labels were squashed. */
-  .sourceList > *,
+  
   .inspector > *,
   .block > *,
   .igDialog > * {
     flex-shrink: 0;
   }
-  .sourceList.thumbs {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-    align-content: start;
-  }
-  .sourceItem {
-    display: grid;
-    grid-template-columns: 72px minmax(0, 1fr);
-    align-items: start;
-    gap: 10px;
-    width: 100%;
-    min-height: 76px;
-    padding: 8px;
-    border-radius: 8px;
-    border: 1px solid transparent;
-    background: color-mix(in srgb, var(--bg-elev) 72%, transparent);
-    color: var(--text);
-    cursor: grab;
-    text-align: left;
-  }
-  .sourceList.list .sourceItem {
-    grid-template-columns: 58px minmax(0, 1fr);
-  }
-  .sourceList.thumbs .sourceItem {
-    grid-template-columns: 1fr;
-    grid-template-rows: 102px auto;
-    min-height: 170px;
-    align-items: stretch;
-  }
-  .sourceItem > span:nth-child(n + 3),
-  .sourceList.list .sourceItem > span:nth-child(n + 3),
-  .sourceList.thumbs .sourceItem > span:nth-child(n + 3) {
-    display: none;
-  }
-  .sourceItem:hover,
-  .sourceItem.focused {
-    background: var(--bg-hover);
-    border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
-  }
-  .sourceThumb {
-    width: 68px;
-    height: 54px;
-    border-radius: 6px;
-    overflow: hidden;
-    background: var(--viewport-bg);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .sourceList.thumbs .sourceThumb {
-    width: 100%;
-    height: 98px;
-  }
-  .audioIcon {
-    width: 34px;
-    height: 34px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 16%, transparent);
-    font-weight: 800;
-  }
-  .sourceName {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .sourceTitle {
-    min-width: 0;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: baseline;
-    gap: 8px;
-  }
-  .sourceTitle > span {
-    color: var(--text-dim);
-    font-size: 11.5px;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-  .sourceName strong,
+  
   .timelineClip strong {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .sourceItem > span:not(.sourceThumb):not(.sourceName) {
-    color: var(--text-faint);
-    font-size: 11.5px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .sourceChips {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    flex-wrap: wrap;
-    /* Two rows of chips exactly (2 × 17.5 + 4 gap); 36px clipped the second. */
-    max-height: 40px;
-    overflow: hidden;
-  }
-  .sourceChips span {
-    max-width: 112px;
-    padding: 2px 5px;
-    border-radius: 4px;
-    background: color-mix(in srgb, var(--viewport-bg) 76%, transparent);
-    color: var(--text-faint);
-    font-size: 10.5px;
-    line-height: 1.1;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .stateChips span {
-    background: color-mix(in srgb, var(--accent) 14%, var(--viewport-bg));
-    color: color-mix(in srgb, var(--text) 86%, var(--accent));
-  }
   .workPane {
-    grid-column: 3;
+    grid-column: 1;
     min-width: 0;
     min-height: 0;
     display: grid;
@@ -3423,7 +3029,7 @@
     container-type: inline-size;
   }
   .productionPreviewMode .workPane {
-    grid-column: 3;
+    grid-column: 1;
     grid-template-rows: minmax(0, 1fr);
   }
   .productionPreviewMode .editTop,
@@ -3621,16 +3227,6 @@
     padding: 7px 10px;
     border-radius: 8px;
   }
-  .restoreSource {
-    left: 10px;
-    top: 12px;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 7px 10px;
-    border-radius: 8px;
-  }
-  .restoreSource svg { width: 14px; height: 14px; }
   .restoreTimeline {
     left: 50%;
     bottom: 12px;
@@ -3666,8 +3262,8 @@
     font-size: 12px;
     font-weight: 700;
   }
-  .previewExit:hover { background: rgba(34,40,47,.94); border-color: rgba(255,255,255,.34); }
-  .previewExit svg { width: 15px; height: 15px; }
+  .previewExit:hover{ background: rgba(34,40,47,.94); border-color: rgba(255,255,255,.34); }
+  .previewExit svg{ width: 15px; height: 15px; }
   .productionFrame {
     position: absolute;
     overflow: hidden;
@@ -4137,10 +3733,6 @@
     font-size: 11.5px;
     color: var(--text-dim);
   }
-  .dlgLoc strong {
-    color: var(--text);
-    font-weight: 600;
-  }
   .dlgLoc .taken {
     font-style: normal;
     color: var(--accent);
@@ -4405,8 +3997,8 @@
     background: rgba(255, 255, 255, 0.22);
     cursor: ew-resize;
   }
-  .handle.left { left: 0; }
-  .handle.right { right: 0; }
+  .handle.left{ left: 0; }
+  .handle.right{ right: 0; }
   .block {
     padding: 12px;
     border-bottom: 1px solid var(--border);
@@ -4649,8 +4241,6 @@
   @media (max-width: 1180px) {
     .editShell {
       grid-template-columns:
-        minmax(0, var(--source-w, 270px))
-        var(--source-splitter-w, 6px)
         minmax(0, 1fr)
         var(--inspector-splitter-w, 6px)
         minmax(0, var(--inspector-w, 260px));
@@ -4680,26 +4270,25 @@
   }
 
   /* ── 2026 studio finish ─────────────────────────────────────────────── */
-  .editShell { background: #0a0c0f; }
-  .sourcePane,
+  .editShell{ background: #0a0c0f; }
+  
   .inspector {
     border-color: var(--border-soft);
     background: linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 97%, white 3%), var(--bg-panel));
   }
-  .sourceHead,
+  
   .editTop,
   .timelineHead {
     min-height: 50px;
     border-bottom-color: var(--border-soft);
     background: color-mix(in srgb, var(--bg-panel) 94%, transparent);
   }
-  .sourceHead strong { font-family: var(--font-display); font-size: 14px; letter-spacing: -.01em; }
   .panelSplitter,
-  .timelineResize { background: transparent; border-color: var(--border-soft); }
+  .timelineResize{ background: transparent; border-color: var(--border-soft); }
   .panelSplitter:hover,
   .panelSplitter:active,
   .timelineResize:hover,
-  .timelineResize:active { background: color-mix(in srgb, var(--accent) 50%, transparent); }
+  .timelineResize:active{ background: color-mix(in srgb, var(--accent) 50%, transparent); }
   .chip,
   .miniIcon,
   .play,
@@ -4717,44 +4306,66 @@
   .play:hover,
   .miniBtn:hover,
   .ghost:hover,
-  .dangerBtn:hover { border-color: var(--border-strong); }
+  .dangerBtn:hover{ border-color: var(--border-strong); }
   .chip:active,
   .miniIcon:active,
   .play:active,
   .miniBtn:active,
   .ghost:active,
-  .dangerBtn:active { transform: translateY(1px); }
-  .sourceList { padding: 10px; gap: 8px; }
-  .sourceItem {
-    border-color: var(--border-soft);
-    border-radius: 11px;
-    background: color-mix(in srgb, var(--bg-elev) 62%, transparent);
-    box-shadow: 0 1px 2px rgba(0,0,0,.14);
-    transition: background 100ms ease, border-color 100ms ease, box-shadow 100ms ease, transform 100ms ease;
+  .dangerBtn:active{ transform: translateY(1px); }
+  .presetGroup{ padding: 3px; border-color: var(--border-soft); border-radius: 10px; background: color-mix(in srgb, var(--bg-elev) 74%, transparent); box-shadow: inset 0 1px 4px rgba(0,0,0,.18); }
+  .presetGroup button{ border-radius: 7px; }
+  .exportBtn{ min-height: 32px; border-radius: 9px; box-shadow: 0 5px 14px color-mix(in srgb, var(--accent) 22%, transparent); }
+  .exportMenu{ border-color: var(--border-strong); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--bg-elev) 95%, transparent); box-shadow: var(--shadow); backdrop-filter: blur(22px); }
+  .preview{ background: radial-gradient(circle at center, #11151a, #030405 68%); }
+  .transport{ min-height: 46px; padding-inline: 13px; border-top-color: var(--border-soft); background: color-mix(in srgb, var(--bg-panel) 96%, transparent); }
+  .timeline{ background: color-mix(in srgb, var(--bg) 96%, black 4%); }
+  .timelineHead{ padding-inline: 13px; }
+  .track{ border-color: var(--border-soft); border-radius: 9px; background: color-mix(in srgb, var(--bg-elev) 58%, transparent); }
+  .timelineClip{ border-radius: 7px; box-shadow: 0 3px 10px rgba(0,0,0,.24); }
+  .block{ margin: 10px; border-color: var(--border-soft); border-radius: 12px; background: color-mix(in srgb, var(--bg-elev) 46%, transparent); box-shadow: inset 0 1px rgba(255,255,255,.025); }
+  .blockHead{ border-radius: 9px; }
+  .lookGroup{ border-color: var(--border-soft); border-radius: 10px; overflow: hidden; }
+  .lookGroupHead{ min-height: 34px; }
+  .lookPreset{ border-radius: 9px; }
+  .lookPreset.active{ box-shadow: inset 3px 0 var(--accent); }
+  .restoreTab{ border-color: var(--border-strong); border-radius: 10px; background: rgba(25,30,36,.86); backdrop-filter: blur(14px); }
+  .igBackdrop{ background: rgba(0,0,0,.68); backdrop-filter: blur(7px); }
+  .igDialog{ border-color: var(--border-strong); border-radius: var(--radius-xl); background: color-mix(in srgb, var(--bg-panel) 97%, transparent); box-shadow: var(--shadow); }
+  .igDialog h2{ font-family: var(--font-display); letter-spacing: -.02em; }
+  /* A clip that differs from the timeline's format (see mismatchOf). */
+  .timelineClip .mm {
+    flex: 0 0 auto;
+    margin-right: 4px;
+    padding: 0 4px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #1b1300;
+    background: var(--star);
   }
-  .sourceItem:hover,
-  .sourceItem.focused { transform: translateY(-1px); box-shadow: var(--shadow-soft); }
-  .sourceItem.focused { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev)); }
-  .sourceThumb { border-radius: 8px; background: #060709; box-shadow: 0 3px 9px rgba(0,0,0,.28); }
-  .sourceChips span { padding: 3px 6px; border-radius: 6px; }
-  .presetGroup { padding: 3px; border-color: var(--border-soft); border-radius: 10px; background: color-mix(in srgb, var(--bg-elev) 74%, transparent); box-shadow: inset 0 1px 4px rgba(0,0,0,.18); }
-  .presetGroup button { border-radius: 7px; }
-  .exportBtn { min-height: 32px; border-radius: 9px; box-shadow: 0 5px 14px color-mix(in srgb, var(--accent) 22%, transparent); }
-  .exportMenu { border-color: var(--border-strong); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--bg-elev) 95%, transparent); box-shadow: var(--shadow); backdrop-filter: blur(22px); }
-  .preview { background: radial-gradient(circle at center, #11151a, #030405 68%); }
-  .transport { min-height: 46px; padding-inline: 13px; border-top-color: var(--border-soft); background: color-mix(in srgb, var(--bg-panel) 96%, transparent); }
-  .timeline { background: color-mix(in srgb, var(--bg) 96%, black 4%); }
-  .timelineHead { padding-inline: 13px; }
-  .track { border-color: var(--border-soft); border-radius: 9px; background: color-mix(in srgb, var(--bg-elev) 58%, transparent); }
-  .timelineClip { border-radius: 7px; box-shadow: 0 3px 10px rgba(0,0,0,.24); }
-  .block { margin: 10px; border-color: var(--border-soft); border-radius: 12px; background: color-mix(in srgb, var(--bg-elev) 46%, transparent); box-shadow: inset 0 1px rgba(255,255,255,.025); }
-  .blockHead { border-radius: 9px; }
-  .lookGroup { border-color: var(--border-soft); border-radius: 10px; overflow: hidden; }
-  .lookGroupHead { min-height: 34px; }
-  .lookPreset { border-radius: 9px; }
-  .lookPreset.active { box-shadow: inset 3px 0 var(--accent); }
-  .restoreTab { border-color: var(--border-strong); border-radius: 10px; background: rgba(25,30,36,.86); backdrop-filter: blur(14px); }
-  .igBackdrop { background: rgba(0,0,0,.68); backdrop-filter: blur(7px); }
-  .igDialog { border-color: var(--border-strong); border-radius: var(--radius-xl); background: color-mix(in srgb, var(--bg-panel) 97%, transparent); box-shadow: var(--shadow); }
-  .igDialog h2 { font-family: var(--font-display); letter-spacing: -.02em; }
+  /* Its file wasn't there when the timeline came back (drive unplugged). */
+  .timelineClip.gone {
+    border-style: dashed;
+    opacity: 0.55;
+  }
+  .emptyEdit {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    max-width: 440px;
+    margin: auto;
+    text-align: center;
+    line-height: 1.5;
+  }
+  .emptyEdit strong { font-size: 15px; color: var(--text); }
+  .emptyEdit .dim { color: var(--text-faint); font-size: 12px; }
+  .emptyEdit kbd {
+    padding: 0 5px;
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    font-size: 11px;
+  }
 </style>

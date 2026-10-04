@@ -1342,6 +1342,7 @@ dependencies = [
  "image",
  "jpeg-decoder",
  "kamadak-exif",
+ "libc",
  "mdns-sd",
  "native-tls",
  "parking_lot",

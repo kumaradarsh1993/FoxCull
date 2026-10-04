@@ -4,8 +4,10 @@ mod commands;
 mod config;
 mod log;
 mod media;
+mod procs;
 mod raw;
 mod thumbs;
+mod tool_windows;
 mod updates;
 mod video;
 
@@ -73,7 +75,7 @@ pub fn run() {
         }));
     }
 
-    let result = builder
+    let built = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
@@ -208,6 +210,15 @@ pub fn run() {
             commands::edit_export,
             commands::cancel_edit_export,
             commands::cancel_job,
+            commands::merge_status,
+            commands::merge_pause,
+            commands::merge_dismiss,
+            tool_windows::open_tool_window,
+            tool_windows::take_tool_inbox,
+            tool_windows::tile_windows,
+            tool_windows::quit_app,
+            tool_windows::stash_set,
+            tool_windows::stash_get,
             commands::path_exists,
             commands::edit_snapshot,
             commands::list_rejected,
@@ -235,9 +246,52 @@ pub fn run() {
             raw::raw_embedded_probe,
             raw::export_raw_jpegs,
         ])
-        .run(tauri::generate_context!());
+        .build(tauri::generate_context!());
 
-    if let Err(e) = result {
-        eprintln!("error while running tauri application: {e}");
+    let app = match built {
+        Ok(app) => app,
+        Err(e) => {
+            eprintln!("error while running tauri application: {e}");
+            return;
+        }
+    };
+    app.run(|app, event| match event {
+        // Quitting (⌘Q, the last window closing) with a merge, export or copy
+        // running: ask first, in the library window. The answer comes back as
+        // `quit_app`, which stops the work and removes half-written files.
+        tauri::RunEvent::ExitRequested { api, code, .. } => {
+            if code.is_none() && tool_windows::work_in_progress() {
+                api.prevent_exit();
+                ask_before_quitting(app);
+            }
+        }
+        tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::CloseRequested { api, .. }, .. }
+            if label == "main" =>
+        {
+            if tool_windows::work_in_progress() {
+                api.prevent_close();
+                ask_before_quitting(app);
+            } else {
+                // The library is the app: closing it closes Edit and Merge too.
+                for (l, w) in app.webview_windows() {
+                    if l != "main" {
+                        let _ = w.close();
+                    }
+                }
+            }
+        }
+        // However the app ends, no ffmpeg is left writing behind it.
+        tauri::RunEvent::Exit => procs::kill_all_and_clean(),
+        _ => {}
+    });
+}
+
+fn ask_before_quitting(app: &tauri::AppHandle) {
+    use tauri::Emitter;
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.unminimize();
+        let _ = main.show();
+        let _ = main.set_focus();
     }
+    let _ = app.emit_to("main", "confirm-quit", ());
 }

@@ -44,6 +44,53 @@ export interface MediaItem {
   /** A catalog entry whose file was not on disk at the last scan. Its marks are
    *  intact; the grid draws it as a "?" placeholder so it can be relinked. */
   missing: boolean;
+  /** A video's marked in/out ranges (Focus → Mark range, else its trim).
+   *  Absent = the whole clip. Each becomes a segment on the Edit timeline. */
+  ranges?: VideoSegment[];
+}
+
+/** A clip handed from the library to the Edit window (drag, paste, E). */
+export interface ClipRef {
+  path: string;
+  name: string;
+  kind: "image" | "raw" | "video" | "other";
+  ext: string;
+  mtime: number;
+  size: number;
+  /** In/out ranges marked in the library; empty = the whole clip. */
+  ranges: VideoSegment[];
+  missing?: boolean;
+}
+
+/** What the library sends the Edit window. `seed` only fills an EMPTY
+ *  timeline (the toolbar's Edit button); `append` always adds. */
+export interface EditInbox {
+  type: "add";
+  clips: ClipRef[];
+  mode: "append" | "seed";
+}
+
+/** What the library sends the Merge window. */
+export type MergeInbox = { type: "review"; items: MediaItem[]; sourceDir: string } | { type: "show" };
+
+/** The merge that's running or just finished (backend-owned). */
+export interface MergeStatus {
+  state: "idle" | "running" | "done" | "error" | "cancelled";
+  paused: boolean;
+  label: string;
+  name: string;
+  out_path: string;
+  dest_dir: string;
+  clips: number;
+  total_s: number;
+  in_bytes: number;
+  convert: boolean;
+  pct: number;
+  detail: string | null;
+  started_ms: number;
+  finished_ms: number;
+  out_bytes: number;
+  error: string | null;
 }
 
 /** A named virtual collection ("Monar trip") — a peer of tags, not a folder. */
