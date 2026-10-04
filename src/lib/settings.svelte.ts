@@ -100,6 +100,12 @@ export interface AppSettings {
   /** What grid tiles show besides the picture: the length of each video
    *  (a small badge, bottom-right) and the file name (a caption line). */
   tileInfo: { duration: boolean; name: boolean };
+  /** How many marks a grid tile carries: Minimal (flag, stars, label),
+   *  Standard (adds length and stack count; segments, events and tags show
+   *  on hover or selection), Everything (all of it, always). */
+  tileBadges: "minimal" | "standard" | "all";
+  /** Folders pinned to the sidebar's Pinned section (absolute paths). */
+  pinned: string[];
   /** Folders every scan skips. System folders are pre-selected; the user can
    *  untick groups and add their own folders or name patterns. */
   scanExcludes: ScanExcludes;
@@ -148,6 +154,8 @@ const DEFAULTS: AppSettings = {
   deleteMode: "folder",
   scanExcludes: defaultScanExcludes(),
   tileInfo: { duration: true, name: false },
+  tileBadges: "standard",
+  pinned: [],
   rejectFolder: null,
   lastDir: null,
   lastActivePath: null,

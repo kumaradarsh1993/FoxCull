@@ -1012,3 +1012,10 @@ everything: six themes that pass contrast (with an accent choice, a "match
 system" option and the photographer's 18 % grey behind the pictures), one type
 scale, one set of radii, one icon set, and on the Mac a title bar folded into
 the toolbar the way current Mac apps do it.
+
+Part two took the audit to the library. The top toolbar lost its
+always-visible Reject, Clear and red Delete: deciding happens in the bottom
+bar, where Pick and Reject already were, and deleting the rejects sits next
+to their count. Filters now leave chips behind, so a filtered grid says so.
+The sidebar grew sections (drives, pinned folders, a review of picks and
+rejects, events), and tiles got a choice of how many marks they carry.

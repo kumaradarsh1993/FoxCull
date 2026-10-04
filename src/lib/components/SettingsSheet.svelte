@@ -96,6 +96,7 @@
     { id: "filmstrip", section: "appearance", card: "Layout", label: "Filmstrip", desc: "Where the strip of thumbnails docks. Each view remembers whether it's shown.", keys: "strip dock bottom left right hide" },
     { id: "tileLength", section: "appearance", card: "Layout", label: "Video length on tiles", desc: "A small badge with each video's length.", keys: "duration badge tile" },
     { id: "tileName", section: "appearance", card: "Layout", label: "File names on tiles", desc: "The file name under every tile.", keys: "caption filename tile" },
+    { id: "tileBadges", section: "appearance", card: "Layout", label: "Marks on tiles", desc: "Minimal shows the flag, stars and colour. Standard adds length and stacks, and shows segments, events and tags when you point at a tile. Everything shows all of it, always.", keys: "badges icons overlay tile marks clutter" },
     { id: "stacks", section: "appearance", card: "Layout", label: "Stacks", desc: "RAW+JPEG pairs, and a shot with its edits and exports. Folded shows one tile per stack.", keys: "related raw jpeg fold collapse expand group" },
 
     { id: "autoplay", section: "playback", card: "Videos", label: "Play videos when opened", desc: "A clip starts playing as soon as it opens in Focus.", keys: "autoplay auto play" },
@@ -402,6 +403,12 @@
           <svg class="dock" viewBox="0 0 16 12" aria-hidden="true"><rect x="0.5" y="0.5" width="15" height="11" rx="2" />{#if v === "bottom"}<rect class="f" x="2" y="8" width="12" height="2" rx=".6" />{:else if v === "left"}<rect class="f" x="2" y="2" width="2.4" height="8" rx=".6" />{:else if v === "right"}<rect class="f" x="11.6" y="2" width="2.4" height="8" rx=".6" />{/if}</svg>
           {l}
         </button>
+      {/each}
+    </div>
+  {:else if id === "tileBadges"}
+    <div class="seg" role="radiogroup" aria-label="Marks on tiles">
+      {#each [["minimal", "Minimal"], ["standard", "Standard"], ["all", "Everything"]] as [v, l] (v)}
+        <button class:on={(settings.s.tileBadges ?? "standard") === v} role="radio" aria-checked={(settings.s.tileBadges ?? "standard") === v} onclick={() => settings.set({ tileBadges: v as "minimal" | "standard" | "all" })}>{l}</button>
       {/each}
     </div>
   {:else if id === "tileLength"}

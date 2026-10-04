@@ -429,9 +429,11 @@
     {/if}
     {#if isVideo}<span class="play">▶</span>{/if}
   {:else if isVideo}
-    <div class="ph vid">
-      <span class="film">▶</span>
-      <span class="vext">{item.ext.toUpperCase()}</span>
+    <!-- Still coming: a soft shimmer, not a label (audit L8). A poster that
+         can't be made keeps the plate with the file type. -->
+    <div class="ph vid" class:loading={!failed}>
+      <span class="film"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M8 5.8v12.4a.8.8 0 0 0 1.2.7l9.6-6.2a.8.8 0 0 0 0-1.4L9.2 5.1A.8.8 0 0 0 8 5.8z" fill="currentColor"/></svg></span>
+      {#if failed}<span class="vext">{item.ext.toUpperCase()}</span>{/if}
     </div>
   {:else if failed}
     <div class="ph">{item.kind === "raw" ? "RAW" : item.ext.toUpperCase()}</div>
@@ -505,16 +507,24 @@
   }
   .ph.vid .film {
     font-size: var(--fs-xl);
-    color: var(--text);
-    background: color-mix(in srgb, var(--text) 14%, transparent);
-    width: 34px;
-    height: 34px;
+    color: var(--text-dim);
+    background: color-mix(in srgb, var(--text) 10%, transparent);
+    width: 30px;
+    height: 30px;
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
     padding-left: 3px;
   }
+  .ph.vid.loading {
+    background:
+      linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--text) 7%, transparent) 50%, transparent 70%) 0 0 / 220% 100%,
+      color-mix(in srgb, var(--text-faint) 7%, var(--viewport-bg));
+    animation: shimmer 1.6s ease-in-out infinite;
+  }
+  @keyframes shimmer { from { background-position: 120% 0, 0 0; } to { background-position: -120% 0, 0 0; } }
+  @media (prefers-reduced-motion: reduce) { .ph.vid.loading { animation: none; } }
   .ph.vid .vext { font-size: var(--fs-xs); font-weight: var(--fw-semibold); color: var(--text-dim); letter-spacing: 0.5px; }
   .scrubLayer {
     position: absolute;

@@ -210,7 +210,8 @@ export function installLayoutAudit() {
     await probe("panel:jobs", dockBtn, ".jobPanel", dockBtn);
     activity.finish("audit-move");
     activity.clearFinished();
-    await probe("menu:clear", click("Clear ratings"), ".clearMenu", click("Clear ratings"));
+    const clearBtn = () => (document.querySelector(".clearBtn") as HTMLElement).click();
+    await probe("menu:clear", clearBtn, ".clearMenu", clearBtn);
     await probe("menu:cast", () => (document.querySelector(".castBtn") as HTMLElement).click(), ".castMenu", () =>
       (document.querySelector(".castBtn") as HTMLElement).click(),
     );

@@ -1,24 +1,26 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
-## Redesign, part 1 of 3: themes, type and the Mac window
+## Redesign, part 2 of 3: the library
 
-The first of three redesign builds. Each one can be rolled back on its own.
-
-- **Six new themes:** Graphite (the new default: true neutral, so nothing tints your
-  photos), Studio Grey (Lightroom-style mid grey for judging exposure), Midnight, Amber
-  Night, Daylight and Paper.
-  - **Match system** follows your Mac's or PC's light/dark switch.
-  - Every theme is readable: even the faintest text now meets the contrast standard.
-  - Your current theme carries over: Studio becomes Graphite.
-- **Accent colour:** pick one in Settings → Appearance (blue, indigo, teal, fox orange,
-  rose or graphite). Green and red stay reserved for picks and rejects.
-- **Behind the pictures:** the grey around tiles and around the picture in Focus can be
-  black, the theme's dark, 18% grey (for judging exposure) or light.
-- **One type scale and one set of shapes:** text is never smaller than 11 px, there are
-  three weights, and corners come in four sizes, so every screen feels like one app.
-- **Icons in menus** are now clean line icons instead of emoji and symbols, and look the
-  same on Mac and Windows.
-- **On the Mac, the title bar is gone:** the window buttons sit inside the top bar, as in
-  current Mac apps, and the bar drags the window.
-- **The keyboard guide shows Mac keys** (⌘ ⇧ ⌃) on a Mac.
+- **A calmer toolbar:** the always-on Reject, Clear and red Delete buttons are gone from
+  the top.
+  - **Clear** now sits in the bottom bar next to Pick and Reject, which it clears.
+  - **Delete rejected** sits beside the reject count. It's quiet until you point at it,
+    and you still hold it down to delete.
+- **Filters you can see:** active filters show as small chips next to Filters (for
+  example "Picks ×", "★ ≥ 3 ×") with "31 of 227". Click × to drop one.
+- **Menus don't stack:** opening Arrange closes Filters and vice versa.
+- **The sidebar has sections:**
+  - **Drives**;
+  - **Pinned:** right-click any folder → Pin to the sidebar;
+  - **Review:** Picks, Rejected, Not decided and Missing files, one click each;
+  - **Events.**
+- **Cleaner tiles:** Settings → Appearance → Marks on tiles.
+  - **Minimal:** flag, stars and colour only.
+  - **Standard** (the default): adds length and stacks, and shows segments, events and
+    tags when you point at a tile.
+  - **Everything:** shows all of it, always.
+- **Rejects stay visible:** rejected pictures are dimmed less, so you can still judge them
+  while culling.
+- **Loading videos shimmer** instead of saying "MP4".

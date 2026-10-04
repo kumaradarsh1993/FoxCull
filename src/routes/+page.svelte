@@ -107,6 +107,24 @@
       (eventFilter ? 1 : 0),
   );
 
+  /** Active filters as removable chips beside the Filters button, so what's
+   *  filtered stays visible after the menu closes (audit L3). */
+  let filterChips = $derived.by(() => {
+    const out: { key: string; label: string; clear: () => void }[] = [];
+    const tf = settings.s.typeFilter;
+    if (tf !== "all") out.push({ key: "type", label: tf === "image" ? "Photos" : tf === "video" ? "Videos" : "RAW", clear: () => void settings.set({ typeFilter: "all" }) });
+    if (flagFilter !== "all") out.push({ key: "flag", label: flagFilter === "pick" ? "Picks" : flagFilter === "reject" ? "Rejected" : "Not decided", clear: () => (flagFilter = "all") });
+    if (minRating > 0) out.push({ key: "rating", label: `★ ${ratingOp === ">=" ? "≥" : ratingOp === "<=" ? "≤" : "="} ${minRating}`, clear: () => { minRating = 0; ratingOp = ">="; } });
+    if (labelFilterActive) {
+      const names = [...labelFilters].map((k) => LABELS.find((l) => l.key === k)?.name ?? k);
+      if (labelNone) names.push("none");
+      out.push({ key: "label", label: `Colour: ${names.join(", ")}`, clear: clearLabelFilter });
+    }
+    if (tagFilter) out.push({ key: "tag", label: `#${tagFilter}`, clear: () => (tagFilter = null) });
+    if (eventFilter) out.push({ key: "event", label: eventFilter, clear: () => (eventFilter = null) });
+    return out;
+  });
+
   function toggleLabelFilter(key: string) {
     const next = new Set(labelFilters);
     if (next.has(key)) next.delete(key);
@@ -174,7 +192,9 @@
     }
   }
   function toggleCastMenu() {
-    castOpen = !castOpen;
+    const v = !castOpen;
+    closeAllPopovers();
+    castOpen = v;
     // Re-browse on every open: cast devices come and go with TV power state,
     // and mDNS discovery is cheap (~3s, non-blocking behind the spinner).
     if (castOpen) void discoverCast();
@@ -1085,6 +1105,7 @@
   // rejected mark on a file that is already gone is not something to dispose of.
   let rejectedCount = $derived(items.filter((i) => i.flag === "reject" && !i.missing).length);
   let pickCount = $derived(items.filter((i) => i.flag === "pick" && !i.missing).length);
+  let undecidedCount = $derived(items.filter((i) => !i.flag && !i.missing).length);
   /** Catalog entries in this folder view whose file was not found. */
   let missingInView = $derived(items.filter((i) => i.missing).length);
   let stripCell = $derived(Math.max(64, settings.s.filmstripSize - 24));
@@ -3090,6 +3111,9 @@
         { label: revealLabel, icon: "↗", action: () => api.reveal(path) },
         { label: "Copy folder path", icon: "⧉", action: () => copyPath(path) },
         { separator: true },
+        settings.s.pinned?.some((p) => samePath(p, path))
+          ? { label: "Unpin from the sidebar", icon: "−", action: () => void settings.set({ pinned: settings.s.pinned.filter((p) => !samePath(p, path)) }) }
+          : { label: "Pin to the sidebar", icon: "＋", action: () => void settings.set({ pinned: [...(settings.s.pinned ?? []), path] }) },
         {
           label: "Exclude from scans",
           icon: "⊘",
@@ -3975,7 +3999,7 @@
   </button>
 {/snippet}
 
-<div class="app" data-dim={dimLevel} class:fs={fullscreen} class:treeCollapsed>
+<div class="app" data-dim={dimLevel} data-badges={settings.s.tileBadges ?? "standard"} class:fs={fullscreen} class:treeCollapsed>
   <!-- ░ left: drives + folder tree ░ -->
   {#if !treeCollapsed}
     <aside class="tree" style="width:{settings.s.treeWidth}px">
@@ -4013,17 +4037,55 @@
           </button>
           <button class="btn sm openFolder" onclick={openFolderPicker} title="Jump to a folder">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5h6l2 2h10v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 8V5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2.5"/></svg>
-            Open
+            <span class="openLbl">Open</span>
           </button>
         </div>
       </div>
       <div class="tree-body">
+        <!-- Sections, as in Finder and Photos (audit L5): drives, folders you
+             pinned, a review of this folder's marks, then events. -->
+        <div class="sbHead">Drives</div>
         {#if drives.length}
           {#each drives as d (d.path)}
             <TreeNode node={d} {currentDir} onselect={openFolder} onmove={(dest, copy) => movePathsTo(draggingPaths, dest, copy)} onfoldercontext={openFolderContextMenu} {countsGen} {treeGen} {revealPath} />
           {/each}
         {:else}
           <p class="hint">No drives detected.</p>
+        {/if}
+        {#if settings.s.pinned?.length}
+          <div class="sbHead">Pinned</div>
+          {#each settings.s.pinned as p (p)}
+            <button class="sbItem" class:on={!!currentDir && samePath(p, currentDir)} onclick={() => openFolder(p)} oncontextmenu={(e) => openFolderContextMenu(e, p)} title={p}>
+              <svg class="sbIco" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>
+              <span class="sbName">{basename(p) || p}</span>
+            </button>
+          {/each}
+        {/if}
+        {#if currentDir && !inTrashFolder}
+          <div class="sbHead">Review</div>
+          <button class="sbItem" class:on={flagFilter === "pick"} onclick={() => (flagFilter = flagFilter === "pick" ? "all" : "pick")} title="Show only the picks in this folder">
+            <i class="sbDot" style="background:var(--pick)"></i><span class="sbName">Picks</span><em>{pickCount}</em>
+          </button>
+          <button class="sbItem" class:on={flagFilter === "reject"} onclick={() => (flagFilter = flagFilter === "reject" ? "all" : "reject")} title="Show only the rejects in this folder">
+            <i class="sbDot" style="background:var(--reject)"></i><span class="sbName">Rejected</span><em>{rejectedCount}</em>
+          </button>
+          <button class="sbItem" class:on={flagFilter === "unflagged"} onclick={() => (flagFilter = flagFilter === "unflagged" ? "all" : "unflagged")} title="Show only what you haven't picked or rejected yet">
+            <i class="sbDot ring"></i><span class="sbName">Not decided</span><em>{undecidedCount}</em>
+          </button>
+          {#if missingRels.length}
+            <button class="sbItem" onclick={() => (missingOpen = true)} title="Catalog entries on this drive whose files are gone">
+              <i class="sbDot miss"></i><span class="sbName">Missing on this drive</span><em>{missingRels.length}</em>
+            </button>
+          {/if}
+        {/if}
+        {#if allEvents.length}
+          <div class="sbHead">Events</div>
+          {#each allEvents as ev (ev.id)}
+            <button class="sbItem" class:on={eventFilter === ev.name} onclick={() => (eventFilter = eventFilter === ev.name ? null : ev.name)} title={`Show only ${ev.name}`}>
+              <svg class="sbIco" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 13.8 10.2 20.5 12l-6.7 1.8L12 20.5l-1.8-6.7L3.5 12l6.7-1.8z"/></svg>
+              <span class="sbName">{ev.name}</span><em>{ev.count}</em>
+            </button>
+          {/each}
         {/if}
       </div>
       {#if libInfo}
@@ -4100,7 +4162,7 @@
         <button
           class="chip arrangeBtn"
           class:on={arrangeOpen || settings.s.groupBy !== "none" || settings.s.subgroupBy !== "none"}
-          onclick={() => (arrangeOpen = !arrangeOpen)}
+          onclick={() => { const v = !arrangeOpen; closeAllPopovers(); arrangeOpen = v; }}
           title="Sort, group and subgroup"
         >
           <svg class="toolbarIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M4 17h16M4 12h16"/><circle cx="17" cy="7" r="2"/><circle cx="8" cy="17" r="2"/><circle cx="10" cy="12" r="2"/></svg><span class="actionText">Arrange</span>
@@ -4197,13 +4259,18 @@
 
       <!-- media, culling and metadata filters -->
       <div class="grp filterwrap">
-        <button class="chip" class:on={filtersOpen || activeFilterCount > 0} onclick={() => (filtersOpen = !filtersOpen)} title="Media, culling and metadata filters">
+        <button class="chip" class:on={filtersOpen || activeFilterCount > 0} onclick={() => { const v = !filtersOpen; closeAllPopovers(); filtersOpen = v; }} title="Media, culling and metadata filters">
           <svg class="toolbarIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6.4 7.2V19l-3.2 1.5v-8.3z"/></svg><span class="actionText">Filters</span>{#if activeFilterCount}<span class="filterCount">{activeFilterCount}</span>{/if}
         </button>
         <!-- N of M passing filters, pre-stack-folding — always visible while any
              filter is active (baseView = filtered; items = whole folder view). -->
         {#if activeFilterCount > 0}
-          <span class="shown-count" title="Items passing the active filters, out of the whole folder">{baseView.length} of {items.length}</span>
+          <div class="fChips">
+            {#each filterChips as c (c.key)}
+              <span class="fChip">{c.label}<button onclick={c.clear} aria-label={`Remove the filter ${c.label}`} title="Remove this filter">×</button></span>
+            {/each}
+            <span class="shown-count" title="Items passing the active filters, out of the whole folder">{baseView.length} of {items.length}</span>
+          </div>
         {/if}
         {#if filtersOpen}
           <div class="filtermenu" use:keepInView>
@@ -4315,43 +4382,6 @@
       <div class="spacer"></div>
 
       <div class="rightTools">
-        <!-- actions (top-right) -->
-        <button class="btn sm danger" onclick={rejectSelected} disabled={actionTargets.length === 0} title="Toggle rejected on the active item or selection (X)">
-          <svg class="btn-ico" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
-          <span class="actionText">{allTargetsRejected ? "Unreject" : "Reject"}{selected.size > 1 ? ` ${selected.size}` : ""}</span>
-        </button>
-        <div class="grp clearWrap">
-          <button class="btn sm" class:on={clearOpen} onclick={() => (clearOpen = !clearOpen)} disabled={actionTargets.length === 0} title="Clear ratings, labels, flags or tags from the active item or selection">
-            <svg class="btn-ico" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 8 14 2 3 13l6 6h4l7-7z"/><line x1="9" y1="19" x2="21" y2="19"/></svg>
-            <span class="actionText">Clear</span>
-          </button>
-          {#if clearOpen}
-            <div class="clearMenu" use:keepInView>
-              <button onclick={openClearDialog}>Choose what to clear…</button>
-              <div class="cmSep"></div>
-              <button onclick={() => { clearRatings(); clearOpen = false; }}>Stars</button>
-              <button onclick={() => { clearLabels(); clearOpen = false; }}>Color</button>
-              <button onclick={() => { clearFlags(); clearOpen = false; }}>Pick/Reject</button>
-              <button onclick={() => { void clearTagsOnTargets(); clearOpen = false; }}>Tags</button>
-              <button onclick={() => { void clearEventsOnTargets(); clearOpen = false; }}>Events</button>
-            </div>
-          {/if}
-        </div>
-        <button
-          class="btn sm danger hold"
-          disabled={!writable || rejectedCount === 0}
-          onpointerdown={startHold}
-          onpointerup={endHold}
-          onpointerleave={endHold}
-          onpointercancel={endHold}
-          title="Hold to delete all {rejectedCount} rejected"
-        >
-          <span class="hold-fill" style="width:{(holdMs / HOLD_MS) * 100}%"></span>
-          <span class="hold-lbl">
-            <svg class="btn-ico" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/><line x1="10" y1="11" x2="10" y2="16"/><line x1="14" y1="11" x2="14" y2="16"/></svg>
-            <span class="actionText">Delete{rejectedCount ? ` ${rejectedCount}` : ""}</span>
-          </span>
-        </button>
         <!-- Cast to TV: discovery popover; the chip doubles as the connected
              indicator (name shown while casting). -->
         <div class="grp castWrap">
@@ -4775,6 +4805,24 @@
         {/each}
         <button class="btn sm" class:on={active.flag === "pick"} onclick={() => flag("pick")} title="Pick (P)">Pick</button>
         <button class="btn sm danger" class:on={active.flag === "reject"} onclick={() => flag("reject")} title="Reject (X)">{active.flag === "reject" ? "Unreject" : "Reject"}</button>
+        <!-- Clear lives with the marks it clears (it was on the top toolbar
+             until 2026-10-04, next to a red Delete: the audit's L1). -->
+        <div class="grp clearWrap">
+          <button class="ico clearBtn" class:on={clearOpen} onclick={() => { const v = !clearOpen; closeAllPopovers(); clearOpen = v; }} disabled={actionTargets.length === 0} title="Clear stars, colour, pick/reject, tags or events from the active item or selection" aria-label="Clear marks">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 8 14 2 3 13l6 6h4l7-7z"/><line x1="9" y1="19" x2="21" y2="19"/></svg>
+          </button>
+          {#if clearOpen}
+            <div class="clearMenu up" use:keepInView>
+              <button onclick={openClearDialog}>Choose what to clear…</button>
+              <div class="cmSep"></div>
+              <button onclick={() => { clearRatings(); clearOpen = false; }}>Stars</button>
+              <button onclick={() => { clearLabels(); clearOpen = false; }}>Colour</button>
+              <button onclick={() => { clearFlags(); clearOpen = false; }}>Pick/Reject</button>
+              <button onclick={() => { void clearTagsOnTargets(); clearOpen = false; }}>Tags</button>
+              <button onclick={() => { void clearEventsOnTargets(); clearOpen = false; }}>Events</button>
+            </div>
+          {/if}
+        </div>
 
         <!-- events, then tags: the event says which trip this shot belongs to,
              which is the coarser fact, so it reads first. -->
@@ -4806,6 +4854,23 @@
         <span class="spacer"></span>
         <button class="ico" title="Reveal in file manager" aria-label="Reveal in file manager" onclick={() => active && api.reveal(active.path)}><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6"/><path d="m20 4-9 9"/><path d="M18 13v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/></svg></button>
         <span class="counts"><span class="pickCount">✓ {pickCount}</span><span class="rejectCount">✕ {rejectedCount}</span></span>
+        <!-- Deleting the rejects sits beside their count, as a quiet button
+             you hold (it was a red button on the toolbar). -->
+        <button
+          class="btn sm hold delRejects"
+          disabled={!writable || rejectedCount === 0}
+          onpointerdown={startHold}
+          onpointerup={endHold}
+          onpointerleave={endHold}
+          onpointercancel={endHold}
+          title={rejectedCount ? `Hold to delete the ${rejectedCount} rejected` : "Nothing rejected here"}
+        >
+          <span class="hold-fill" style="width:{(holdMs / HOLD_MS) * 100}%"></span>
+          <span class="hold-lbl">
+            <svg class="btn-ico" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg>
+            <span class="actionText">Delete rejected</span>
+          </span>
+        </button>
       </div>
     {/if}
 
@@ -5407,10 +5472,23 @@
      .cell, is free to bleed past the tile edge into the grid gap. The 2px
      border still renders with rounded corners on its own without needing
      overflow:hidden. */
-  .cell { position: relative; width: 100%; height: 100%; border: 2px solid transparent; border-radius: var(--radius-xs); padding: 8px 0 0; background: var(--viewport-bg); }
+  .cell { position: relative; width: 100%; height: 100%; border: 2px solid transparent; border-radius: var(--radius-sm); padding: 8px 0 0; background: var(--viewport-bg); }
   .cell.selected { border-color: var(--select); }
   .cell.active { border-color: var(--accent); }
-  .cell.reject :global(.media) { opacity: 0.35; }
+  /* Rejected stay readable while culling (audit L7): the red tab and the ✕
+     say it; the picture only steps back. */
+  .cell.reject :global(.media) { opacity: 0.55; filter: saturate(0.55); }
+
+  /* Tile badges (Settings → Appearance → Tile badges). Minimal: flag,
+     stars, colour. Standard: length and stacks too; segments, events and
+     tags appear on hover or selection. Everything: all of it, always. */
+  .app[data-badges="minimal"] .cell .br,
+  .app[data-badges="minimal"] .cell .rel-badges,
+  .app[data-badges="minimal"] .cell .rel-role { display: none; }
+  .cell .br > *,
+  .cell .rel-role { transition: opacity var(--dur-fast) ease; }
+  .app[data-badges="standard"] .cell:not(:hover):not(.active):not(.selected) .br > :is(.cutdot, .evtdot, .tagdot),
+  .app[data-badges="standard"] .cell:not(:hover):not(.active):not(.selected) .rel-role { opacity: 0; }
   /* Pick and reject, readable across a whole grid at a glance: a short green
      tab standing on the top edge of a picked tile, a red one hanging from the
      bottom edge of a rejected one (owner's ask, 2026-10-04). Unmarked tiles
@@ -5870,4 +5948,113 @@
     .tags { display: none; }
   }
 
+
+  /* ── 2026-10 redesign: library pieces (audit L1, L3, L5) ─────────────── */
+  /* Active filters as removable chips beside Filters. */
+  .fChips { display: flex; align-items: center; gap: 4px; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+  .fChip {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    height: var(--control-h-xs);
+    padding: 0 3px 0 9px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+    background: color-mix(in srgb, var(--accent) 13%, transparent);
+    color: var(--text);
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-medium);
+    white-space: nowrap;
+  }
+  .fChip button {
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    color: var(--text-dim);
+    font-size: var(--fs-md);
+    line-height: 1;
+  }
+  .fChip button:hover { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--text); }
+
+  /* Sidebar sections. */
+  .sbHead {
+    margin: 14px 8px 4px;
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
+    color: var(--text-faint);
+    letter-spacing: 0.02em;
+  }
+  .sbHead:first-child { margin-top: 2px; }
+  .sbItem {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 28px;
+    padding: 0 8px;
+    border-radius: var(--radius-sm);
+    color: var(--text-dim);
+    font-size: var(--fs-md);
+    text-align: left;
+  }
+  .sbItem:hover { background: color-mix(in srgb, var(--bg-hover) 70%, transparent); color: var(--text); }
+  .sbItem.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--text); }
+  .sbItem em { margin-left: auto; font-style: normal; font-size: var(--fs-xs); color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  .sbName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sbIco { width: 15px; height: 15px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; opacity: 0.85; }
+  .sbDot { width: 9px; height: 9px; flex: none; margin: 0 3px; border-radius: 50%; }
+  .sbDot.ring { box-shadow: inset 0 0 0 1.5px var(--text-faint); }
+  .sbDot.miss { background: repeating-linear-gradient(45deg, var(--star) 0 2px, transparent 2px 4px); box-shadow: inset 0 0 0 1px var(--star); }
+
+  /* Bottom bar: Clear with the marks, Delete rejected beside its count. */
+  .clearMenu.up { top: auto; bottom: 38px; right: auto; left: 0; }
+  .info .clearBtn { width: var(--control-h-sm); height: var(--control-h-sm); }
+  .info .counts { flex: none; white-space: nowrap; display: inline-flex; gap: 8px; }
+  /* The sidebar header never spills into the toolbar: a narrow sidebar
+     (and the Mac's traffic lights) leaves Open as an icon. */
+  .tree { container-type: inline-size; }
+  .tree-head { overflow: hidden; }
+  @container (max-width: 270px) { .openLbl { display: none; } }
+  .delRejects {
+    margin-left: 6px;
+    color: var(--text-dim);
+    background: transparent;
+    border-color: var(--border-soft);
+  }
+  .delRejects:hover:not(:disabled) { color: var(--reject); border-color: color-mix(in srgb, var(--reject) 50%, var(--border)); }
+  .delRejects .hold-fill { background: color-mix(in srgb, var(--reject) 30%, transparent); }
+
+  /* One control language with Settings and Edit (audit T1): segmented groups
+     with a raised selected segment; toggles that are on get an accent tint,
+     not a solid fill. 28 px targets (audit A2). */
+  .ico.sm { width: var(--control-h-sm); height: var(--control-h-sm); }
+  .filtermenu .seg {
+    padding: 2px;
+    gap: 2px;
+    border-radius: 9px;
+    border: 1px solid var(--border-soft);
+    background: color-mix(in srgb, var(--bg) 75%, transparent);
+  }
+  .filtermenu .seg .chip.on,
+  .seg.modes .chip.on {
+    background: var(--bg-elev);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22), 0 0 0 1px var(--border-soft);
+  }
+  .filtermenu .seg .chip.pick.on { color: var(--pick); }
+  .filtermenu .seg .chip.rej.on { color: var(--reject); }
+  .arrange > .chip.on,
+  .filterwrap > .chip.on {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--text);
+    box-shadow: none;
+  }
+  /* In a column row the label's 58 px basis became a 58 px height: the
+     empty gap above the tag and event lists. */
+  .fm-row.col .fm-lbl { flex: none; }
+  .filtermenu { width: 344px; max-width: min(344px, 92vw); }
+  .tagrow.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--text); }
+  .tagrow.on .cnt { color: var(--text-dim); }
 </style>
