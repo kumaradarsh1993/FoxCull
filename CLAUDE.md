@@ -162,7 +162,10 @@ stamps the tag's version into **both** `tauri.conf.json` and `Cargo.toml`
   culling marks (rating/label/pick/reject), stacks ("related" grouping:
   suffix whitelist + stem-prefix re-rooting), filters (rating ≥/≤/=,
   multi-select labels), undo/redo (snapshot stack, marks only), selection +
-  keyboard model, cast button, settings popover. The big one (~2.7k lines).
+  keyboard model, cast button. The big one (~2.7k lines).
+- `lib/components/SettingsSheet.svelte` — Settings (gear / ⌘,): one sheet,
+  sidebar of sections, row registry `ROWS` (also drives search); Excluded
+  folders and Controller are pages inside it.
 - `lib/components/EditStudio.svelte` — the Edit window's studio (its own OS
   window since 2026-10-04, hosted by `EditWindow.svelte`; clips come from the
   library): Look presets (CSS/SVG filter preview ↔ ffmpeg filter export,
@@ -183,7 +186,7 @@ stamps the tag's version into **both** `tauri.conf.json` and `Cargo.toml`
 
 - `commands.rs` — the bulk: folder walking (skips dotfiles/AppleDouble),
   thumbnails + bounded background warming (`warm_thumbnails`; `heavy` flag =
-  folder-menu "Build previews" pre-builds RAW previews/video posters), loupe sources,
+  Prepare (Settings → Speed & storage / folder menu) pre-builds RAW previews/video posters), loupe sources,
   file moves and copies (`move_media_files`: rename on one volume, chunked
   copy with progress across drives, the catalog follows into the destination
   drive's own catalog), job cancel registry (`cancel_job`), delete-to-trash, export pipeline

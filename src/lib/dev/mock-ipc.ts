@@ -246,6 +246,11 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
     writable: true,
   }),
   library_info: () => HANDLERS.set_library_root({ root: SD }),
+  // Slow enough that Settings' Prepare progress and Stop can be seen.
+  warm_thumbnails: async (a) => {
+    if (a.heavy) await new Promise((r) => setTimeout(r, 180));
+  },
+  cache_usage: () => ({ dir: `${SD}/_FoxCull/thumbs`, bytes: 1_874_312_000, files: 9_412 }),
   list_folder_media: (a) => {
     if (isTrash(a.dir)) {
       const root = a.dir.replace(/\/?FoxCull Trash\/?$/, "");

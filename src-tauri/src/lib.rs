@@ -233,6 +233,7 @@ pub fn run() {
             commands::restore_trash,
             commands::purge_trash,
             commands::library_info,
+            commands::cache_usage,
             commands::reveal,
             commands::open_external,
             commands::folder_writable,

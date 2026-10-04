@@ -1,7 +1,7 @@
 # Cache & pre-cache policy
 
 **Status:** authoritative · **Last verified against code:** 2026-10-04
-(Prepare moved to the folder menu) · **Owner ask:** keep this in sync with the code, and keep it
+(Prepare: Settings → Speed & storage, and the folder menu) · **Owner ask:** keep this in sync with the code, and keep it
 readable by both a human and a model, so either can audit the two apart.
 
 This is the single record of *what FoxCull caches, where, keyed by what, and
@@ -98,7 +98,7 @@ the "trigger" column as the *complete* list — nothing else builds these.
 | Image thumbnail | folder open → `warm_thumbnails(heavy=false)` | images only, first `WARM_CAP` = 600 |
 | Focus preview | entering Focus on that item | on-demand |
 | Focus preview | Focus prefetch: 3 ahead / 2 behind, biased by travel direction | images + RAW only |
-| Focus preview, RAW thumbnail, video poster | **Build previews for this folder** (folder right-click; was the toolbar's Prepare until 2026-10-04) (`heavy=true`) | explicit user-requested bulk pass; no sprites |
+| Focus preview, RAW thumbnail, video poster | **Prepare this folder** (Settings → Speed & storage, or folder right-click; was the toolbar's Prepare until 2026-10-04) (`heavy=true`) | explicit user-requested bulk pass; no sprites |
 | Video poster (grid) | a video cell becomes visible | on-demand |
 | Video poster (Focus) | opening a video in Focus | on-demand |
 | Scrub sprite | armed grid tile is hovered, live decoder is unavailable, Sprite fallback ON, 140 ms settle | see §4 |

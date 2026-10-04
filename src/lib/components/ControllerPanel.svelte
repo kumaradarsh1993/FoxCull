@@ -1,29 +1,17 @@
 <script lang="ts">
-  // Controller setup: pairing guide, live status, and the press-to-bind
-  // remapper. Bindings persist in settings (padBindings) and take effect
-  // immediately — the polling loop in gamepad.svelte.ts reads them per frame.
+  // Settings → Controls → Game controller: a page inside the Settings sheet.
+  // Pairing guide, live status, and the press-to-bind remapper. Bindings
+  // persist in settings (padBindings) and take effect immediately — the polling
+  // loop in gamepad.svelte.ts reads them per frame. The mouse's extra buttons
+  // moved to the Controls section itself (they aren't the controller).
+  import { onDestroy } from "svelte";
   import { pad, PAD_ACTIONS, buttonName, type PadActionId } from "$lib/gamepad.svelte";
   import { settings } from "$lib/settings.svelte";
-
-  let { onclose }: { onclose: () => void } = $props();
 
   let binding = $state<PadActionId | null>(null);
   let cancelCapture: (() => void) | null = null;
 
   const GROUPS = ["Navigate", "Mark", "Label", "View", "Video"] as const;
-
-  // What the mouse's extra buttons can do (a small, curated subset).
-  const MOUSE_CHOICES: [string, string][] = [
-    ["viewBack", "Back to grid"],
-    ["viewForward", "Open Focus"],
-    ["toggleView", "Open / close Focus"],
-    ["pick", "Pick ⚑"],
-    ["reject", "Reject ✕"],
-    ["prev", "Previous item"],
-    ["next", "Next item"],
-    ["fullscreen", "Play mode (fullscreen)"],
-    ["toggleFilmstrip", "Show / hide filmstrip"],
-  ];
 
   function startBind(action: PadActionId) {
     stopBind();
@@ -39,251 +27,228 @@
     cancelCapture = null;
     binding = null;
   }
-  function close() {
+  onDestroy(stopBind);
+
+  // Esc while listening for a button cancels the listening, and only that: in
+  // the capture phase, so the Settings sheet behind doesn't also close.
+  function onkeydowncapture(e: KeyboardEvent) {
+    if (e.key !== "Escape" || !binding) return;
     stopBind();
-    onclose();
+    e.stopPropagation();
+    e.preventDefault();
   }
 </script>
 
-<svelte:window onkeydown={(e) => e.key === "Escape" && (binding ? stopBind() : close())} />
+<svelte:window {onkeydowncapture} />
 
-<div class="backdrop" onclick={close} role="presentation"></div>
-<div class="panel" role="dialog" aria-label="Controller setup">
-  <header>
-    <h2>🎮 Controller</h2>
-    {#if pad.connected}
-      <span class="status on">● {pad.name.replace(/\s*\(.*\)$/, "") || "Controller"} connected</span>
-    {:else}
-      <span class="status">○ No controller detected — connect one and press any button</span>
-    {/if}
-    <span class="grow"></span>
-    <label class="entoggle">
-      <input
-        type="checkbox"
-        checked={settings.s.padEnabled}
-        onchange={(e) => settings.set({ padEnabled: (e.currentTarget as HTMLInputElement).checked })}
-      />
-      Enabled
-    </label>
-    <button class="x" onclick={close} title="Close (Esc)">✕</button>
-  </header>
-
-  <div class="scroll">
-    <section class="guide">
-      <h3>Pairing</h3>
-      <p class="note lede">
-        A controller can only be paired to <b>one</b> device at a time, so you swap it between this PC
-        and your console. Neither direction is destructive — it's the same two-minute dance each way.
-      </p>
-
-      <div class="cards">
-        <article class="card">
-          <div class="cardHead"><span class="badge pc">PC</span> Pair with this computer</div>
-          <ol>
-            <li>
-              <b>Turn the controller off.</b>
-              Hold <kbd>PS</kbd> ~10 s until the lights go out.
-            </li>
-            <li>
-              <b>Enter pairing mode.</b>
-              Hold <kbd>Create</kbd> <span class="dim">(PS5)</span> or <kbd>Share</kbd>
-              <span class="dim">(PS4)</span> <b>+</b> <kbd>PS</kbd> together until the light bar
-              <b>flashes rapidly</b> — a slow pulse is not pairing mode, keep holding.
-            </li>
-            <li>
-              <b>Add it in Windows.</b>
-              <span class="path">Settings → Bluetooth &amp; devices → Add device → Bluetooth</span>
-              Pick <i>DualSense Wireless Controller</i> or <i>Wireless Controller</i>.
-            </li>
-            <li>
-              <b>Press any button.</b>
-              The status at the top of this panel turns green.
-            </li>
-          </ol>
-          <p class="tip">
-            <b>Skip all of it:</b> a USB-C cable works instantly, with no pairing and no unpairing from
-            your PS5.
-          </p>
-        </article>
-
-        <article class="card">
-          <div class="cardHead"><span class="badge ps">PS5</span> Pair back with your console</div>
-          <ol>
-            <li>
-              <b>Plug it into the PS5</b> with a USB-C cable, console powered on.
-            </li>
-            <li>
-              <b>Press <kbd>PS</kbd>.</b>
-              It re-pairs over the cable and reclaims the controller from this PC.
-            </li>
-            <li>
-              <b>Unplug it.</b> It stays paired to the console wirelessly from then on.
-            </li>
-          </ol>
-          <p class="tip">
-            No cable to hand? Put the controller in pairing mode as in step 2 on the left, then on the
-            console go
-            <span class="path">Settings → Accessories → General → Bluetooth Accessories</span>
-            and select it there.
-          </p>
-        </article>
-      </div>
-
-      <p class="note">
-        Coming back to the PC later means repeating the left column — Windows remembers the controller,
-        but the controller only remembers whichever device claimed it last.
-      </p>
-    </section>
-
-    <section>
-      <h3>Button tester</h3>
-      <p class="note">
-        Press anything — buttons, the PS button, the touchpad click, or a stick flick — and it shows up
-        here. Whether a pad reports the PS button and the touchpad depends on the OS and the browser
-        engine, so this answers it directly instead of leaving you to guess from a binding that seems
-        dead.
-      </p>
-      <div class="tester" class:live={pad.pressedNow.length > 0}>
-        {#if !pad.connected}
-          <span class="dim">No controller connected.</span>
-        {:else if pad.pressedNow.length === 0}
-          <span class="dim">Nothing pressed.</span>
-        {:else}
-          {#each pad.pressedNow as b (b)}<span class="chip">{buttonName(b)} <i>#{b}</i></span>{/each}
-        {/if}
-      </div>
-    </section>
-
-    <section>
-      <h3>Buttons</h3>
-      <p class="note">
-        Click <i>Rebind</i>, then press the controller button you want — a stick flick counts, so
-        ratings and labels can live on the sticks. Binding a button that's in use moves it to the new
-        action.
-      </p>
-      {#each GROUPS as g (g)}
-        <div class="grp">
-          <div class="grpName">{g}</div>
-          {#each PAD_ACTIONS.filter((a) => a.group === g) as a (a.id)}
-            <div class="row">
-              <span class="lbl">{a.label}</span>
-              <span class="btnname" class:none={pad.buttonFor(a.id) < 0}>
-                {#if binding === a.id}<span class="listening">press a button…</span>{:else}{buttonName(pad.buttonFor(a.id))}{/if}
-              </span>
-              {#if binding === a.id}
-                <button class="b" onclick={stopBind}>Cancel</button>
-              {:else}
-                <button class="b" onclick={() => startBind(a.id)} disabled={!pad.connected}>Rebind</button>
-                {#if pad.buttonFor(a.id) >= 0}
-                  <button class="b ghost" onclick={() => void pad.unbind(a.id)} title="Unbind">✕</button>
-                {/if}
-              {/if}
-            </div>
-          {/each}
-        </div>
-      {/each}
-      <div class="resetrow">
-        <button class="b" onclick={() => void pad.resetBindings()}>Reset to PS5 defaults</button>
-      </div>
-    </section>
-
-    <section>
-      <h3>Mouse extra buttons</h3>
-      <p class="note">The thumb Back/Forward buttons on an MX Master / MX Anywhere / G-series mouse.</p>
-      <div class="row">
-        <span class="lbl">Back button</span>
-        <select
-          class="sel"
-          value={settings.s.mouseBack}
-          onchange={(e) => settings.set({ mouseBack: (e.currentTarget as HTMLSelectElement).value })}
-        >
-          {#each MOUSE_CHOICES as [v, l] (v)}<option value={v}>{l}</option>{/each}
-        </select>
-      </div>
-      <div class="row">
-        <span class="lbl">Forward button</span>
-        <select
-          class="sel"
-          value={settings.s.mouseForward}
-          onchange={(e) => settings.set({ mouseForward: (e.currentTarget as HTMLSelectElement).value })}
-        >
-          {#each MOUSE_CHOICES as [v, l] (v)}<option value={v}>{l}</option>{/each}
-        </select>
-      </div>
-    </section>
+<div class="ctrl">
+  <div class="statusCard">
+    <span class="dot" class:on={pad.connected}></span>
+    <span class="stText">
+      <span class="stName">
+        {#if pad.connected}{pad.name.replace(/\s*\(.*\)$/, "") || "Controller"} connected{:else}No controller connected{/if}
+      </span>
+      <span class="stSub">
+        {#if !settings.s.padEnabled}Controller input is off.{:else if pad.connected}Buttons act in the library right away.{:else}Connect one and press any button.{/if}
+      </span>
+    </span>
+    <span class="stLabel">Use a controller</span>
+    <button
+      class="switch"
+      class:on={settings.s.padEnabled}
+      role="switch"
+      aria-checked={settings.s.padEnabled}
+      aria-label="Use a controller"
+      onclick={() => settings.set({ padEnabled: !settings.s.padEnabled })}
+    ><span class="knob"></span></button>
   </div>
+
+  <section class="guide">
+    <h3>Pairing</h3>
+    <p class="note lede">
+      A controller can only be paired to <b>one</b> device at a time, so you swap it between this PC
+      and your console. Neither direction is destructive — it's the same two-minute dance each way.
+    </p>
+
+    <div class="cards">
+      <article class="card">
+        <div class="cardHead"><span class="badge pc">PC</span> Pair with this computer</div>
+        <ol>
+          <li>
+            <b>Turn the controller off.</b>
+            Hold <kbd>PS</kbd> ~10 s until the lights go out.
+          </li>
+          <li>
+            <b>Enter pairing mode.</b>
+            Hold <kbd>Create</kbd> <span class="dim">(PS5)</span> or <kbd>Share</kbd>
+            <span class="dim">(PS4)</span> <b>+</b> <kbd>PS</kbd> together until the light bar
+            <b>flashes rapidly</b> — a slow pulse is not pairing mode, keep holding.
+          </li>
+          <li>
+            <b>Add it in Windows.</b>
+            <span class="path">Settings → Bluetooth &amp; devices → Add device → Bluetooth</span>
+            Pick <i>DualSense Wireless Controller</i> or <i>Wireless Controller</i>.
+          </li>
+          <li>
+            <b>Press any button.</b>
+            The status at the top of this panel turns green.
+          </li>
+        </ol>
+        <p class="tip">
+          <b>Skip all of it:</b> a USB-C cable works instantly, with no pairing and no unpairing from
+          your PS5.
+        </p>
+      </article>
+
+      <article class="card">
+        <div class="cardHead"><span class="badge ps">PS5</span> Pair back with your console</div>
+        <ol>
+          <li>
+            <b>Plug it into the PS5</b> with a USB-C cable, console powered on.
+          </li>
+          <li>
+            <b>Press <kbd>PS</kbd>.</b>
+            It re-pairs over the cable and reclaims the controller from this PC.
+          </li>
+          <li>
+            <b>Unplug it.</b> It stays paired to the console wirelessly from then on.
+          </li>
+        </ol>
+        <p class="tip">
+          No cable to hand? Put the controller in pairing mode as in step 2 on the left, then on the
+          console go
+          <span class="path">Settings → Accessories → General → Bluetooth Accessories</span>
+          and select it there.
+        </p>
+      </article>
+    </div>
+
+    <p class="note">
+      Coming back to the PC later means repeating the left column — Windows remembers the controller,
+      but the controller only remembers whichever device claimed it last.
+    </p>
+  </section>
+
+  <section>
+    <h3>Button tester</h3>
+    <p class="note">
+      Press anything — buttons, the PS button, the touchpad click, or a stick flick — and it shows up
+      here. Whether a pad reports the PS button and the touchpad depends on the OS and the browser
+      engine, so this answers it directly instead of leaving you to guess from a binding that seems
+      dead.
+    </p>
+    <div class="tester" class:live={pad.pressedNow.length > 0}>
+      {#if !pad.connected}
+        <span class="dim">No controller connected.</span>
+      {:else if pad.pressedNow.length === 0}
+        <span class="dim">Nothing pressed.</span>
+      {:else}
+        {#each pad.pressedNow as b (b)}<span class="chip">{buttonName(b)} <i>#{b}</i></span>{/each}
+      {/if}
+    </div>
+  </section>
+
+  <section>
+    <h3>Buttons</h3>
+    <p class="note">
+      Click <i>Rebind</i>, then press the controller button you want — a stick flick counts, so
+      ratings and labels can live on the sticks. Binding a button that's in use moves it to the new
+      action.
+    </p>
+    {#each GROUPS as g (g)}
+      <div class="grp">
+        <div class="grpName">{g}</div>
+        {#each PAD_ACTIONS.filter((a) => a.group === g) as a (a.id)}
+          <div class="row">
+            <span class="lbl">{a.label}</span>
+            <span class="btnname" class:none={pad.buttonFor(a.id) < 0}>
+              {#if binding === a.id}<span class="listening">press a button…</span>{:else}{buttonName(pad.buttonFor(a.id))}{/if}
+            </span>
+            {#if binding === a.id}
+              <button class="b" onclick={stopBind}>Cancel</button>
+            {:else}
+              <button class="b" onclick={() => startBind(a.id)} disabled={!pad.connected}>Rebind</button>
+              {#if pad.buttonFor(a.id) >= 0}
+                <button class="b ghost" onclick={() => void pad.unbind(a.id)} title="Unbind">✕</button>
+              {/if}
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/each}
+    <div class="resetrow">
+      <button class="b" onclick={() => void pad.resetBindings()}>Reset to PS5 defaults</button>
+    </div>
+  </section>
+
 </div>
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.66);
-    backdrop-filter: blur(6px);
-    z-index: 100;
+  .statusCard {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+    padding: 12px 14px;
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--bg-elev) 82%, transparent);
   }
-  .panel {
-    position: fixed;
-    inset: 6% 22%;
-    min-width: 560px;
-    z-index: 101;
-    background: color-mix(in srgb, var(--bg-panel) 97%, transparent);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-xl);
-    box-shadow: var(--shadow);
+  .dot {
+    width: 10px;
+    height: 10px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--text-faint);
+  }
+  .dot.on {
+    background: var(--pick);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--pick) 20%, transparent);
+  }
+  .stText {
+    flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    gap: 2px;
   }
-  @media (max-width: 1100px) {
-    .panel { inset: 5% 8%; min-width: 0; }
-  }
-  header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-height: 56px;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border-soft);
-  }
-  header h2 {
-    margin: 0;
-    font-family: var(--font-display);
-    font-size: 17px;
-    letter-spacing: -.015em;
-  }
-  .status {
-    font-size: 12.5px;
-    color: var(--text-dim);
-  }
-  .status.on {
-    color: var(--pick);
-  }
-  .grow {
-    flex: 1;
-  }
-  .entoggle {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12.5px;
-    color: var(--text-dim);
-  }
-  .x {
-    width: 30px;
-    height: 30px;
-    border-radius: 7px;
-    color: var(--text-dim);
+  .stName {
     font-size: 13px;
+    font-weight: 600;
   }
-  .x:hover {
-    background: var(--bg-hover);
-    color: var(--text);
+  .stSub,
+  .stLabel {
+    font-size: 12px;
+    color: var(--text-dim);
   }
-  .scroll {
-    flex: 1;
-    overflow-y: auto;
-    padding: 14px 18px 20px;
+  .stSub {
+    color: var(--text-faint);
+  }
+  .switch {
+    position: relative;
+    width: 38px;
+    height: 22px;
+    flex: none;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--text-faint) 38%, var(--bg-elev));
+    transition: background 140ms ease;
+  }
+  .switch .knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    transition: transform 160ms cubic-bezier(0.3, 0.7, 0.3, 1);
+  }
+  .switch.on {
+    background: var(--accent);
+  }
+  .switch.on .knob {
+    transform: translateX(16px);
   }
   section {
     margin-bottom: 18px;
@@ -484,13 +449,5 @@
     color: var(--text-faint);
     font-style: normal;
     font-weight: 400;
-  }
-  .sel {
-    background: var(--bg-elev);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    padding: 4px 6px;
-    font-size: 12.5px;
   }
 </style>

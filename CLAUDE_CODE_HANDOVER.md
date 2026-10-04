@@ -1,5 +1,20 @@
 # Agent Handover: FoxCull
 
+## 2026-10-04 (night) — Settings sheet (nightly.7)
+
+Ledger: `docs/changes/2026-10-04-settings-sheet.md`.
+
+- **Settings = `SettingsSheet.svelte`**, opened by `openSettings(page?)` in
+  `+page.svelte` (gear, ⌘,, Welcome's "Excluded folders"). Add a setting by
+  adding a row to `ROWS` (section, card, label, desc, search keys) and its
+  control to the `control` snippet; search picks it up by itself.
+- Anything that touches the library (Trash, catalog check, Prepare, stacks)
+  is a callback from the page; plain preferences write to the store.
+- `ExcludePanel` and `ControllerPanel` are pages inside the sheet now (no
+  modal of their own). Exclusions are re-applied in `closeSettings()` only
+  if they changed. The About modal is gone: `UpdatePanel` is embedded as is.
+- `cache_usage` (backend) sizes the active drive's `_FoxCull/thumbs`.
+
 ## 2026-10-04 (night) — Edit playback and snapping fixes (nightly.6)
 
 Ledger: `docs/changes/2026-10-04-edit-playback-snap.md`.

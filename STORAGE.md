@@ -65,8 +65,8 @@ FoxCull uses cache in a few layers:
 
 - Folder open automatically warms grid thumbnails (images only).
 - Focus view prefetch keeps nearby full previews warm around the active item.
-- Folder right-click → Build previews for this folder (the old Prepare
-  button) explicitly builds full-size Focus previews, RAW previews and video
+- Prepare this folder (Settings → Speed & storage, or the folder's
+  right-click menu; the old toolbar Prepare button) explicitly builds full-size Focus previews, RAW previews and video
   posters for that folder.
 - Live Scrub builds a small hover strip on demand the first time you linger on
   a video tile; the Focus view builds a denser filmstrip for its seek bar.

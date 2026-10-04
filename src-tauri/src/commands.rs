@@ -7489,6 +7489,42 @@ pub fn library_info(state: State<'_, AppState>) -> LibraryInfo {
     }
 }
 
+/// How much the active drive's preview cache (`_FoxCull/thumbs`: thumbnails,
+/// Focus previews, posters, filmstrips, proxies) takes on disk. Settings shows
+/// it beside "Build previews"; everything in there is rebuilt on demand.
+#[derive(Serialize)]
+pub struct CacheUsage {
+    pub dir: String,
+    pub bytes: u64,
+    pub files: u64,
+}
+
+#[tauri::command]
+pub async fn cache_usage(state: State<'_, AppState>) -> Result<CacheUsage, String> {
+    let dir = state.cache_dir.lock().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (mut bytes, mut files) = (0u64, 0u64);
+        let mut stack = vec![dir.clone()];
+        while let Some(d) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            for e in rd.flatten() {
+                let Ok(ft) = e.file_type() else { continue };
+                if ft.is_dir() {
+                    stack.push(e.path());
+                } else if ft.is_file() {
+                    if let Ok(m) = e.metadata() {
+                        bytes += m.len();
+                        files += 1;
+                    }
+                }
+            }
+        }
+        CacheUsage { dir: dir.to_string_lossy().into_owned(), bytes, files }
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Reveal a file in the OS file manager (Explorer / Finder), selected.
 #[tauri::command]
 pub fn reveal(app: AppHandle, path: String) -> Result<(), String> {

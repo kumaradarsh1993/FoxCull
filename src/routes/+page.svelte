@@ -3,7 +3,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { api } from "$lib/api";
   import { cast, type CastDevice, type CastStatus } from "$lib/cast";
-  import { settings, GLIMPSE_MIN, GLIMPSE_MAX } from "$lib/settings.svelte";
+  import { settings, type FilmstripPos } from "$lib/settings.svelte";
   import { activity, fmtEta } from "$lib/activity.svelte";
   import { resetThumbs, prefetchLoupe, loaderStats, loadVideoFilmstrip } from "$lib/thumbnail-loader";
   import {
@@ -27,11 +27,9 @@
   import ContextMenu, { type MenuEntry } from "$lib/components/ContextMenu.svelte";
   import ActivityBar from "$lib/components/ActivityBar.svelte";
   import { mediaDrag } from "$lib/drag.svelte";
-  import ControllerPanel from "$lib/components/ControllerPanel.svelte";
-  import ExcludePanel from "$lib/components/ExcludePanel.svelte";
+  import SettingsSheet, { type SettingsPage } from "$lib/components/SettingsSheet.svelte";
   import { keepInView } from "$lib/keep-in-view";
   import Welcome from "$lib/components/Welcome.svelte";
-  import UpdatePanel from "$lib/components/UpdatePanel.svelte";
   import { updates, primeUpdateCheck } from "$lib/updates.svelte";
   import { pad, PAD_ACTIONS, buttonName, type PadActionId } from "$lib/gamepad.svelte";
 
@@ -132,6 +130,7 @@
   let dimLevel = $state(0); // 0 normal · 1 dim panels · 2 lights out
   let showInfoOverlay = $state(false);
   let settingsOpen = $state(false);
+  let settingsPage = $state<SettingsPage>("appearance");
   let filtersOpen = $state(false);
   let arrangeOpen = $state(false);
   let clearOpen = $state(false);
@@ -430,8 +429,6 @@
   let trashReturn = $state<{ dir: string; selectPath: string | null } | null>(null);
   /** Files in the active drive's Trash: the sidebar entry's badge. */
   let trashCount = $state(0);
-  let controllerOpen = $state(false);
-  let excludesOpen = $state(false);
   /** The exclude rules as they were when the panel opened, to tell on close
    *  whether anything needs re-scanning. */
   let excludesBefore = "";
@@ -454,14 +451,12 @@
   let durationsDir: string | null = null;
   let padHelpOpen = $state(false);
   let shortcutsOpen = $state(false);
-  let aboutOpen = $state(false);
 
   /** True while any toolbar popover/menu is open (they share light-dismiss). */
   function anyPopoverOpen(): boolean {
-    return settingsOpen || filtersOpen || arrangeOpen || clearOpen || castOpen;
+    return filtersOpen || arrangeOpen || clearOpen || castOpen;
   }
   function closeAllPopovers() {
-    settingsOpen = false;
     filtersOpen = false;
     arrangeOpen = false;
     clearOpen = false;
@@ -473,7 +468,7 @@
   function onGlobalPointerDown(e: PointerEvent) {
     if (!anyPopoverOpen()) return;
     const t = e.target as HTMLElement | null;
-    if (t?.closest(".pop, .filtermenu, .arrangeMenu, .clearMenu, .castMenu, .arrange, .filterwrap, .clearWrap, .castWrap, .gear")) return;
+    if (t?.closest(".filtermenu, .arrangeMenu, .clearMenu, .castMenu, .arrange, .filterwrap, .clearWrap, .castWrap, .gear")) return;
     closeAllPopovers();
   }
   let treeCollapsed = $state(false);
@@ -2991,13 +2986,25 @@
     }
   }
 
-  function openExcludes() {
+  // Settings is one sheet (SettingsSheet.svelte); Excluded folders is a page
+  // inside it, so the rules are re-applied once, when the sheet closes, and
+  // only if they changed while it was open.
+  function openSettings(page?: SettingsPage) {
+    closeAllPopovers();
+    if (page) settingsPage = page;
     excludesBefore = JSON.stringify(settings.s.scanExcludes);
-    excludesOpen = true;
+    settingsOpen = true;
   }
-  function closeExcludes() {
-    excludesOpen = false;
+  function closeSettings() {
+    if (!settingsOpen) return;
+    settingsOpen = false;
     if (JSON.stringify(settings.s.scanExcludes) !== excludesBefore) void applyScanExcludes();
+  }
+  function setFilmstripDock(v: FilmstripPos) {
+    if (v !== "hidden") lastDock = v;
+    // Record the intent for THIS view too, or the next view change would
+    // undo the choice made here.
+    settings.set({ filmstripPos: v, stripShow: { ...settings.s.stripShow, [viewMode]: v !== "hidden" } });
   }
 
   /** Push the rules to the backend and redo everything they affect: the tree
@@ -3067,8 +3074,9 @@
               action: () => removeMissingUnder(path),
             }]),
         {
-          // The old toolbar "Prepare": worth it on slow cards and disks only.
-          label: preparing ? "Building previews…" : "Build previews for this folder",
+          // The old toolbar "Prepare" (also in Settings → Speed & storage):
+          // worth it on slow cards and disks only.
+          label: preparing ? "Preparing previews…" : "Prepare this folder (build previews)",
           icon: "⚡",
           disabled: preparing,
           action: async () => {
@@ -3483,6 +3491,14 @@
       e.preventDefault();
       return;
     }
+    // Settings is a modal sheet with its own keys (Esc, ⌘F); nothing reaches
+    // the library behind it. ⌘, opens it, as in every Mac app.
+    if (settingsOpen) return;
+    if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+      openSettings();
+      e.preventDefault();
+      return;
+    }
     // Overlays and popovers first, in every mode: ? toggles the shortcut guide,
     // Escape closes the topmost open thing before doing anything else.
     if (e.key === "?") {
@@ -3492,10 +3508,6 @@
     }
     if (e.key === "Escape" && shortcutsOpen) {
       shortcutsOpen = false;
-      return;
-    }
-    if (e.key === "Escape" && aboutOpen) {
-      aboutOpen = false;
       return;
     }
     if (e.key === "Escape" && padHelpOpen) {
@@ -3814,7 +3826,7 @@
 {/snippet}
 
 {#snippet gearButton()}
-        <button class="ico gear" class:on={settingsOpen} onclick={() => (settingsOpen = !settingsOpen)} title="Settings" aria-label="Settings">
+        <button class="ico gear" class:on={settingsOpen} class:dot={updates.available} onclick={() => (settingsOpen ? closeSettings() : openSettings())} title={updates.available ? "Settings (⌘,) · an update is available" : "Settings (⌘,)"} aria-label="Settings">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.03-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.56-1.03 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1.02-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.56 1.02H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.56 1.03z"/></svg>
         </button>
 {/snippet}
@@ -4400,158 +4412,25 @@
     </div>
     {/if}
 
-    <!-- settings popover -->
     {#if settingsOpen}
-      <div class="pop" use:keepInView>
-        <!-- Grouped into three plain sections (the user's ask: settings live in
-             ONE place, logically bunched, no scattered duplicates). Stacks and
-             Live Scrub have no other home — this popover is it. -->
-        <div class="grpHead">Appearance</div>
-        <div class="row appearanceRow"><span>Theme</span>
-          <div class="seg themeSeg">
-            <button class="chip" class:on={settings.s.theme === "neutral"} onclick={() => settings.set({ theme: "neutral" })} title="Neutral professional editing chrome"><i class="themeSwatch studio"></i>Studio</button>
-            <button class="chip" class:on={settings.s.theme === "dark"} onclick={() => settings.set({ theme: "dark" })}><i class="themeSwatch midnight"></i>Midnight</button>
-            <button class="chip" class:on={settings.s.theme === "warm"} onclick={() => settings.set({ theme: "warm" })} title="Low-blue-light late-night chrome"><i class="themeSwatch amber"></i>Amber</button>
-            <button class="chip" class:on={settings.s.theme === "light"} onclick={() => settings.set({ theme: "light" })}><i class="themeSwatch daylight"></i>Daylight</button>
-          </div>
-        </div>
-        <div class="row"><span>Interface size</span>
-          <div class="seg">
-            <button class="chip" class:on={settings.s.uiScale === "compact"} onclick={() => settings.set({ uiScale: "compact" })} title="More media on a small laptop display">Compact</button>
-            <button class="chip" class:on={settings.s.uiScale === "comfortable"} onclick={() => settings.set({ uiScale: "comfortable" })}>Standard</button>
-            <button class="chip" class:on={settings.s.uiScale === "distance"} onclick={() => settings.set({ uiScale: "distance" })} title="Large controls and type for a TV or distant monitor">TV / large</button>
-          </div>
-        </div>
-        <div class="row"><span>Filmstrip</span>
-          <div class="seg">
-            {#each [["bottom", "Bottom"], ["left", "Left"], ["right", "Right"], ["hidden", "Off"]] as [v, l]}
-              <button
-                class="chip"
-                class:on={settings.s.filmstripPos === v}
-                onclick={() => {
-                  if (v !== "hidden") lastDock = v as "bottom" | "left" | "right";
-                  // Record the intent for THIS view too, or the next view
-                  // change would undo the choice made here.
-                  settings.set({
-                    filmstripPos: v as typeof settings.s.filmstripPos,
-                    stripShow: { ...settings.s.stripShow, [viewMode]: v !== "hidden" },
-                  });
-                }}
-              >{l}</button>
-            {/each}
-          </div>
-        </div>
-        <div class="grpHead">Browsing</div>
-        <div class="row"><span>Tile details</span>
-          <div class="seg" title="What grid tiles show besides the picture">
-            <button class="chip" class:on={settings.s.tileInfo.duration} onclick={() => { settings.set({ tileInfo: { ...settings.s.tileInfo, duration: !settings.s.tileInfo.duration } }); }}>Video length</button>
-            <button class="chip" class:on={settings.s.tileInfo.name} onclick={() => settings.set({ tileInfo: { ...settings.s.tileInfo, name: !settings.s.tileInfo.name } })}>File name</button>
-          </div>
-        </div>
-        <div class="row"><span>Stacks</span>
-          <div class="seg">
-            <button class="chip" class:on={settings.s.relatedMode === "expanded"} onclick={() => setRelatedMode("expanded")}>Open</button>
-            <button class="chip" class:on={settings.s.relatedMode === "collapsed"} onclick={collapseAllRelated}>Fold{relatedHiddenCount ? ` ${relatedHiddenCount}` : ""}</button>
-          </div>
-        </div>
-        <div class="row"><span>Focus scrub</span>
-          <div class="seg" title="Focus view decodes the real frame under your cursor as you drag — full resolution, nothing to prepare, works the moment a clip opens. Clips whose codec can't be decoded this way fall back automatically. Turn off only to diagnose.">
-            <button class="chip" class:on={settings.s.liveDecodeScrub} onclick={() => settings.set({ liveDecodeScrub: true })}>Live decode</button>
-            <button class="chip" class:on={!settings.s.liveDecodeScrub} onclick={() => settings.set({ liveDecodeScrub: false })}>Sprites</button>
-          </div>
-        </div>
-        <div class="row"><span>Glimpse speed</span>
-          <div class="slider" title="How fast Glimpse (Ctrl+Space) plays, as a plain multiple of real time — the same idea as a player's 2x or 5x. The rate never changes with clip length: at 5x, 20 seconds takes 4 and 10 minutes takes 2.">
-            <input
-              type="range"
-              min={GLIMPSE_MIN}
-              max={GLIMPSE_MAX}
-              step="1"
-              value={settings.s.glimpseSpeed}
-              oninput={(e) => settings.set({ glimpseSpeed: +e.currentTarget.value })}
-            />
-            <span class="sliderVal">{settings.s.glimpseSpeed}×</span>
-          </div>
-        </div>
-        <div class="row"><span>Sprite fallback (pre-built)</span>
-          <div class="seg" title="Skimming works WITHOUT this: select a clip in the grid, hover it, and FoxCull decodes real frames live — nothing is pre-built. Turn this on only to also build sprite sheets for clips whose codec the decoder can't take. It costs minutes of ffmpeg and disk per folder.">
-            <button class="chip" class:on={settings.s.liveScrub} onclick={() => settings.set({ liveScrub: true })}>On</button>
-            <button class="chip" class:on={!settings.s.liveScrub} onclick={() => settings.set({ liveScrub: false })}>Off</button>
-          </div>
-        </div>
-        <div class="row"><span>Video autoplay</span>
-          <div class="seg">
-            <button class="chip" class:on={settings.s.videoAutoplay} onclick={() => settings.set({ videoAutoplay: true })}>On</button>
-            <button class="chip" class:on={!settings.s.videoAutoplay} onclick={() => settings.set({ videoAutoplay: false })}>Off</button>
-          </div>
-        </div>
-        <div class="row"><span>Minimal video bar</span>
-          <div class="seg" title="Collapse the transport to a thin hover-to-expand line so the picture stays edge-to-edge. Off pins a classic always-visible bar.">
-            <button class="chip" class:on={settings.s.minimalVideoBar} onclick={() => settings.set({ minimalVideoBar: true })}>On</button>
-            <button class="chip" class:on={!settings.s.minimalVideoBar} onclick={() => settings.set({ minimalVideoBar: false })}>Off</button>
-          </div>
-        </div>
-        <div class="row"><span>Controller</span>
-          <button class="btn sm" onclick={() => { settingsOpen = false; controllerOpen = true; }} title="Pair a PS5/PS4 controller and map its buttons (mouse extras too)">
-            🎮 {pad.connected ? "Connected — set up…" : "Set up…"}
-          </button>
-        </div>
-        <div class="row"><span>Shortcuts</span>
-          <button class="btn sm" onclick={() => { settingsOpen = false; shortcutsOpen = true; }} title="Every keyboard shortcut, grouped (?)">⌨ Show all… </button>
-        </div>
-        <div class="grpHead">Files</div>
-        <div class="row"><span>On delete</span>
-          <div class="seg">
-            <button class="chip" class:on={settings.s.deleteMode === "folder"} onclick={() => settings.set({ deleteMode: "folder" })} title="Move to this drive's _FoxCull recycle folder - recoverable in the in-app Trash">In-app Trash</button>
-            <button class="chip" class:on={settings.s.deleteMode === "recycle"} onclick={() => settings.set({ deleteMode: "recycle" })} title="Send to the operating system's Recycle Bin / Trash">System Recycle Bin</button>
-          </div>
-        </div>
-        <div class="row"><span>Trash</span>
-          <button class="btn sm" onclick={() => { settingsOpen = false; void openTrash(); }} title="Opens the visible FoxCull Trash folder in the library — preview and play anything before deciding">🗑 Open Trash folder</button>
-        </div>
-        <div class="row"><span>Excluded folders</span>
-          <button class="btn sm" onclick={() => { settingsOpen = false; openExcludes(); }} title="Folders FoxCull never scans, counts or shows — system folders are pre-selected">
-            ⊘ {settings.s.scanExcludes.paths.length + settings.s.scanExcludes.names.length
-              ? `Manage… (${settings.s.scanExcludes.paths.length + settings.s.scanExcludes.names.length} custom)`
-              : "Manage…"}
-          </button>
-        </div>
-        <div class="row"><span>Check catalog on launch</span>
-          <div class="seg" title="Verify every rated/tagged file is still where the catalog expects it, and auto-reconnect anything that moved or was renamed outside FoxCull. Runs after the folder is on screen; costs nothing unless something is actually missing.">
-            <button class="chip" class:on={settings.s.scanOnLaunch} onclick={() => settings.set({ scanOnLaunch: true })}>On</button>
-            <button class="chip" class:on={!settings.s.scanOnLaunch} onclick={() => settings.set({ scanOnLaunch: false })}>Off</button>
-          </div>
-        </div>
-        <div class="row"><span>Catalog</span>
-          <button class="btn sm" disabled={scanning} onclick={() => { settingsOpen = false; runCatalogScan({ announce: true }); }} title="Run the integrity check now">
-            {scanning ? "Checking…" : "🔎 Check now"}
-          </button>
-        </div>
-        <div class="row"><span>Version</span>
-          <button class="btn sm" onclick={() => { settingsOpen = false; aboutOpen = true; }} title="What you're running, what's available, and one button to move between them">
-            {updates.available ? "● Update available…" : "About & updates…"}
-          </button>
-        </div>
-        <div class="row"><span>Library</span>
-          {#if libInfo}
-            <button class="btn sm" onclick={() => libInfo && api.reveal(libInfo.catalog)} title="Show the library folder in your file manager">Reveal</button>
-          {/if}
-        </div>
-        {#if libInfo}
-          <div class="row sub">
-            <span class="path" title={libInfo.dir}>{libInfo.dir}</span>
-            <span class="tag">{libInfo.on_drive ? "on drive" : "app-data (read-only mount)"}</span>
-          </div>
-        {/if}
-        <div class="row hintrow">Each drive keeps its own catalog, preview cache &amp; recycle in a <code>_FoxCull</code> folder. Press <kbd>?</kbd> for all shortcuts · <kbd>F</kbd> play mode · <kbd>L</kbd> dim.</div>
-      </div>
-    {/if}
-
-    {#if controllerOpen}
-      <ControllerPanel onclose={() => (controllerOpen = false)} />
-    {/if}
-    {#if excludesOpen}
-      <ExcludePanel onclose={closeExcludes} />
+      <SettingsSheet
+        bind:page={settingsPage}
+        onclose={closeSettings}
+        onfilmstrip={setFilmstripDock}
+        onstacks={(m) => (m === "expanded" ? setRelatedMode("expanded") : collapseAllRelated())}
+        foldableCount={relatedHiddenCount}
+        {currentDir}
+        folderCount={inTrashFolder ? 0 : baseView.filter((i) => !i.missing).length}
+        {preparing}
+        onprepare={() => void prepareFolder()}
+        {libInfo}
+        driveLabel={libInfo ? driveLabelOf(libInfo.root) : ""}
+        {trashCount}
+        onopentrash={() => { closeSettings(); void openTrash(); }}
+        {scanning}
+        oncheckcatalog={() => runCatalogScan({ announce: true })}
+        onshortcuts={() => { closeSettings(); shortcutsOpen = true; }}
+      />
     {/if}
 
     <!-- Keyboard shortcut guide (?): the one place every key lives, grouped the
@@ -4597,7 +4476,7 @@
             <div class="kbRow"><span class="keys"><kbd>[</kbd> <kbd>]</kbd></span><span>Set in / out point</span></div>
             <div class="kbGroup">Beyond the keyboard</div>
             <div class="kbRow"><span class="keys">🖱</span><span>Right-click anything for its menu; mouse Back/Forward are remappable</span></div>
-            <div class="kbRow"><span class="keys">🎮</span><span>PS5/PS4 pad — Settings → Controller (Create/Share shows its guide)</span></div>
+            <div class="kbRow"><span class="keys">🎮</span><span>PS5/PS4 pad — Settings → Controls → Game controller (Create/Share shows its guide)</span></div>
           </div>
         </div>
         <div class="kbFoot">Press <kbd>?</kbd> anytime to show this.</div>
@@ -4618,18 +4497,7 @@
             {/each}
           {/if}
         {/each}
-        <div class="pgFoot">Remap in Settings → Controller</div>
-      </div>
-    {/if}
-
-    <!-- About & updates. The panel is byte-identical in wispr-fox, Fox MD and
-         Fox Mark - one implementation of "check, download, install silently,
-         relaunch" rather than four that drift. -->
-    {#if aboutOpen}
-      <button class="kbBackdrop" aria-label="Close" onclick={() => (aboutOpen = false)}></button>
-      <div class="aboutBox" role="dialog" aria-label="About and updates">
-        <div class="kbHead"><span>About &amp; updates</span><button class="kbClose" onclick={() => (aboutOpen = false)} title="Close (Esc)">✕</button></div>
-        <div class="aboutBody"><UpdatePanel title="FoxCull" /></div>
+        <div class="pgFoot">Remap in Settings → Controls → Game controller</div>
       </div>
     {/if}
 
@@ -4786,7 +4654,7 @@
             onopen={(p) => openFolder(p)}
             onpick={openFolderPicker}
             onshowtree={() => (treeCollapsed = false)}
-            onexcludes={openExcludes}
+            onexcludes={() => openSettings("excludes")}
           />
         {:else if view.length === 0 && inTrashFolder}
           <div class="welcome trashEmpty">
@@ -4999,7 +4867,6 @@
   .app.fs .bar,
   .app.fs .banner,
   .app.fs .info,
-  .app.fs .pop,
   .app.fs .treeRestore { display: none; }
   .tree { display: flex; flex-direction: column; background: var(--bg-panel); border-right: 1px solid var(--border); flex: 0 0 auto; min-width: 0; transition: width 0.14s ease; }
   .tree-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 45px; padding: 9px 10px; border-bottom: 1px solid var(--border); }
@@ -5095,6 +4962,9 @@
   .ico { width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-elev); font-size: 14px; line-height: 1; }
   .ico:hover { background: var(--bg-hover); }
   .ico.on { border-color: var(--accent); color: var(--accent); }
+  /* A newer build exists: a small dot on the gear (details in Settings → About). */
+  .ico.gear.dot { position: relative; }
+  .ico.gear.dot::after { content: ""; position: absolute; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--bg-panel); }
   .panelGlyph { display: block; opacity: 0.9; }
   .refreshIcon { display: block; width: 15px; height: 15px; }
   .chip { padding: 4px 9px; border-radius: 6px; font-size: 12px; color: var(--text-dim); border: 1px solid transparent; white-space: nowrap; }
@@ -5367,22 +5237,6 @@
     border: none;
     cursor: default;
   }
-  .aboutBox {
-    position: fixed;
-    left: 50%;
-    top: 50%;
-    transform: translate(-50%, -50%);
-    z-index: 295;
-    width: min(680px, calc(100vw - 60px));
-    max-height: calc(100vh - 80px);
-    overflow-y: auto;
-    padding: 16px 20px 18px;
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    background: var(--bg-elev);
-    box-shadow: var(--shadow);
-  }
-  .aboutBody { margin-top: 12px; }
 
   .kbGuide {
     position: fixed;
@@ -5516,28 +5370,6 @@
     color: var(--text-faint);
   }
 
-  .pop { position: absolute; right: 10px; top: 46px; z-index: 30; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 12px; width: 340px; display: flex; flex-direction: column; gap: 10px; }
-  .pop .grpHead { margin-top: 2px; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); padding-bottom: 3px; }
-  .pop .grpHead:first-child { margin-top: 0; }
-  .pop .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; }
-  .pop .row.sub { padding-left: 6px; flex-wrap: nowrap; }
-  /* Range control in a settings row (Glimpse speed). Sized so the numeric
-     readout can't reflow the row as the value changes width. */
-  .slider { display: flex; align-items: center; gap: 8px; }
-  .slider input[type="range"] { width: 120px; accent-color: var(--accent); }
-  .slider .sliderVal {
-    min-width: 34px;
-    text-align: right;
-    font-size: 12px;
-    color: var(--text-dim);
-    font-variant-numeric: tabular-nums;
-  }
-  .pop .path { flex: 1; min-width: 0; color: var(--text-dim); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .pop .row.sub .tag { flex: 0 0 auto; }
-  /* Prose row — MUST be block, not flex: flex + space-between turns the text
-     fragments around <code>/<kbd> into separate squeezed flex items and the
-     whole sentence collapses into a one-word-per-line column. */
-  .pop .row.hintrow { display: block; color: var(--text-faint); font-size: 12px; line-height: 1.7; }
   kbd { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; font-size: 11px; }
 
   .body { flex: 1; display: flex; min-height: 0; }
@@ -5915,8 +5747,7 @@
   .arrangeMenu,
   .filtermenu,
   .clearMenu,
-  .castMenu,
-  .pop {
+  .castMenu {
     border-color: color-mix(in srgb, var(--border-strong) 72%, transparent);
     border-radius: var(--radius-lg);
     background: color-mix(in srgb, var(--bg-elev) 94%, transparent);
@@ -5930,29 +5761,10 @@
   .clearMenu button,
   .castRow,
   .tagrow { border-radius: 8px; }
-  .pop {
-    top: 58px;
-    right: 10px;
-    width: 396px;
-    max-height: calc(100vh - 72px);
-    overflow-y: auto;
-    padding: 15px;
-    gap: 11px;
-  }
-  .pop .grpHead { margin-top: 5px; padding-bottom: 6px; letter-spacing: .095em; }
   /* Scrolling lists inside menus: rows keep their height, the list scrolls. */
   .fm-tags > *,
   .missList > *,
   .evtList > * { flex-shrink: 0; }
-  .pop .row { min-height: 29px; }
-  .appearanceRow { align-items: flex-start !important; }
-  .themeSeg { width: 250px; display: grid; grid-template-columns: 1fr 1fr; }
-  .themeSeg .chip { justify-content: flex-start; }
-  .themeSwatch { width: 13px; height: 13px; border: 1px solid rgba(255,255,255,.16); border-radius: 4px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.12); }
-  .themeSwatch.studio { background: linear-gradient(135deg, #17191d 50%, #78b9ef 50%); }
-  .themeSwatch.midnight { background: linear-gradient(135deg, #0d1015 50%, #63b7f2 50%); }
-  .themeSwatch.amber { background: linear-gradient(135deg, #1b1917 50%, #d8ad68 50%); }
-  .themeSwatch.daylight { background: linear-gradient(135deg, #f7f9fb 50%, #2d7fc2 50%); }
   .sel { min-height: 29px; border-color: var(--border-soft); }
 
   .viewport {
@@ -6038,7 +5850,6 @@
     .bar > .spacer { display: none; }
     .rightTools { width: 100%; justify-content: flex-end; }
     .viewGroup { margin-right: auto; }
-    .pop { top: 94px; }
   }
 
   @media (max-width: 760px) {

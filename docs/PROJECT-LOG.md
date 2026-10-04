@@ -955,3 +955,16 @@ to play starts it over. An ended clip now simply counts as finished. Snapping
 had a related problem: it reached a fixed sixth of a second, which on screen
 was a few pixels, so clips never seemed to snap; it now reaches ten pixels at
 any zoom and works from either end of a clip.
+
+## 2026-10-04 (night) — Settings, as one place
+
+The settings popover had grown one row at a time to twenty-two, past the
+bottom of a laptop screen, with what each row did hidden in hover text. The
+owner asked for it to be rethought as a whole, and for Prepare to come back
+to it. Settings is now one sheet with a sidebar, like the operating system's
+own: six sections, cards of rows that each say what they do, switches for
+on/off, a search that finds a setting by the word you'd use, and the panels
+it used to open on top of itself (excluded folders, the controller, updates)
+as pages inside it. Prepare sits in "Speed & storage" with its progress and
+the size of the drive's preview cache beside it, so the question "is it worth
+it here?" has its answer next to the button.

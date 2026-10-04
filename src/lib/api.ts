@@ -295,6 +295,8 @@ export const api = {
     invoke<{ restored: number; failed: string[] }>("restore_trash", { stored }),
   purgeTrash: (stored: string[]) => invoke<number>("purge_trash", { stored }),
   libraryInfo: () => invoke<LibraryInfo>("library_info"),
+  /** Size of the active drive's preview cache (Settings → Speed & storage). */
+  cacheUsage: () => invoke<{ dir: string; bytes: number; files: number }>("cache_usage").catch(() => null),
   reveal: (path: string) => invoke<void>("reveal", { path }).catch(() => {}),
   openExternal: (path: string) =>
     invoke<void>("open_external", { path }).catch(() => {}),
