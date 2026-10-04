@@ -44,20 +44,22 @@
 
   const COLUMNS: Col[] = [
     { id: "thumb", label: "", width: 54, min: 46 },
-    { id: "name", label: "Name", width: 260, min: 150 },
-    { id: "marks", label: "Marks", width: 160, min: 90, optional: true },
+    { id: "name", label: "Name", width: 240, min: 150 },
+    { id: "marks", label: "Marks", width: 140, min: 90, optional: true },
     { id: "kind", label: "Type", width: 82, min: 64 },
-    { id: "resolution", label: "Resolution", width: 130, min: 92, optional: true },
+    { id: "resolution", label: "Resolution", width: 120, min: 92, optional: true },
     { id: "fps", label: "FPS", width: 70, min: 54, optional: true },
     { id: "duration", label: "Duration", width: 86, min: 66, optional: true },
     { id: "codec", label: "Codec", width: 92, min: 68, optional: true },
-    { id: "camera", label: "Camera", width: 150, min: 90, optional: true },
+    { id: "camera", label: "Camera", width: 140, min: 90, optional: true },
     { id: "size", label: "Size", width: 92, min: 72, align: "right" },
-    { id: "date", label: "Date", width: 156, min: 118 },
+    { id: "date", label: "Date", width: 144, min: 118 },
     { id: "folder", label: "Folder", width: 170, min: 100, optional: true },
     { id: "tags", label: "Tags", width: 170, min: 90, optional: true },
   ];
-  const DEFAULT_COLS: ColId[] = ["thumb", "name", "marks", "kind", "resolution", "fps", "duration", "codec", "camera", "size", "date"];
+  // FPS and Codec are a click away under Columns; by default the table fits a
+  // laptop window with the name first and widest (audit L10).
+  const DEFAULT_COLS: ColId[] = ["thumb", "name", "marks", "kind", "resolution", "duration", "camera", "size", "date"];
 
   const ROW = 52;
   const OVERSCAN = 8;
@@ -73,7 +75,11 @@
   const probing = new Set<string>();
 
   let visibleColumns = $derived(COLUMNS.filter((c) => shown.has(c.id)));
-  let gridTemplate = $derived(visibleColumns.map((c) => `${widths[c.id] ?? c.width}px`).join(" "));
+  // The name column takes whatever room is left, so file names show in full
+  // on a wide window instead of every column keeping its fixed width.
+  let gridTemplate = $derived(
+    visibleColumns.map((c) => (c.id === "name" ? `minmax(${widths[c.id] ?? c.width}px, 1fr)` : `${widths[c.id] ?? c.width}px`)).join(" "),
+  );
   let tableWidth = $derived(visibleColumns.reduce((sum, c) => sum + (widths[c.id] ?? c.width), 0));
   let total = $derived(items.length * ROW);
   let first = $derived(Math.max(0, Math.floor(scrollTop / ROW) - OVERSCAN));
@@ -310,7 +316,7 @@
   .colsMenu label { display: flex; align-items: center; gap: 7px; color: var(--text-dim); }
   .head,
   .row { display: grid; align-items: center; gap: 0; padding: 0 10px; }
-  .head { flex: 0 0 34px; overflow: hidden; border-bottom: 1px solid var(--border-soft); background: color-mix(in srgb, var(--bg-panel) 94%, transparent); color: var(--text-faint); font-size: var(--fs-xs); font-weight: var(--fw-semibold); text-transform: uppercase; letter-spacing: 0.07em; }
+  .head { flex: 0 0 34px; overflow: hidden; border-bottom: 1px solid var(--border-soft); background: color-mix(in srgb, var(--bg-panel) 94%, transparent); color: var(--text-faint); font-size: var(--fs-xs); font-weight: var(--fw-semibold); text-transform: none; letter-spacing: 0.01em; }
   .head > span { position: relative; height: 100%; display: flex; align-items: center; padding-right: 10px; min-width: 0; }
   .resizer { position: absolute; top: 5px; right: 0; width: 7px; height: 22px; cursor: col-resize; border-right: 1px solid color-mix(in srgb, var(--border) 80%, transparent); }
   .resizer:hover { border-color: var(--accent); }

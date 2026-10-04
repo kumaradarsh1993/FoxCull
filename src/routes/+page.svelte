@@ -2915,16 +2915,24 @@
     }
     evEntries.push({ separator: true });
 
+    // Most-used first (audit L12): look, decide, send to a tool, then the
+    // stack and events, exports, file actions; Previous / Next last.
     return [
-      { label: "Previous", icon: "←", disabled: activeIndex <= 0, action: () => move(-1) },
-      { label: "Next", icon: "→", disabled: activeIndex >= view.length - 1, action: () => move(1) },
-      { separator: true },
-      ...relEntries,
       {
         label: viewMode === "loupe" ? "Back to grid" : "Open in Focus",
         icon: "▣",
         action: () => setView(viewMode === "loupe" ? "grid" : "loupe"),
       },
+      { label: (allPick ? "Clear pick" : "Pick") + sfx, icon: "✓", on: allPick, action: () => flag("pick") },
+      {
+        label: (allReject ? "Clear reject" : "Reject") + sfx,
+        icon: "✕",
+        danger: !allReject,
+        on: allReject,
+        action: () => flag("reject"),
+      },
+      { label: "Clear metadata…" + sfx, icon: "⟲", action: openClearDialog },
+      { separator: true },
       ...(ctx.kind === "video"
         ? [
             {
@@ -2952,23 +2960,8 @@
             } as MenuEntry,
           ]
         : []),
-      {
-        label: ctx.kind === "video" ? "Open in system player" : "Open in default app",
-        icon: "▶",
-        action: () => api.openExternal(ctx.path),
-      },
-      { label: revealLabel, icon: "⤴", action: () => api.reveal(ctx.path) },
       { separator: true },
-      { label: (allPick ? "Clear pick" : "Pick") + sfx, icon: "✓", on: allPick, action: () => flag("pick") },
-      {
-        label: (allReject ? "Clear reject" : "Reject") + sfx,
-        icon: "✕",
-        danger: !allReject,
-        on: allReject,
-        action: () => flag("reject"),
-      },
-      { label: "Clear metadata…" + sfx, icon: "⟲", action: openClearDialog },
-      { separator: true },
+      ...relEntries,
       ...evEntries,
       {
         label: "Export as JPEG…" + sfx,
@@ -2989,7 +2982,17 @@
             } as MenuEntry,
           ]
         : []),
+      { separator: true },
+      {
+        label: ctx.kind === "video" ? "Open in system player" : "Open in default app",
+        icon: "▶",
+        action: () => api.openExternal(ctx.path),
+      },
+      { label: revealLabel, icon: "⤴", action: () => api.reveal(ctx.path) },
       { label: "Copy file path", icon: "⧉", action: () => copyPath(ctx.path) },
+      { separator: true },
+      { label: "Previous", icon: "←", disabled: activeIndex <= 0, action: () => move(-1) },
+      { label: "Next", icon: "→", disabled: activeIndex >= view.length - 1, action: () => move(1) },
     ];
   }
 
@@ -3548,6 +3551,13 @@
     // back out of the Trash or clear the selection underneath it.
     if (e.key === "Escape" && menu) {
       menu = null;
+      return;
+    }
+    // Tab in Focus hides or shows the sidebar, as in Lightroom (audit L11).
+    // Only in Focus: elsewhere Tab keeps moving keyboard focus.
+    if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && viewMode === "loupe" && !menu && !anyPopoverOpen()) {
+      treeCollapsed = !treeCollapsed;
+      e.preventDefault();
       return;
     }
     if (inTrashFolder) {
@@ -4488,6 +4498,7 @@
             <div class="kbRow"><span class="keys"><kbd>L</kbd></span><span>Dim lights (cycle)</span></div>
             <div class="kbRow"><span class="keys"><kbd>I</kbd></span><span>Info overlay</span></div>
             <div class="kbRow"><span class="keys"><kbd>B</kbd></span><span>Hide / show the filmstrip</span></div>
+            <div class="kbRow"><span class="keys"><kbd>Tab</kbd></span><span>Hide / show the sidebar (Focus)</span></div>
             <div class="kbGroup">Files</div>
             <div class="kbRow"><span class="keys"><kbd>{isMac ? "⌘" : "Ctrl"}</kbd>+<kbd>X</kbd> <kbd>{isMac ? "⌘" : "Ctrl"}</kbd>+<kbd>V</kbd></span><span>Move files (cut → paste in folder)</span></div>
             <div class="kbRow"><span class="keys"><kbd>{isMac ? "⌘" : "Ctrl"}</kbd>+<kbd>A</kbd></span><span>Select all (filtered)</span></div>
@@ -4790,7 +4801,7 @@
                 {@html glyphSvg("🗑", 13)} {row ? `from ${row.orig}` : "origin unknown"}
               </span>
             {:else}
-              <span class="meta">{active.kind} · {activeIndex + 1} of {view.length}</span>
+              <span class="meta">{active.kind.charAt(0).toUpperCase() + active.kind.slice(1)} · {activeIndex + 1} of {view.length}</span>
             {/if}
           {/if}
         </span>
@@ -5016,7 +5027,7 @@
      command-bar control when the folder tree is hidden. */
   .treeCollapsed .bar { padding-left: 48px; }
   .tool-group { display: flex; align-items: center; gap: 5px; min-width: 0; flex: 0 0 auto; }
-  .ctl-label { color: var(--text-faint); font-size: var(--fs-xs); font-weight: var(--fw-semibold); text-transform: uppercase; letter-spacing: 0; white-space: nowrap; }
+  .ctl-label { color: var(--text-faint); font-size: var(--fs-xs); font-weight: var(--fw-semibold); text-transform: none; letter-spacing: 0; white-space: nowrap; }
   .viewGroup { padding-right: 1px; }
   .rightTools { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
   .grp { display: flex; align-items: center; gap: 4px; }
@@ -5351,7 +5362,7 @@
     font-size: var(--fs-xs);
     font-weight: var(--fw-semibold);
     letter-spacing: 0.5px;
-    text-transform: uppercase;
+    text-transform: none;
     color: var(--text-faint);
   }
   .kbRow {
@@ -5421,7 +5432,7 @@
     font-size: var(--fs-xs);
     font-weight: var(--fw-semibold);
     letter-spacing: 0.5px;
-    text-transform: uppercase;
+    text-transform: none;
     color: var(--text-faint);
   }
   .padGuide .pgRow {
@@ -5898,7 +5909,7 @@
   .tnCount { padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--text-faint) 22%, transparent); color: var(--text-dim); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; line-height: 18px; }
   .info .meta.selSum { text-transform: none; letter-spacing: 0; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
   .info .name { max-width: 260px; font-size: var(--fs-sm); font-weight: var(--fw-semibold); }
-  .info .meta { margin-top: 4px; font-size: var(--fs-xs); letter-spacing: .03em; text-transform: uppercase; }
+  .info .meta { margin-top: 4px; font-size: var(--fs-xs); letter-spacing: 0.01em; text-transform: none; }
   .infoDivider { align-self: stretch; width: 1px; margin: 3px 1px; background: var(--border-soft); }
   .rate { gap: 1px; padding: 2px 5px; border: 1px solid var(--border-soft); border-radius: 999px; background: color-mix(in srgb, var(--bg-elev) 58%, transparent); }
   .star { width: 19px; height: 22px; padding: 0; font-size: var(--fs-lg); transition: color 90ms ease, transform 90ms ease; }

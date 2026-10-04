@@ -1019,3 +1019,10 @@ bar, where Pick and Reject already were, and deleting the rejects sits next
 to their count. Filters now leave chips behind, so a filtered grid says so.
 The sidebar grew sections (drives, pinned folders, a review of picks and
 rejects, events), and tiles got a choice of how many marks they carry.
+
+Part three finished the pass: Focus hides its sidebar with Tab and has a
+calmer play button, the Details table gives the file name the room, menus
+lead with what's used most, the status corner stops flickering for quick
+housekeeping, and the Reel window got a proper two-step header. The layout
+audit, which had carried two findings for months, came back empty at
+1440×900.

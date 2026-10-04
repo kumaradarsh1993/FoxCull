@@ -79,7 +79,7 @@ culling. P2 = polish. "Done in" names the nightly that addressed it.
 | F5 | P1 | No "match system", no accent choice | Match system + accent setting | .10 |
 | F6 | P2 | 10 radii | Four steps | .10 |
 | F7 | P2 | Emoji and symbol glyphs as icons | One SVG line-icon set (`src/lib/icons.ts`) | .10 |
-| F8 | P2 | ~360 literal colours | Tokens for scrims, glass, on-image text | .11 / .12 |
+| F8 | P2 | ~360 literal colours | Tokens for scrims, glass, on-image text | partly (the picture stages still use literals on purpose); more later |
 
 ### Library
 
@@ -93,9 +93,9 @@ culling. P2 = polish. "Done in" names the nightly that addressed it.
 | L6 | P1 | Shortcut guide shows Ctrl on the Mac | ⌘ ⌥ ⇧ ⌃ on macOS | .10 |
 | L7 | P2 | Rejected = red tab + ✕ + heavy dimming | Lighter dimming | .11 |
 | L8 | P2 | Unloaded video tiles say "MP4" | Shimmer while loading | .11 |
-| L9 | P2 | Bottom bar holds everything | Name, marks, counts; the rest on demand | .11 |
+| L9 | P2 | Bottom bar holds everything | Name, marks, counts; the rest on demand | partly in .11: Clear and Delete rejected joined the marks; tags stay in the bar |
 | L10 | P2 | Details squeezes the name; Size off screen | Columns sized to content | .12 |
-| L11 | P2 | Focus keeps all panels; very large play button | Tab hides panels; calmer play button | .12 |
+| L11 | P2 | Focus keeps all panels; very large play button | Tab hides panels; calmer play button | .12 (Tab hides the sidebar; 58 px play button; surround follows the setting) |
 | L12 | P2 | Right-click opens with Previous / Next | Most-used actions first | .12 |
 | L13 | P2 | "Loading thumbnails" text | Progress ring only past a second | .12 |
 
@@ -104,7 +104,7 @@ culling. P2 = polish. "Done in" names the nightly that addressed it.
 | ID | P | Finding | Change | Done in |
 |---|---|---|---|---|
 | T1 | P1 | Two generations of controls (Settings/Edit new; library menus, Merge, Reel old) | Shared components everywhere | .11 / .12 |
-| T2 | P2 | Merge: dense table, long side column | Shared type scale, grouped side column | .12 |
+| T2 | P2 | Merge: dense table, long side column | Shared type scale, grouped side column | .12 (type scale, sentence-case labels); regrouping later |
 | T3 | P2 | Reel step 1 half empty | Larger waveform, clearer steps | .12 |
 | T4 | P2 | Edit has no visible undo | Undo/redo in its toolbar | later |
 | T5 | P2 | Settings is the new standard | The reference for the rest | — |
@@ -113,7 +113,7 @@ culling. P2 = polish. "Done in" names the nightly that addressed it.
 
 | ID | P | Finding | Change | Done in |
 |---|---|---|---|---|
-| A1 | P1 | Colour labels are colour only | Names on hover and in menus | .11 |
+| A1 | P1 | Colour labels are colour only | Names on hover and in menus | names on hover already existed; menus later |
 | A2 | P2 | 22–26 px targets | 28 px minimum on Mac | .11 |
 | A3 | P2 | Uneven animation | One set of durations | .10 (tokens) |
 | A4 | P2 | Windows fonts first in the stack | Platform face first | .10 |

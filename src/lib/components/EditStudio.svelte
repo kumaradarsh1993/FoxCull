@@ -4219,8 +4219,8 @@
     display: block;
     font-size: var(--fs-xs);
     font-weight: var(--fw-semibold);
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
+    letter-spacing: 0.01em;
+    text-transform: none;
     color: var(--text-faint);
     margin-bottom: 6px;
   }
@@ -4243,8 +4243,8 @@
     background: var(--bg-elev);
     font-size: var(--fs-xs);
     font-weight: var(--fw-semibold);
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
+    letter-spacing: 0.01em;
+    text-transform: none;
     color: var(--text-faint);
   }
   .igGridHead span:last-child {

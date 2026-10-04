@@ -45,7 +45,14 @@
   /** Recent was opened since the last failure arrived. */
   let seenProblems = $state(0);
 
-  let running = $derived(activity.running);
+  // Housekeeping (quiet jobs, like thumbnails for the folder on screen) only
+  // shows once it has run for a second: most of it finishes before then, and
+  // a status line that flickers on every folder change is noise (audit L13).
+  let running = $derived.by(() => {
+    void activity.tick;
+    const now = Date.now();
+    return activity.running.filter((j) => !j.quiet || now - j.started >= 1000);
+  });
   let fg = $derived(activity.foreground);
   let recent = $derived(activity.recent);
   /** A job that finished in the last few seconds, while nothing the owner started runs. */
@@ -324,8 +331,8 @@
     padding: 6px 6px 2px;
     font-size: var(--fs-xs);
     font-weight: var(--fw-semibold);
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    letter-spacing: 0.01em;
+    text-transform: none;
     color: var(--text-faint);
     flex-shrink: 0;
   }

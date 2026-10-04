@@ -598,7 +598,7 @@
   .ptime { color: var(--text-dim); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
   .pnote { margin: 0; color: var(--text-faint); font-size: var(--fs-xs); line-height: 1.4; text-align: center; }
   .exp { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--border-soft); }
-  .fl { margin-top: 2px; color: var(--text-faint); font-size: var(--fs-xs); font-weight: var(--fw-semibold); letter-spacing: 0.06em; text-transform: uppercase; }
+  .fl { margin-top: 2px; color: var(--text-faint); font-size: var(--fs-xs); font-weight: var(--fw-semibold); letter-spacing: 0.01em; text-transform: none; }
   .exp input[type="text"], .exp select { min-height: var(--control-h); padding: 5px 10px; font-size: var(--fs-md); }
   .dest { display: flex; align-items: center; gap: 8px; }
   .dl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-md); }

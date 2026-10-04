@@ -1,5 +1,23 @@
 # Agent Handover: FoxCull
 
+## 2026-10-04 (late night) — redesign parts 2 and 3 (nightly.11, .12)
+
+Ledgers: `docs/changes/2026-10-04-design-library.md`,
+`docs/changes/2026-10-04-design-rest.md`. The audit's table in
+`docs/UX-AUDIT-2026-10.md` says, per finding, what was done and in which
+nightly, and what's left (materials, high contrast, Edit undo, colour names
+in menus, regrouping Merge's side column).
+
+- The library toolbar no longer carries Reject / Clear / Delete: Clear and
+  the hold-to-delete live in the bottom bar (`.clearWrap`, `.delRejects`).
+- Toolbar menus are exclusive: open one through `closeAllPopovers()` first.
+- Sidebar sections are plain markup in `+page.svelte` (`.sbHead`,
+  `.sbItem`); pinned folders are `settings.s.pinned`.
+- Tile marks: `settings.s.tileBadges` → `data-badges` on `.app`; CSS rules
+  next to `.cell.reject`.
+- `__sweep` is clean at 1440×900; keep it that way (it also walks every
+  Settings page now).
+
 ## 2026-10-04 (late night) — redesign part 1: foundations (nightly.10)
 
 Ledger: `docs/changes/2026-10-04-design-foundations.md`. Audit and plan:

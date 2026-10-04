@@ -605,8 +605,9 @@
   <header data-tauri-drag-region>
     <h2>Reel</h2>
     <ol class="steps" aria-label="Steps">
-      <li class:on={step === 1}><button onclick={() => (step = 1)}>1 · Clips and song</button></li>
-      <li class:on={step === 2}><button disabled={!!blocker} onclick={() => (step = 2)}>2 · Beat board</button></li>
+      <li class:on={step === 1} class:done={step === 2}><button onclick={() => (step = 1)}><i>1</i>Clips and song</button></li>
+      <li class="stepLine" aria-hidden="true"></li>
+      <li class:on={step === 2}><button disabled={!!blocker} onclick={() => (step = 2)}><i>2</i>Beat board</button></li>
     </ol>
     <span class="grow"></span>
     {#if clips.length || song}<button class="btn sm" onclick={startOver} title="Clear the clips, the song and the cuts">Start over</button>{/if}
@@ -757,8 +758,25 @@
   header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--border-soft); flex: none; }
   h2 { margin: 0; font-family: var(--font-display); font-size: var(--fs-xl); letter-spacing: -0.015em; }
   .steps { display: flex; gap: 4px; margin: 0; padding: 0; list-style: none; }
-  .steps button { padding: 4px 10px; border-radius: 999px; color: var(--text-dim); font-size: var(--fs-md); font-weight: var(--fw-semibold); }
-  .steps li.on button { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+  /* A two-step stepper: numbered dots joined by a line (audit T3). */
+  .steps { align-items: center; }
+  .steps button { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px 4px 4px; border-radius: 999px; color: var(--text-dim); font-size: var(--fs-md); font-weight: var(--fw-medium); }
+  .steps button i {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    font-style: normal;
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
+    color: var(--text-dim);
+    box-shadow: inset 0 0 0 1.5px var(--border-strong);
+  }
+  .steps li.on button { color: var(--text); }
+  .steps li.on button i { background: var(--accent); color: var(--accent-on); box-shadow: none; }
+  .steps li.done button i { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); box-shadow: none; }
+  .steps .stepLine { width: 28px; height: 1.5px; background: var(--border-strong); }
   .steps button:disabled { opacity: 0.45; }
   .grow { flex: 1; }
 
@@ -801,7 +819,7 @@
   .sname { display: flex; flex-direction: column; min-width: 0; flex: 1; }
   .hint, .fitNote { margin: 0; color: var(--text-dim); font-size: var(--fs-sm); line-height: 1.45; }
   .warnT { color: var(--star); }
-  .wave { position: relative; height: 120px; border-radius: var(--radius-md); background: #0b0d10; overflow: hidden; cursor: crosshair; touch-action: none; user-select: none; }
+  .wave { position: relative; height: clamp(140px, 26vh, 220px); border-radius: var(--radius-md); background: #0b0d10; overflow: hidden; cursor: crosshair; touch-action: none; user-select: none; }
   .wave svg { position: absolute; inset: 0; width: 100%; height: 100%; }
   .wpath { stroke: color-mix(in srgb, var(--accent) 55%, #9aa4b2); stroke-width: 1.4; vector-effect: non-scaling-stroke; }
   .tick { position: absolute; bottom: 0; width: 1px; height: 14%; background: rgba(255, 255, 255, 0.22); pointer-events: none; }

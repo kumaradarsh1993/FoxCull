@@ -1404,6 +1404,13 @@
     background: #050607;
     overflow: hidden;
   }
+  /* "Behind the pictures" (Settings): black, 18 % grey or light replace the
+     neutral near-black; the theme setting keeps it, never the theme's tint. */
+  :global(:root[data-surround="black"]) .loupe,
+  :global(:root[data-surround="grey"]) .loupe,
+  :global(:root[data-surround="light"]) .loupe {
+    background: var(--viewport-bg);
+  }
   img,
   video {
     max-width: 100%;
@@ -1471,14 +1478,16 @@
     padding: 0;
     cursor: pointer;
   }
+  /* A calmer play button (audit L11): smaller, lighter, still a big target
+     (the whole stage is the button). */
   .poIcon {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 76px;
-    height: 76px;
+    width: 58px;
+    height: 58px;
     border-radius: 50%;
-    background: rgba(0, 0, 0, 0.52);
+    background: rgba(0, 0, 0, 0.42);
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45);
     backdrop-filter: blur(3px);
     transition: transform 140ms ease, background 140ms ease;
@@ -1488,9 +1497,9 @@
     transform: scale(1.06);
   }
   .poIcon svg {
-    width: 34px;
-    height: 34px;
-    margin-left: 4px; /* optically centre the triangle in the circle */
+    width: 24px;
+    height: 24px;
+    margin-left: 3px; /* optically centre the triangle in the circle */
     fill: #fff;
   }
   @media (prefers-reduced-motion: reduce) {
@@ -1555,9 +1564,10 @@
       opacity 0.16s ease,
       transform 0.18s ease;
   }
+  /* Hidden: faded in place (it used to slide 14 px below the stage, which
+     the layout audit read as the Focus view overflowing). */
   .trim:not(.shown) {
     opacity: 0;
-    transform: translateY(14px);
     pointer-events: none;
   }
   /* Collapsed progress: a hairline that just conveys position/length. Kept

@@ -24,6 +24,19 @@
     onclose,
   }: { x: number; y: number; entries: MenuEntry[]; onclose: () => void } = $props();
 
+  // Menus are assembled from optional groups; never show a divider first,
+  // last, or twice in a row.
+  let rows = $derived.by(() => {
+    const out: MenuEntry[] = [];
+    for (const e of entries) {
+      const sep = "separator" in e;
+      if (sep && (!out.length || "separator" in out[out.length - 1])) continue;
+      out.push(e);
+    }
+    while (out.length && "separator" in out[out.length - 1]) out.pop();
+    return out;
+  });
+
   let el = $state<HTMLDivElement | null>(null);
   // Clamped position; null until the menu is measured (then it can't spill off
   // screen). Pre-measure we render at the raw cursor point (x/y from props).
@@ -71,7 +84,7 @@
 ></button>
 
 <div class="cm" bind:this={el} style="left:{pos?.x ?? x}px; top:{pos?.y ?? y}px" role="menu">
-  {#each entries as entry, idx (idx)}
+  {#each rows as entry, idx (idx)}
     {#if "separator" in entry}
       <div class="cm-sep"></div>
     {:else}

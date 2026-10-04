@@ -368,7 +368,7 @@
   .grpName {
     font-size: var(--fs-xs);
     font-weight: var(--fw-semibold);
-    text-transform: uppercase;
+    text-transform: none;
     letter-spacing: 0.5px;
     color: var(--text-faint);
     margin: 8px 0 3px;
