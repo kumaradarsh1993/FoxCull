@@ -896,3 +896,21 @@ windows beside the library, the library as the only media picker, in/out
 points set there and dragged onto the timeline. That is the next nightly; this
 one ships fixes only.
 
+## 2026-10-04 (later) — Edit and Merge leave the library
+
+With the fixes shipped, the owner turned to editing. Edit used to take over
+the library window, with its own media list down the side that "just messes
+things up". Now it is a window of its own beside the library: the library is
+where clips are found, rated and trimmed, and they go across by dragging, by
+pressing E, or by copy and paste, with any in/out ranges marked in Focus
+arriving as separate pieces. Merge, the YouTube workflow the owner relies on,
+got its own window too, and the thing they asked for most: start a merge,
+close the window, keep working, pause it or stop it from the progress panel.
+
+Two decisions shaped it. The merge now belongs to the app's backend, not to a
+window, so a window can come and go without the merge noticing; and quitting
+FoxCull asks first and then cleans up, because a merge's ffmpeg used to keep
+writing after the app had gone. The same day the owner described what comes
+next: segments in Merge, a cleaner way to mark them, and a third, music-synced
+reel mode (`docs/design/segments-and-reel-mode.md`).
+

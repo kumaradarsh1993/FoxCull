@@ -163,9 +163,12 @@ stamps the tag's version into **both** `tauri.conf.json` and `Cargo.toml`
   suffix whitelist + stem-prefix re-rooting), filters (rating ≥/≤/=,
   multi-select labels), undo/redo (snapshot stack, marks only), selection +
   keyboard model, cast button, settings popover. The big one (~2.7k lines).
-- `lib/components/EditStudio.svelte` — edit/export studio: Look presets
-  (CSS/SVG filter preview ↔ ffmpeg filter export, algebraically matched),
-  trim, export dialog with CRF-labeled quality + time-cost bar.
+- `lib/components/EditStudio.svelte` — the Edit window's studio (its own OS
+  window since 2026-10-04, hosted by `EditWindow.svelte`; clips come from the
+  library): Look presets (CSS/SVG filter preview ↔ ffmpeg filter export,
+  algebraically matched), timeline, export dialog with CRF-labeled quality +
+  time-cost bar. `MergeWindow.svelte` + `MergeDialog.svelte` are the Merge
+  window. `+layout.svelte` picks the view by window label.
 - `lib/components/` — Loupe (zoomable viewer), VirtualGrid/VirtualStrip
   (windowed rendering), SectionedGrid, DetailsView, TrashPanel, ActivityBar,
   ContextMenu, Thumb, TreeNode.

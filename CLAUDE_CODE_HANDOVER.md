@@ -1,5 +1,27 @@
 # Agent Handover: FoxCull
 
+## 2026-10-04 (later) — Edit and Merge windows (nightly.4)
+
+Ledger: `docs/changes/2026-10-04-edit-and-merge-windows.md`. **Next, owner's
+major item:** `docs/design/segments-and-reel-mode.md` (library in/out cleanup,
+segments in Merge, the music-synced Reel window). Read both specs first.
+
+- **Three windows, one app.** Every window loads `index.html`; `+layout.svelte`
+  renders the library, `EditWindow` or `MergeWindow` by window label
+  (`windowKind()`; `?window=edit` in the browser harness). The library page
+  never mounts in a tool window.
+- **Talk to a tool window through its inbox** (`api.openToolWindow(kind,
+  payload)` → backend queue → window drains on load and on `tool-inbox`).
+  Don't emit to a window that may not exist yet.
+- **The merge belongs to the backend** (`MergeStatus`, job "merge"). The
+  window only reads it; any number of windows can close and reopen. Pause is
+  process suspension (`procs.rs`); keep `register`/`unregister` around every
+  ffmpeg you spawn or Quit can't clean it up.
+- **Edit/Merge validate with `validate_media_anywhere`**, not the active root:
+  the library may have switched drives under them.
+- Not verified in the real app; cross-window drag is the uncertain part (the
+  parked drag, ⌘C/⌘V and E are the fallbacks).
+
 ## 2026-10-04 — job centre, cross-drive moves, missing items in bulk (nightly.3)
 
 Ledger: `docs/changes/2026-10-04-job-centre-moves-missing-day.md`. A

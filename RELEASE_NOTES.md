@@ -1,6 +1,35 @@
 <!-- NO VERSION HEADING IN THIS FILE. release.yml pastes it verbatim into the
      release body; the GitHub release title is the version source. -->
 
+## Edit and Merge in their own windows
+
+- **Edit opens beside the library** instead of replacing it: just the
+  timeline, the preview, Look and export. Click **Side by side** to put the
+  library on the left and Edit on the right.
+- **Bring clips from the library**: drag them across, press **E** with them
+  selected, or copy them with **⌘C** (Ctrl+C) and paste in Edit with **⌘V**.
+  Drop on a track to place them at that time, anywhere else to add them after
+  the last clip.
+- **In/out ranges you marked in Focus come along**: a clip with two marked
+  ranges arrives as two segments. Clips with ranges show a ✂ in the grid.
+- **Clips that don't match** the rest of the timeline (vertical in a
+  landscape edit, a different size or frame rate, HDR among SDR) get a ≠ mark
+  and a note saying what the export will do about it. Photos and missing files
+  are left out with a message, never silently.
+- **Your timeline is kept**: close the Edit window and it's there next time.
+
+## Merge: pause it, stop it, or close it and carry on
+
+- Merge opens in its own window. **Once it's running you can close the
+  window**: the merge carries on, and the progress panel (bottom left) shows
+  it, with **Pause / Resume** and **Show merge window** to come back to it.
+- While it runs the window shows just the progress: no clip previews eating
+  the disk. **Pause** freezes it in place; **Stop** deletes the partial file.
+- When something goes wrong it says what: the drive filled up, a card or
+  drive was removed, a clip is damaged, or FoxCull can't write there.
+- **Quitting while something is running asks first**, then stops it cleanly
+  and deletes anything half-written.
+
 ## A progress panel that shows everything going on
 
 The strip at the bottom of the folder list grew into a proper progress panel.
