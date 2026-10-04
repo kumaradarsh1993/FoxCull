@@ -1,5 +1,21 @@
 # Agent Handover: FoxCull
 
+## 2026-10-04 (night) — Edit playback and snapping fixes (nightly.6)
+
+Ledger: `docs/changes/2026-10-04-edit-playback-snap.md`.
+
+- **Edit's program engine treats a video that has `ended` as the end of its
+  segment.** Probed lengths are the container's and can run past the last
+  frame; never call `play()` on an ended video (it restarts from 0). Source
+  time maps through `clip.start`, not the program segment's start (a V2 clip
+  can begin under a V1 clip).
+- **The harness mock now probes the 40.000 s sample as 40.005 s** on purpose,
+  to keep that case covered. Don't "fix" it.
+- Snapping reach is in screen pixels (`SNAP_PX`), by either edge of a moving
+  clip, with a guide line; the Snap chip toggles it and ⌥ skips it.
+- Open question for the owner: overlapping clips show the upper row (V1);
+  Premiere shows V2 over V1.
+
 ## 2026-10-04 (evening) — segments everywhere, the Reel window (nightly.5)
 
 Ledger: `docs/changes/2026-10-04-segments-and-reel.md` (has the table of

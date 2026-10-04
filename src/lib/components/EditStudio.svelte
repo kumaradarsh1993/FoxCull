@@ -186,7 +186,9 @@
   const VIDEO_LANES = [0, 1, 2];
   const AUDIO_LANES = [0, 1, 2];
   const TRACK_HEIGHT = 36;
-  const SNAP = 0.16;
+  /** Snap reach in screen pixels. It used to be a fixed 0.16 s, which is 1-4 px
+   *  at the zoom levels people use, so clips never seemed to snap. */
+  const SNAP_PX = 10;
   const TIMELINE_ZOOM_MIN = 12;
   const TIMELINE_ZOOM_MAX = 60;
   const TIMELINE_TRACK_OFFSET = 44;
@@ -264,6 +266,10 @@
   let timelineCollapsed = $state(false);
   let productionPreview = $state(false);
   let timelineDrag: TimelineDrag | null = null;
+  /** Snapping on (the toolbar chip); holding ⌥/Alt while dragging skips it. */
+  let snapOn = $state(true);
+  /** Where a drag just snapped, drawn as a guide line across the tracks. */
+  let snapGuide = $state<number | null>(null);
   let sourceMenu = $state<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
   let exportMenuOpen = $state(false);
   type DlgMode = "instagram" | "lossless" | "custom";
@@ -1208,7 +1214,9 @@
       videoW = v.videoWidth || probes[clip.path]?.width || videoW;
       videoH = v.videoHeight || probes[clip.path]?.height || videoH;
       const d = Number.isFinite(v.duration) ? v.duration : clip.duration;
-      if (d > 0 && Math.abs(d - clip.duration) > 0.01) {
+      // What actually plays is the length: the probe reads the container,
+      // which can run a few ms longer (see sampleFromVideo).
+      if (d > 0 && (Math.abs(d - clip.duration) > 0.01 || clip.outS > d)) {
         updateClip(clip.id, { duration: d, outS: Math.min(clip.outS || d, d) });
       }
     }
@@ -1242,6 +1250,17 @@
 
   // Read the video's own clock into the playhead; advance at the segment edge.
   // Returns true when it handled a live clip segment.
+  //
+  // A segment can start inside its clip (a clip on V2 shows from where the V1
+  // clip above it ends), so source time maps through the CLIP's start, not the
+  // segment's.
+  //
+  // The file can also end before the clip's out point: phone footage often
+  // has a container a few milliseconds longer than its last frame, and the
+  // probed length is the container's. The video then sits `ended` short of the
+  // out point. That used to freeze the playhead there while the next tick's
+  // play() restarted the ended file from 0, so the first clip looped forever
+  // (owner, 2026-10-04). An ended video now counts as the end of its segment.
   function sampleFromVideo(): boolean {
     const v = previewVideo;
     if (!v) return false;
@@ -1249,10 +1268,16 @@
     if (!seg?.clip) return false;
     const clip = seg.clip;
     if (loadedSrc !== clip.src || v.readyState < 1) return false;
-    const segOutSrc = clip.inS + (seg.end - seg.start);
-    const ph = seg.start + (v.currentTime - clip.inS);
-    if (v.currentTime >= segOutSrc - 1e-3 || ph >= seg.end - 1e-3) {
+    const segOutSrc = clip.inS + (seg.end - clip.start);
+    const ph = clip.start + (v.currentTime - clip.inS);
+    if (v.ended || v.currentTime >= segOutSrc - 1e-3 || ph >= seg.end - 1e-3) {
       advanceFrom(seg);
+      return true;
+    }
+    // The video jumped back on its own (a source that looped or reloaded):
+    // put it back where the playhead is instead of letting the two drift apart.
+    if (!v.seeking && ph < playheadS - 0.3) {
+      syncVideoImperative(clip, clip.inS + (playheadS - clip.start), true);
       return true;
     }
     if (ph > playheadS) playheadS = Math.min(ph, seg.end);
@@ -1286,7 +1311,8 @@
     if (seg.clip) {
       const v = previewVideo;
       if (v && loadedSrc === seg.clip.src && v.readyState >= 1) {
-        if (v.paused) v.play().catch(() => {});
+        // Never play() an ended video: that restarts it from 0.
+        if (v.paused && !v.ended) v.play().catch(() => {});
         sampleFromVideo();
       } else {
         syncVideoImperative(seg.clip, seg.clip.inS + (playheadS - seg.clip.start), true);
@@ -1300,6 +1326,10 @@
   }
 
   function onNormalTime() {
+    if (playing) sampleFromVideo();
+  }
+
+  function onNormalEnded() {
     if (playing) sampleFromVideo();
   }
 
@@ -1909,10 +1939,12 @@
     selectedIds = new Set();
   }
 
-  function snapTime(t: number, exclude?: string | Set<string>) {
+  /** The edge (time 0, the playhead, any other clip's start or end) nearest
+   *  to `t` within SNAP_PX on screen, or null. */
+  function nearestEdge(t: number, exclude?: string | Set<string>): { t: number; d: number } | null {
     const skip = (id: string) => (typeof exclude === "string" ? exclude === id : !!exclude?.has(id));
-    let best = Math.max(0, t);
-    let bestDist = SNAP;
+    let best: { t: number; d: number } | null = null;
+    const reach = SNAP_PX / Math.max(0.1, timelineScale);
     const edges = [0, playheadS];
     for (const c of clips) {
       if (skip(c.id)) continue;
@@ -1924,12 +1956,35 @@
     }
     for (const edge of edges) {
       const d = Math.abs(t - edge);
-      if (d < bestDist) {
-        best = edge;
-        bestDist = d;
-      }
+      if (d <= reach && (!best || d < best.d)) best = { t: edge, d };
     }
-    return Math.max(0, best);
+    return best;
+  }
+
+  function snapTime(t: number, exclude?: string | Set<string>, free = false) {
+    const hit = snapOn && !free ? nearestEdge(t, exclude) : null;
+    snapGuide = hit ? hit.t : null;
+    return Math.max(0, hit ? hit.t : t);
+  }
+
+  /** A moving clip snaps by whichever of its two edges is nearer to something. */
+  function snapMove(start: number, len: number, exclude: Set<string>, free: boolean) {
+    if (!snapOn || free) {
+      snapGuide = null;
+      return Math.max(0, start);
+    }
+    const a = nearestEdge(start, exclude);
+    const b = nearestEdge(start + len, exclude);
+    if (a && (!b || a.d <= b.d)) {
+      snapGuide = a.t;
+      return Math.max(0, a.t);
+    }
+    if (b && b.t - len >= 0) {
+      snapGuide = b.t;
+      return b.t - len;
+    }
+    snapGuide = null;
+    return Math.max(0, start);
   }
 
   function startTimelinePointer(e: PointerEvent, kind: "video" | "audio", id: string, mode: DragMode) {
@@ -1984,8 +2039,10 @@
   function onTimelineDrag(e: PointerEvent) {
     if (!timelineDrag) return;
     const d = (e.clientX - timelineDrag.startX) / timelineScale;
+    const free = e.altKey;
     if (timelineDrag.kind === "audio") {
-      updateAudio(timelineDrag.id, { start: snapTime(timelineDrag.start + d, timelineDrag.id) });
+      const a = audioClips.find((x) => x.id === timelineDrag?.id);
+      updateAudio(timelineDrag.id, { start: snapMove(timelineDrag.start + d, a?.duration ?? 0, new Set([timelineDrag.id]), free) });
       return;
     }
     const clip = clips.find((c) => c.id === timelineDrag?.id);
@@ -1994,7 +2051,7 @@
       // Snap the primary clip, then shift the whole selection by that delta.
       // Vertical motion re-lanes the selection (V1–V3), clamped per clip.
       const groupIds = new Set(timelineDrag.group.map((g) => g.id));
-      const snappedStart = snapTime(timelineDrag.start + d, groupIds);
+      const snappedStart = snapMove(timelineDrag.start + d, timelineDrag.outS - timelineDrag.inS, groupIds, free);
       const delta = snappedStart - timelineDrag.start;
       const deltaLanes = Math.round((e.clientY - timelineDrag.startY) / TRACK_HEIGHT);
       clips = clips.map((c) => {
@@ -2003,12 +2060,12 @@
         return { ...c, start: Math.max(0, g.start + delta), lane: Math.max(0, Math.min(2, g.lane + deltaLanes)) };
       });
     } else if (timelineDrag.mode === "trimIn") {
-      const snappedStart = snapTime(timelineDrag.start + d, clip.id);
+      const snappedStart = snapTime(timelineDrag.start + d, clip.id, free);
       const nextIn = Math.max(0, Math.min(timelineDrag.inS + (snappedStart - timelineDrag.start), timelineDrag.outS - 0.05));
       updateClip(clip.id, { start: timelineDrag.start + (nextIn - timelineDrag.inS), inS: nextIn });
       trimPreview = { id: clip.id, time: nextIn };
     } else {
-      const right = snapTime(timelineDrag.start + (timelineDrag.outS - timelineDrag.inS) + d, clip.id);
+      const right = snapTime(timelineDrag.start + (timelineDrag.outS - timelineDrag.inS) + d, clip.id, free);
       const nextOut = Math.max(clip.inS + 0.05, Math.min(timelineDrag.duration, clip.inS + Math.max(0.05, right - clip.start)));
       updateClip(clip.id, { outS: nextOut });
       trimPreview = { id: clip.id, time: nextOut };
@@ -2019,6 +2076,7 @@
     const drag = timelineDrag;
     timelineDrag = null;
     trimPreview = null;
+    snapGuide = null;
     window.removeEventListener("pointermove", onTimelineDrag);
     // On release, shove moved clips clear of anything they landed on.
     if (drag && drag.kind === "video" && drag.mode === "move") resolveOverlaps(drag.group.map((g) => g.id));
@@ -2090,6 +2148,7 @@
     e.stopPropagation(); // the window's "drop anywhere" must not add them again
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const start = snapTime(Math.max(0, (e.clientX - rect.left) / timelineScale));
+    snapGuide = null;
     const refs = await clipsFromDrop(e);
     // Audio tracks take music (Add music…), not clips: their sound already
     // rides with them on the matching A track.
@@ -2407,6 +2466,7 @@
             style:filter={previewFilter}
             onloadedmetadata={onMeta}
             ontimeupdate={onNormalTime}
+            onended={onNormalEnded}
             onerror={onPreviewError}
             onclick={togglePlay}
           ></video>
@@ -2460,7 +2520,7 @@
         <strong>Timeline</strong>
         <span>{clips.length} video · {audioClips.length} audio · {fmt(programSeconds)}</span>
         <label class="scale">Zoom <input type="range" min={timelineZoomMin} max={TIMELINE_ZOOM_MAX} step="0.1" bind:value={timelineScale} /></label>
-        <span class="snap">Snap</span>
+        <button class="snap" class:off={!snapOn} onclick={() => (snapOn = !snapOn)} aria-pressed={snapOn} title={snapOn ? "Snapping on: clip edges catch on other edges and the playhead. Hold ⌥ while dragging to place freely." : "Snapping off"}>Snap</button>
         <span class="spacer"></span>
         <button class="ghost" onclick={cutAtPlayhead} disabled={!clips.length} title="Split at playhead (C)">✂ Cut</button>
         <button class="ghost" onclick={() => (timelineCollapsed = true)}>Collapse</button>
@@ -2535,6 +2595,9 @@
 
           {#if clips.length}
             <div class="playhead" style="left:{TIMELINE_TRACK_OFFSET + playheadS * timelineScale}px"></div>
+          {/if}
+          {#if snapGuide != null}
+            <div class="snapGuide" style="left:{TIMELINE_TRACK_OFFSET + snapGuide * timelineScale}px"></div>
           {/if}
         </div>
       </div>
@@ -3862,6 +3925,20 @@
     border-radius: 999px;
     background: color-mix(in srgb, var(--accent) 16%, transparent);
     color: var(--accent);
+  }
+  .snap.off {
+    background: transparent;
+    color: var(--text-faint);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .snapGuide {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-left: 1px dashed color-mix(in srgb, var(--star) 85%, transparent);
+    pointer-events: none;
+    z-index: 6;
   }
   .timelineViewport {
     flex: 1;

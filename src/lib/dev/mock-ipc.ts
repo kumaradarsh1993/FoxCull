@@ -265,7 +265,10 @@ const HANDLERS: Record<string, (a: Args) => unknown> = {
   video_poster_hires: (a) => artFor(a.path, 1600),
   capture_dates: (a) => (a.paths as string[]).map((path) => ({ path, captured: byPath.get(path)?.mtime ?? 0 })),
   probe_media_info: (a) => ({
-    duration: 83.4,
+    // static/dev-sample.mp4 is 40.000 s. A container a few ms longer than what
+    // plays is common on phone footage, and it froze Edit playback on the real
+    // app (2026-10-04): keep the mock that way so the harness covers it.
+    duration: 40.005,
     ...(() => {
       // Another tab (the Edit window) hasn't listed this folder: do it now.
       if (!byPath.has(a.path)) folderItems(a.path.replace(/\/[^/]*$/, ""));

@@ -943,3 +943,15 @@ too short for its window shows the gap in red. The beat finder was written
 here rather than pulled in, and is tested on drum-machine tracks; how it does
 on the owner's real songs is the next thing to learn. Cropping landscape
 clips by hand is left for later, as the owner suggested.
+
+## 2026-10-04 (night) — a timeline that played one clip forever
+
+Testing the new nightly, the owner laid clips out on alternating tracks in
+Edit and pressed Play: the first clip played, then looped, and the playhead
+never moved on. The cause was small and general. A clip's length comes from
+the file's container, and phone clips often stop a few milliseconds before
+it. The player waited for an end it never reached, and asking an ended video
+to play starts it over. An ended clip now simply counts as finished. Snapping
+had a related problem: it reached a fixed sixth of a second, which on screen
+was a few pixels, so clips never seemed to snap; it now reaches ten pixels at
+any zoom and works from either end of a clip.
