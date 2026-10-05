@@ -1,5 +1,22 @@
 # Agent Handover: FoxCull
 
+## 2026-10-05 — the update check trusted GitHub's order (nightly.13)
+
+The owner couldn't see nightly.10–.12, on GitHub or in the PC's update panel.
+All three were published; GitHub simply listed them below nightly.3 (nightly.9
+on top), on the web page and in the API. `updates.rs` took the first
+pre-release in the list, so it offered nightly.9. Now `newest()` picks the
+highest version and `PER_PAGE` is 100; a test replays that day's order.
+
+- **`updates.rs` now differs from wispr-fox, md-reader and fox-mark** beyond
+  the three constants. Port `newest()`, the two `update_status` lines and
+  `PER_PAGE = 100` to those three (none of them is misled today, but each
+  will be the first time GitHub lists its builds out of order).
+  `md-reader/tools/check-updater-parity.py` will flag the drift until then.
+- An install older than nightly.13 still has the old check. If GitHub keeps
+  nightly.13 at the top of its list, old installs find it on their own; if
+  not, download nightly.13's installer from the release page once.
+
 ## 2026-10-04 (late night) — redesign parts 2 and 3 (nightly.11, .12)
 
 Ledgers: `docs/changes/2026-10-04-design-library.md`,

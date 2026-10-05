@@ -44,7 +44,13 @@ Version comparison is semver-ish and deliberately not a string compare:
 `3.4.0-nightly.9`. Getting either wrong produces an Install button that never
 appears — no error, nothing to notice.
 
-## Two things that will silently break this
+## Three things that will silently break this
+
+- **GitHub's list is not in version order.** On 2026-10-04 FoxCull published
+  nightly.3 to nightly.12 in one day; the releases API and web page then listed
+  nightly.9 first and .10–.12 below nightly.3. Code that took "the first
+  pre-release in the list" offered nightly.9 as the newest. `newest()` picks by
+  version instead, and the page size is 100 so the newest can't fall off it.
 
 - **A nightly published as a DRAFT is invisible.** GitHub does not return draft
   releases to an unauthenticated caller, and a draft has no public download URL,

@@ -61,9 +61,10 @@ const UA_NAME: &str = "FoxCull";
 
 // ─── Everything below is shared ─────────────────────────────────────────────
 
-/// One page is plenty: releases come back newest-first, and a build older than
-/// the last 30 is not something anyone is updating *to*.
-const PER_PAGE: u32 = 30;
+/// The largest page GitHub allows. Its list is NOT in version order (see
+/// `newest`), so a short page could leave the newest build off it; a build
+/// older than the last 100 releases is not something anyone is updating *to*.
+const PER_PAGE: u32 = 100;
 
 /// Hosts a release asset may be served from. GitHub redirects
 /// `browser_download_url` to its CDN, so all of these must be allowed — but
@@ -342,21 +343,34 @@ async fn fetch_releases() -> Result<Vec<GhRelease>, String> {
     Ok(releases.into_iter().filter(|r| !r.draft).collect())
 }
 
+/// The highest version of one kind (stable or pre-release) in `releases`.
+///
+/// GitHub's list is not newest-first. On 2026-10-04 FoxCull published
+/// nightly.3 through nightly.12 in one day, and the API (and the releases web
+/// page) listed nightly.9 first, with .10–.12 below nightly.3. Taking the first
+/// match trusted that order and offered nightly.9 as the newest; comparing
+/// versions does not depend on it.
+fn newest(releases: &[GhRelease], prerelease: bool) -> Option<&GhRelease> {
+    releases
+        .iter()
+        .filter(|r| r.prerelease == prerelease)
+        .reduce(|best, r| {
+            if version_is_newer(&best.tag_name, &r.tag_name) {
+                r
+            } else {
+                best
+            }
+        })
+}
+
 /// Both channels at once, each compared against the running build.
 #[tauri::command]
 pub async fn update_status() -> Result<UpdateStatus, String> {
     let current = env!("CARGO_PKG_VERSION").to_string();
     let releases = fetch_releases().await?;
 
-    // The API returns newest-first, so the first match in each class wins.
-    let stable = releases
-        .iter()
-        .find(|r| !r.prerelease)
-        .map(|r| to_info(r, &current));
-    let nightly = releases
-        .iter()
-        .find(|r| r.prerelease)
-        .map(|r| to_info(r, &current));
+    let stable = newest(&releases, false).map(|r| to_info(r, &current));
+    let nightly = newest(&releases, true).map(|r| to_info(r, &current));
 
     // A nightly older than the newest stable is not an upgrade path. Hiding it
     // is the difference between "here are your options" and a button that
@@ -612,6 +626,34 @@ mod tests {
         assert!(version_is_newer("3.4.0-nightly.2", "3.4.0"));
         assert!(!version_is_newer("3.4.0", "3.4.0-nightly.2"));
         assert!(version_is_newer("3.3.0", "3.4.0-nightly.1"));
+    }
+
+    /// The order GitHub actually returned on 2026-10-04. The pick must come
+    /// from the versions, never from the position in the list.
+    #[test]
+    fn newest_ignores_the_order_github_lists_in() {
+        let rel = |tag: &str, prerelease: bool| GhRelease {
+            tag_name: tag.to_string(),
+            html_url: String::new(),
+            published_at: None,
+            prerelease,
+            draft: false,
+            body: None,
+            assets: Vec::new(),
+        };
+        let list = [
+            rel("v1.5.2-nightly.9", true),
+            rel("v1.5.2-nightly.3", true),
+            rel("v1.5.2-nightly.12", true),
+            rel("v1.5.2-nightly.11", true),
+            rel("v1.5.2-nightly.2", true),
+            rel("v1.5.1", false),
+            rel("v1.5.1-nightly.1", true),
+            rel("v1.5.0", false),
+        ];
+        assert_eq!(newest(&list, true).unwrap().tag_name, "v1.5.2-nightly.12");
+        assert_eq!(newest(&list, false).unwrap().tag_name, "v1.5.1");
+        assert!(newest(&[], true).is_none());
     }
 
     #[test]

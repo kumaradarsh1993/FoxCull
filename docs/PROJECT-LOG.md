@@ -1026,3 +1026,12 @@ lead with what's used most, the status corner stops flickering for quick
 housekeeping, and the Reel window got a proper two-step header. The layout
 audit, which had carried two findings for months, came back empty at
 1440×900.
+
+## 2026-10-05 — the builds that were there but couldn't be seen
+
+The owner went looking for the redesign builds and found nothing newer than
+nightly.9, on GitHub and on the PC. They existed. GitHub had listed them out
+of order (ten nightlies in one day put nightly.9 on top and .10 to .12 below
+.3), and FoxCull's update check believed the list rather than the version
+numbers. It now reads every version and picks the highest; nightly.13 carries
+that fix.
